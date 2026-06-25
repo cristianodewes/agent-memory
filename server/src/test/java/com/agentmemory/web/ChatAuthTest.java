@@ -8,8 +8,10 @@ import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Base64;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -30,8 +32,11 @@ import org.testcontainers.utility.DockerImageName;
  * the security chain is deny-by-default ({@code anyRequest().hasRole}), the new
  * {@code /api/v1/.../chat} route requires the bearer token automatically — no security-config change.
  * This test locks that in: a tokenless POST is {@code 401}, a wrong token is {@code 401}, and a valid
- * bearer POST reaches the handler and streams ({@code 200}). The complementary auth-disabled streaming
- * path is covered by {@link ChatEndpointTest}.
+ * bearer POST reaches the handler and streams ({@code 200}). It also proves the route inherits the
+ * browser-write guard: a Basic-authenticated POST is {@code 403} without a same-origin {@code Origin}
+ * (the CSRF shape) and only streams ({@code 200}) when same-origin — so the {@code /web} panel works
+ * while a cross-site page cannot drive it. The complementary auth-disabled streaming path is covered by
+ * {@link ChatEndpointTest}.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -98,7 +103,35 @@ class ChatAuthTest {
         assertThat(r.body()).contains("done");
     }
 
+    @Test
+    void chatRejectsCrossOriginBrowserWrite() throws Exception {
+        // A browser (HTTP Basic) POST with no same-origin Origin/Referer is the CSRF shape: even with a
+        // valid token, the BrowserWriteGuardFilter blocks it (403). Proves the chat POST inherits the
+        // same-origin write guard, not only the bearer check.
+        HttpResponse<String> r = post(BODY, basic(TOKEN), null);
+        assertThat(r.statusCode()).isEqualTo(403);
+    }
+
+    @Test
+    void chatAcceptsSameOriginBrowserWriteAndStreams() throws Exception {
+        // The genuine /web panel POST: HTTP Basic + a same-origin Origin header clears the guard and
+        // streams (200) — the path the embedded browser UI uses when auth is enabled.
+        HttpResponse<String> r = post(BODY, basic(TOKEN), "http://localhost:" + port);
+        assertThat(r.statusCode()).isEqualTo(200);
+        assertThat(r.body()).contains("done");
+    }
+
+    /** HTTP Basic header carrying the token as the password (any username), as a browser sends it. */
+    private static String basic(String token) {
+        return "Basic " + Base64.getEncoder()
+                .encodeToString(("web:" + token).getBytes(StandardCharsets.UTF_8));
+    }
+
     private HttpResponse<String> post(String body, String authorization) throws Exception {
+        return post(body, authorization, null);
+    }
+
+    private HttpResponse<String> post(String body, String authorization, String origin) throws Exception {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(5))
                 .followRedirects(HttpClient.Redirect.NEVER)
@@ -110,6 +143,9 @@ class ChatAuthTest {
                 .POST(HttpRequest.BodyPublishers.ofString(body));
         if (authorization != null) {
             b.header("Authorization", authorization);
+        }
+        if (origin != null) {
+            b.header("Origin", origin);
         }
         return client.send(b.build(), HttpResponse.BodyHandlers.ofString());
     }
