@@ -16,6 +16,7 @@ import (
 	"github.com/cristianodewes/agent-memory/client/internal/handoff"
 	"github.com/cristianodewes/agent-memory/client/internal/hook"
 	"github.com/cristianodewes/agent-memory/client/internal/identity"
+	"github.com/cristianodewes/agent-memory/client/internal/oidc"
 	"github.com/cristianodewes/agent-memory/client/internal/spool"
 	"github.com/spf13/cobra"
 )
@@ -74,6 +75,14 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 	cwd, _ := os.Getwd()
 	id := identity.Resolve(cwd)
 	cfg := config.Load().WithIdentityOverrides(id.ServerURL, id.Token)
+	// OIDC fallback (issue #39 PR2): when no explicit token is configured (env or .agent-memory.toml
+	// marker), attach the device-grant access token from `auth login oidc-device` so the native hook
+	// authenticates as the verified OIDC subject. A single small file read; an absent/expired
+	// credential yields "" and the request stays unauthenticated (the server is the authority on the
+	// token's validity). The explicit token always wins, so this never overrides a configured one.
+	if cfg.Token == "" {
+		cfg.Token = oidc.AccessToken(cfg.DataDir)
+	}
 
 	p, err := hook.BuildPayload(raw, hook.InputContext{
 		Event:     eventFlag,

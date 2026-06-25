@@ -115,9 +115,26 @@ authenticated caller's *own* most-recent activity (via `observations.actor`), so
 server don't default into each other's project. An explicit scope always wins; with no authenticated
 actor `per_actor` falls back to the global default. Selecting the not-yet-supported `session_aware`
 mode is rejected at startup with a clear error (never a silent fall-back to the global scope, which
-would leak activity across sessions). (OIDC device auth for native hooks, and the `session_aware`
-mode — which needs a capture-session id the MCP tool boundary doesn't yet carry — are tracked
-follow-ups; session_aware is #87.)
+would leak activity across sessions). (The `session_aware` mode — which needs a capture-session id
+the MCP tool boundary doesn't yet carry — is the tracked follow-up #87; the OIDC device grant below
+brings the session-bound verified identity it builds on.)
+
+**OIDC device auth for native hooks (#39 PR2).** A native hook runs headless, so it cannot do a
+browser redirect; it uses the OAuth 2.0 Device Authorization Grant (RFC 8628) instead. Setting
+`agent-memory.auth.oidc.issuer` (plus `audience`, and an optional explicit `jwks-uri`) makes the
+server accept a JWT bearer **in addition** to the opaque root/per-user tokens: a token shaped like a
+JWT is validated against the IdP — signature against the issuer's JWKS, plus `iss`, `aud` and expiry
+— by Spring Security's `NimbusJwtDecoder` (never hand-rolled), and authenticates as its verified
+subject claim (the `actor`, exactly like a per-user token). A JWT that fails validation is rejected
+outright, never retried as an opaque token; OIDC subjects are ordinary users, **forbidden** on the
+root-only admin routes. The client side (`agent-memory auth login oidc-device --issuer … --client-id
+…`) runs the device flow — discover the endpoints, print the verification URL + user code, poll the
+token endpoint (honoring `authorization_pending` / `slow_down`) — and stores the access token at
+`~/.agent-memory/credentials.json` (0600). The native hook attaches that token as its bearer when no
+explicit `$AGENT_MEMORY_TOKEN` (or `.agent-memory.toml` token) is set, so an interactive `login`
+gives every subsequent headless capture a verified identity without putting a long-lived secret in
+the environment. The server is the sole authority on token validity; the client only obtains, stores
+and presents it.
 
 ## DD-008 — Monorepo
 

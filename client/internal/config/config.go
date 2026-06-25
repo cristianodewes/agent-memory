@@ -72,6 +72,14 @@ func (c Config) WithIdentityOverrides(serverURL, token string) Config {
 	return c
 }
 
+// ResolveDataDir expands and absolutizes an explicitly supplied data dir (e.g. an `auth --data-dir`
+// flag), applying the same ~ expansion and default as Load. An empty argument yields the default
+// ~/.agent-memory root (it does NOT consult the environment — Load already does that for the no-flag
+// case).
+func ResolveDataDir(configured string) string {
+	return resolveDataDir(configured)
+}
+
 // resolveDataDir expands and absolutizes the configured data dir, defaulting to ~/.agent-memory.
 func resolveDataDir(configured string) string {
 	configured = strings.TrimSpace(configured)
