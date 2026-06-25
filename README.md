@@ -1,5 +1,8 @@
 # agent-memory
 
+[![CI](https://github.com/cristianodewes/agent-memory/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/cristianodewes/agent-memory/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > **LLM-powered long-term memory for AI coding agents.**
 > A Go client + Spring Boot server that captures every prompt, tool call and decision an
 > agent makes, **compiles** them into a coherent markdown knowledge base with the help of an

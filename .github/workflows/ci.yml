@@ -1,0 +1,187 @@
+name: CI
+
+# Continuous integration for the agent-memory monorepo.
+#
+# Jobs are path-filtered: the Go `client` job runs only when the client tree (or
+# shared CI files) change, and the `server` job runs only for server changes.
+# The `compose-smoke` job validates the docker-compose dev stack and probes the
+# server's /healthz endpoint. A `migration-check` placeholder is intentionally
+# deferred to issue #4 (the Postgres schema / Flyway migrations do not exist yet)
+# and is documented below rather than run.
+#
+# See CONTRIBUTING.md (Definition of Done) and docs/ARCHITECTURE.md §8.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancel superseded runs on the same ref to keep the queue fast.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  # dorny/paths-filter queries the PR's changed files via the API on
+  # pull_request events; that needs pull-requests: read.
+  pull-requests: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Detect which trees changed so the heavy jobs run only when relevant. On
+  # pushes to main (no base to diff against) every filter reports `true`.
+  # --------------------------------------------------------------------------
+  changes:
+    name: detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      client: ${{ steps.filter.outputs.client }}
+      server: ${{ steps.filter.outputs.server }}
+      compose: ${{ steps.filter.outputs.compose }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            client:
+              - 'client/**'
+              - '.github/workflows/ci.yml'
+              - '.golangci.yml'
+            server:
+              - 'server/**'
+              - 'docker/Dockerfile.server'
+              - '.github/workflows/ci.yml'
+            compose:
+              - 'docker/**'
+              - 'server/**'
+              - '.github/workflows/ci.yml'
+
+  # --------------------------------------------------------------------------
+  # Go client: build, race-tested unit tests, and golangci-lint.
+  # --------------------------------------------------------------------------
+  client:
+    name: client (go)
+    needs: changes
+    if: needs.changes.outputs.client == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test (race)
+        # -race needs cgo; ubuntu-latest ships gcc and CGO_ENABLED=1 by default.
+        env:
+          CGO_ENABLED: 1
+        run: go test ./... -race
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.64.8
+          working-directory: client
+
+  # --------------------------------------------------------------------------
+  # Spring Boot server: `mvn -B verify`.
+  #
+  # No database is required yet: the server does not connect to Postgres until
+  # issue #4. We therefore run verify with no DB service. When #4 lands, add a
+  # Postgres service (or Testcontainers) here alongside the migration check.
+  # --------------------------------------------------------------------------
+  server:
+    name: server (maven)
+    needs: changes
+    if: needs.changes.outputs.server == 'true'
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: mvn verify
+        run: ./mvnw -B -ntp verify
+
+  # --------------------------------------------------------------------------
+  # Compose smoke: bring up the full local stack and assert /healthz is 200.
+  #
+  # Builds the server image and starts Postgres + server via docker compose,
+  # then polls the health endpoint. Logs are dumped on failure for triage.
+  # --------------------------------------------------------------------------
+  compose-smoke:
+    name: compose smoke (/healthz)
+    needs: changes
+    if: needs.changes.outputs.compose == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker compose up
+        run: docker compose -f docker/compose.yml up -d --build --wait
+
+      - name: probe /healthz
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /tmp/healthz.json -w '%{http_code}' http://localhost:8080/healthz || true)
+            if [ "$code" = "200" ]; then
+              echo "healthz returned 200:"
+              cat /tmp/healthz.json
+              exit 0
+            fi
+            echo "attempt $i: got '$code', retrying..."
+            sleep 2
+          done
+          echo "::error::/healthz did not return 200 within timeout"
+          exit 1
+
+      - name: compose logs (on failure)
+        if: failure()
+        run: docker compose -f docker/compose.yml logs --no-color
+
+      - name: docker compose down
+        if: always()
+        run: docker compose -f docker/compose.yml down -v
+
+  # --------------------------------------------------------------------------
+  # Aggregate gate. A single required check that stays green whether or not the
+  # path-filtered jobs ran. Skipped upstream jobs report `result: skipped`,
+  # which this gate treats as success; only an explicit failure fails CI.
+  # Configure this ("CI / ci") as the sole required status check on `main`.
+  # --------------------------------------------------------------------------
+  ci:
+    name: ci
+    if: always()
+    needs: [changes, client, server, compose-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: verify no upstream job failed
+        run: |
+          set -euo pipefail
+          results='${{ join(needs.*.result, ' ') }}'
+          echo "upstream results: $results"
+          for r in $results; do
+            if [ "$r" = "failure" ] || [ "$r" = "cancelled" ]; then
+              echo "::error::an upstream CI job reported '$r'"
+              exit 1
+            fi
+          done
+          echo "all upstream jobs passed or were skipped"
