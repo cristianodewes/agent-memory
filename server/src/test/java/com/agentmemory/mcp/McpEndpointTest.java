@@ -9,6 +9,9 @@ import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +20,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -51,11 +55,16 @@ class McpEndpointTest {
             new PostgreSQLContainer(DockerImageName.parse("pgvector/pgvector:pg16")
                     .asCompatibleSubstituteFor("postgres"));
 
+    @TempDir
+    static Path dataDir;
+
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        // A real (empty) data dir so SlotsReader reads slot files from a known location, not ~/.
+        registry.add("agent-memory.data.dir", () -> dataDir.toString());
     }
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -308,6 +317,47 @@ class McpEndpointTest {
         assertThat(r.get("rules").isArray()).isTrue();
         assertThat(r.get("slots").isArray()).isTrue();
         assertThat(r.get("recent")).isNotEmpty();
+    }
+
+    @Test
+    void memoryBriefingRendersSlotsAsADedicatedSectionWithKind() throws Exception {
+        String[] s = seedProject("Recall", "body", "investigate the widget");
+        // Two slot pages on disk (source of truth) under wiki/<ws>/proj/_slots/.
+        writeSlotFile(s[0], s[1], "identity.md", "Who I am", "invariant");
+        writeSlotFile(s[0], s[1], "current-focus.md", "Current focus", "state");
+
+        JsonNode r = json(call("memory_briefing", Map.of("workspace", s[0], "project", s[1])));
+        JsonNode slots = r.get("slots");
+        assertThat(slots.isArray()).isTrue();
+        assertThat(slots.size()).isEqualTo(2);
+        // Ordered by path; each carries path/title/slot_kind/pinned.
+        JsonNode first = slots.get(0);
+        assertThat(first.get("path").asString()).isEqualTo("_slots/current-focus.md");
+        assertThat(first.get("slotKind").asString()).isEqualTo("state");
+        assertThat(first.get("pinned").asBoolean()).isTrue();
+        JsonNode second = slots.get(1);
+        assertThat(second.get("path").asString()).isEqualTo("_slots/identity.md");
+        assertThat(second.get("slotKind").asString()).isEqualTo("invariant");
+    }
+
+    /** Write a minimal valid slot page file under {@code wiki/<ws>/<proj>/_slots/<name>}. */
+    private static void writeSlotFile(String ws, String proj, String name, String title, String slotKind)
+            throws Exception {
+        String path = "_slots/" + name;
+        String content = "---\n"
+                + "title: \"" + title + "\"\n"
+                + "kind: _slots\n"
+                + "pinned: true\n"
+                + "slot_kind: " + slotKind + "\n"
+                + "workspace: \"" + ws + "\"\n"
+                + "project: \"" + proj + "\"\n"
+                + "path: \"" + path + "\"\n"
+                + "created_at: 2026-06-25T12:00:00Z\n"
+                + "updated_at: 2026-06-25T12:00:00Z\n"
+                + "---\n\n" + title + " body\n";
+        Path file = dataDir.resolve("wiki").resolve(ws).resolve(proj).resolve(path);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content, StandardCharsets.UTF_8);
     }
 
     // --- scope resolution --------------------------------------------------------------------------

@@ -9,6 +9,7 @@ import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
+import com.agentmemory.wiki.SlotsReader;
 import io.modelcontextprotocol.server.McpServerFeatures.SyncToolSpecification;
 import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
@@ -38,6 +39,7 @@ public final class MemoryTools {
     private final PageRepository pages;
     private final McpReadRepository reads;
     private final ScopeResolver scopes;
+    private final SlotsReader slots;
     private final McpJson json;
 
     public MemoryTools(
@@ -45,11 +47,13 @@ public final class MemoryTools {
             PageRepository pages,
             McpReadRepository reads,
             ScopeResolver scopes,
+            SlotsReader slots,
             McpJson json) {
         this.recall = recall;
         this.pages = pages;
         this.reads = reads;
         this.scopes = scopes;
+        this.slots = slots;
         this.json = json;
     }
 
@@ -234,7 +238,8 @@ public final class MemoryTools {
         Tool tool = readTool(
                 "memory_briefing",
                 "A structured snapshot of the project (NO LLM call): counts, recent activity windows, "
-                        + "the _rules/ and _slots/ listings, and the most recent pages.",
+                        + "the _rules/ listing, the memory slots (auto-pinned _slots/ pages with their "
+                        + "slot_kind), and the most recent pages.",
                 withScope(Map.of(
                         "limit", McpJson.intProp("Max recent pages to include (default 10, max 100)."))),
                 List.of());
@@ -245,13 +250,17 @@ public final class MemoryTools {
             McpReadRepository.Counts c = reads.counts(scope);
             List<McpDtos.RecentPage> recent = pages.listLatest(scope.workspace(), scope.project())
                     .stream().limit(limit).map(McpDtos.RecentPage::of).toList();
+            // Slots are surfaced as a dedicated section with their write regime (slot_kind), read from
+            // the wiki files (source of truth) so a schema-free _slots/ page still carries its kind.
+            List<McpDtos.SlotView> slotViews = slots.list(scope.workspace(), scope.project())
+                    .stream().map(McpDtos.SlotView::of).toList();
             return json.ok(new McpDtos.BriefingResult(
                     McpDtos.ScopeView.of(scope),
                     c.pages(), c.observations(), c.sessions(), c.links(),
                     reads.observationsInLastDays(scope, 7),
                     reads.observationsInLastDays(scope, 30),
                     reads.latestPathsUnder(scope, "_rules/", 50),
-                    reads.latestPathsUnder(scope, "_slots/", 50),
+                    slotViews,
                     recent));
         });
     }

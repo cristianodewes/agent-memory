@@ -46,16 +46,17 @@ public class StoreConfiguration {
     }
 
     /**
-     * The {@code links} repository (issue #14). First writer of the wikilink graph the recall graph
-     * arm reads; gated on a {@code DataSource} exactly like {@link #pageRepository}.
+     * The {@code audit_log} writer (issue #33). The shared seam for recording mutations with their
+     * before/after identity (lifecycle ops, and reusable by other writers); gated on a
+     * {@code DataSource} like the others.
      *
      * @param jdbcTemplate the auto-configured JDBC template.
-     * @return the links writer/maintenance repository.
+     * @return the audit-log writer.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public LinkRepository linkRepository(JdbcTemplate jdbcTemplate) {
-        return new JdbcLinkRepository(jdbcTemplate);
+    public AuditWriter auditWriter(JdbcTemplate jdbcTemplate) {
+        return new JdbcAuditWriter(jdbcTemplate);
     }
 
     /**

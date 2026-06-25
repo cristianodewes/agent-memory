@@ -111,6 +111,34 @@ public final class WikiGit implements AutoCloseable {
     }
 
     /**
+     * Stage <em>all</em> changes in the working tree (additions, modifications and deletions across the
+     * whole wiki) and create one commit. Used by bulk ops that rewrite many paths at once — e.g. the
+     * {@code reset} which clears the entire tree (#33) — where enumerating individual files is
+     * impractical. Returns empty if nothing changed.
+     *
+     * @param message the commit message.
+     * @return the created commit, or empty when there was nothing to commit.
+     */
+    public synchronized Optional<RevCommit> commitAll(String message) {
+        try {
+            git.add().addFilepattern(".").call();
+            git.add().setUpdate(true).addFilepattern(".").call();
+            if (git.status().call().isClean()) {
+                return Optional.empty();
+            }
+            RevCommit commit = git.commit()
+                    .setMessage(message)
+                    .setAuthor(author)
+                    .setCommitter(author)
+                    .setSign(false)
+                    .call();
+            return Optional.of(commit);
+        } catch (GitAPIException e) {
+            throw new WikiGitException("git commit-all failed: " + message, e);
+        }
+    }
+
+    /**
      * The page files that changed between a git revision and the current working tree — the input to
      * an incremental reindex (#14). Compares {@code sinceRef}'s tree against the working tree (so both
      * committed-since-ref and uncommitted edits count), returning absolute paths under the wiki root.
