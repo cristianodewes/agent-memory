@@ -25,7 +25,8 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
                 new AgentMemoryProperties.Embeddings(ProviderAuth.NONE),
                 new AgentMemoryProperties.Auth(false, ""),
-                new AgentMemoryProperties.Sanitization(65536, java.util.List.of()));
+                new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
+                new AgentMemoryProperties.Ingest(1024, 0));
     }
 
     // --- canonicalization ----------------------------------------------------------------------

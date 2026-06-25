@@ -69,6 +69,8 @@ import tools.jackson.databind.JsonNode;
  * @param toolResponse arbitrary-JSON tool output (object OR array — Bug A) for post-tool events,
  *     or {@code null}.
  * @param extension    third-party namespace for non-canonical events (§5.4), or {@code null}.
+ * @param clientEventId the client's stable per-event id for idempotent spool replay (#8), or
+ *     {@code null} (no dedupe — the event is always inserted).
  * @param timestamp    when the event occurred (UTC instant); never null.
  */
 @JsonInclude(JsonInclude.Include.NON_NULL)
@@ -87,6 +89,7 @@ import tools.jackson.databind.JsonNode;
     "toolInput",
     "toolResponse",
     "extension",
+    "clientEventId",
     "timestamp"
 })
 public record HookPayload(
@@ -103,6 +106,7 @@ public record HookPayload(
         @JsonProperty("toolInput") JsonNode toolInput,
         @JsonProperty("toolResponse") JsonNode toolResponse,
         @JsonProperty("extension") String extension,
+        @JsonProperty("clientEventId") String clientEventId,
         @JsonProperty("timestamp") Instant timestamp) {
 
     @JsonCreator
@@ -154,6 +158,7 @@ public record HookPayload(
                 sessionId,
                 workspace,
                 project,
+                null,
                 null,
                 null,
                 null,
