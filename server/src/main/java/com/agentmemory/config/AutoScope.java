@@ -11,6 +11,9 @@ package com.agentmemory.config;
  *   <li>{@link #PER_ACTOR} — the most-recent project <em>of the authenticated user</em> (the
  *       {@code observations.actor}). On a shared server each user's no-scope calls stay in their own
  *       lane. Falls back to {@link #SINGLE_SLOT} when there is no authenticated actor.</li>
+ *   <li>{@link #SESSION_AWARE} — the most-recent project <em>of this capture session</em> (issue #87).
+ *       The finest isolation: two sessions of the same user — even concurrent ones in different
+ *       projects — keep their no-scope calls in their own lane.</li>
  * </ul>
  *
  * <p>Bound from {@code agent-memory.scope.auto} via Spring's relaxed enum binding, so
@@ -21,12 +24,13 @@ public enum AutoScope {
     PER_ACTOR,
 
     /**
-     * Isolation by capture session — declared but <strong>not yet supported</strong>. The MCP tool
-     * boundary carries no capture-session id to key on (only the actor, via the security context), so
-     * it cannot be wired end-to-end yet. Selecting it is <em>rejected at startup</em> with a clear
-     * error rather than silently degrading to {@link #SINGLE_SLOT}: on a shared server a silent
-     * fall-back to the global scope would leak activity across sessions. Tracked as a follow-up with
-     * the native-hook session-bound identity work.
+     * Isolation by capture session (issue #87): the default no-scope project is the most-recent
+     * activity of <em>this</em> session, keyed on the {@code observations.session_id} the native hook
+     * reports. The session id reaches the MCP boundary via the {@code X-Agent-Memory-Session} request
+     * header (sent by the client's MCP config); when it is absent the {@code ScopeResolver}
+     * <strong>fail-fasts</strong> rather than silently widening to the global scope — on a shared server
+     * a silent fall-back would leak activity across sessions. This is the per-session counterpart to
+     * {@link #PER_ACTOR}'s per-user isolation.
      */
     SESSION_AWARE
 }

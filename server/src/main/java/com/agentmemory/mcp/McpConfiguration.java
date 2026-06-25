@@ -4,7 +4,9 @@ import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.consolidate.Consolidator;
 import com.agentmemory.consolidate.MemoryExplore;
 import com.agentmemory.core.ActorResolver;
+import com.agentmemory.core.CaptureSessionResolver;
 import com.agentmemory.handoff.HandoffService;
+import com.agentmemory.security.CaptureSessionHeaderFilter;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.recall.CrossProjectRecallService;
@@ -25,6 +27,7 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
+import org.springframework.boot.web.servlet.FilterRegistrationBean;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -61,17 +64,43 @@ public class McpConfiguration {
     }
 
     /**
-     * The MCP scope resolver (DD-003), configured with the {@code auto_scope} isolation mode (#39). In
-     * {@link com.agentmemory.config.AutoScope#PER_ACTOR PER_ACTOR} mode it reads the authenticated
-     * caller from the {@link ActorResolver} (resolved via an {@link ObjectProvider} so a context
-     * without the security auto-config still wires — it then never attributes, i.e. global default).
+     * The MCP scope resolver (DD-003), configured with the {@code auto_scope} isolation mode (#39/#87).
+     * In {@link com.agentmemory.config.AutoScope#PER_ACTOR PER_ACTOR} mode it reads the authenticated
+     * caller from the {@link ActorResolver}; in {@link com.agentmemory.config.AutoScope#SESSION_AWARE
+     * SESSION_AWARE} mode it reads the capture session id from the {@link CaptureSessionResolver}
+     * (populated by {@link CaptureSessionHeaderFilter} from the request header). Both are resolved via
+     * {@link ObjectProvider} so a context without the security auto-config still wires — it then never
+     * attributes (global default) and session_aware fail-fasts on the missing session id.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public ScopeResolver mcpScopeResolver(
-            McpReadRepository reads, AgentMemoryConfig config, ObjectProvider<ActorResolver> actors) {
+            McpReadRepository reads, AgentMemoryConfig config,
+            ObjectProvider<ActorResolver> actors, ObjectProvider<CaptureSessionResolver> sessions) {
         return new ScopeResolver(
-                reads, config.scope().auto(), actors.getIfAvailable(() -> ActorResolver.NONE));
+                reads, config.scope().auto(),
+                actors.getIfAvailable(() -> ActorResolver.NONE),
+                sessions.getIfAvailable(() -> CaptureSessionResolver.NONE));
+    }
+
+    /**
+     * Install the {@link CaptureSessionHeaderFilter} in front of the {@code /mcp} servlet so the
+     * capture session id (the {@code X-Agent-Memory-Session} header) is bound to the request thread
+     * before any tool runs — the source the {@link CaptureSessionResolver} reads for
+     * {@code auto_scope=session_aware} (issue #87). Scoped to the MCP endpoint; harmless (binds nothing)
+     * for any other path. The {@link RequestSessionResolver} bean that reads the binding is registered
+     * by the security auto-config (parallel to the actor resolver).
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public FilterRegistrationBean<CaptureSessionHeaderFilter> captureSessionHeaderFilter() {
+        FilterRegistrationBean<CaptureSessionHeaderFilter> registration =
+                new FilterRegistrationBean<>(new CaptureSessionHeaderFilter());
+        registration.addUrlPatterns(MCP_ENDPOINT, MCP_ENDPOINT + "/*");
+        registration.setName("captureSessionHeaderFilter");
+        // The MCP servlet is async (streaming); every filter in its chain must allow async dispatch.
+        registration.setAsyncSupported(true);
+        return registration;
     }
 
     @Bean

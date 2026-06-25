@@ -2,6 +2,7 @@ package com.agentmemory.security;
 
 import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.core.ActorResolver;
+import com.agentmemory.core.CaptureSessionResolver;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -168,6 +169,20 @@ public class SecurityConfiguration {
     @ConditionalOnMissingBean(ActorResolver.class)
     public ActorResolver actorResolver() {
         return new SecurityContextActorResolver();
+    }
+
+    /**
+     * The capture-session resolver (issue #87) used to isolate the {@code auto_scope=session_aware}
+     * default scope to the current session. Reads the session id bound to the request thread by
+     * {@link CaptureSessionHeaderFilter} (from the {@code X-Agent-Memory-Session} header). Always
+     * registered (parallel to {@link #actorResolver()}); resolves to {@code null} when no session header
+     * is present, which {@code ScopeResolver} treats as a hard error in session_aware mode rather than
+     * widening to the global scope. {@link ConditionalOnMissingBean} lets a test substitute a fixed id.
+     */
+    @Bean
+    @ConditionalOnMissingBean(CaptureSessionResolver.class)
+    public CaptureSessionResolver captureSessionResolver() {
+        return new RequestSessionResolver();
     }
 
     /**

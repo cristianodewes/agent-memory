@@ -2,6 +2,7 @@ package com.agentmemory.mcp;
 
 import com.agentmemory.config.AutoScope;
 import com.agentmemory.core.ActorResolver;
+import com.agentmemory.core.CaptureSessionResolver;
 import com.agentmemory.recall.Scope;
 import java.util.Map;
 import java.util.Optional;
@@ -25,6 +26,11 @@ import java.util.Optional;
  *   <li>{@link AutoScope#PER_ACTOR} — the most-recent project of the <em>authenticated</em> caller
  *       ({@link ActorResolver}, read on this MCP request thread). With no authenticated actor it falls
  *       back to the global default, so loopback / single-user is unaffected.</li>
+ *   <li>{@link AutoScope#SESSION_AWARE} (issue #87) — the most-recent project of <em>this capture
+ *       session</em> ({@link CaptureSessionResolver}, from the {@code X-Agent-Memory-Session} request
+ *       header), so two sessions of the same user resolve to their own lanes. If no session id reached
+ *       the request it <strong>fail-fasts</strong> ({@link ScopeUnresolvedException}) — never a silent
+ *       fall-back to the global scope, which on a shared server would leak activity across sessions.</li>
  * </ul>
  * An explicit {@code workspace}+{@code project} always wins regardless of mode.
  */
@@ -33,22 +39,32 @@ public class ScopeResolver {
     private final McpReadRepository reads;
     private final AutoScope autoScope;
     private final ActorResolver actors;
+    private final CaptureSessionResolver sessions;
 
-    /** Default resolver: {@link AutoScope#SINGLE_SLOT}, no actor (single-user / tests). */
+    /** Default resolver: {@link AutoScope#SINGLE_SLOT}, no actor/session (single-user / tests). */
     public ScopeResolver(McpReadRepository reads) {
-        this(reads, AutoScope.SINGLE_SLOT, ActorResolver.NONE);
+        this(reads, AutoScope.SINGLE_SLOT, ActorResolver.NONE, CaptureSessionResolver.NONE);
+    }
+
+    /** Back-compat constructor (no session resolver): {@link AutoScope#SESSION_AWARE} then fail-fasts. */
+    public ScopeResolver(McpReadRepository reads, AutoScope autoScope, ActorResolver actors) {
+        this(reads, autoScope, actors, CaptureSessionResolver.NONE);
     }
 
     /**
      * @param reads     the activity-scope reads.
-     * @param autoScope the auto_scope isolation mode (#39); {@code null} ⇒ {@link AutoScope#SINGLE_SLOT}.
+     * @param autoScope the auto_scope isolation mode (#39/#87); {@code null} ⇒ {@link AutoScope#SINGLE_SLOT}.
      * @param actors    resolves the authenticated caller for {@link AutoScope#PER_ACTOR}; {@code null} ⇒
      *     {@link ActorResolver#NONE} (never attributes, i.e. always the global default).
+     * @param sessions  resolves the capture session id for {@link AutoScope#SESSION_AWARE}; {@code null} ⇒
+     *     {@link CaptureSessionResolver#NONE} (no session ⇒ session_aware fail-fasts, never global).
      */
-    public ScopeResolver(McpReadRepository reads, AutoScope autoScope, ActorResolver actors) {
+    public ScopeResolver(McpReadRepository reads, AutoScope autoScope, ActorResolver actors,
+            CaptureSessionResolver sessions) {
         this.reads = reads;
         this.autoScope = (autoScope == null) ? AutoScope.SINGLE_SLOT : autoScope;
         this.actors = (actors == null) ? ActorResolver.NONE : actors;
+        this.sessions = (sessions == null) ? CaptureSessionResolver.NONE : sessions;
     }
 
     /**
@@ -79,20 +95,35 @@ public class ScopeResolver {
             }
         }
         // No explicit scope: default to the most recently active project (DD-003), isolated per the
-        // auto_scope mode. PER_ACTOR restricts to the authenticated caller's own activity; SINGLE_SLOT
-        // is the global most-recent. SESSION_AWARE is rejected at startup (AgentMemoryConfig); this
-        // exhaustive switch is the defense-in-depth guard so it can never silently fall back to global.
-        String actor = switch (autoScope) {
-            case PER_ACTOR -> actors.currentActor();
-            case SINGLE_SLOT -> null;
-            case SESSION_AWARE -> throw new ScopeUnresolvedException(
-                    "auto_scope 'session_aware' is not yet supported; configure 'single_slot' or "
-                            + "'per_actor'");
+        // auto_scope mode. SINGLE_SLOT is the global most-recent; PER_ACTOR restricts to the
+        // authenticated caller's own activity; SESSION_AWARE restricts to THIS capture session (and
+        // fail-fasts when no session id reached the request — never silently widening to global).
+        Optional<Scope> recent = switch (autoScope) {
+            case SINGLE_SLOT -> reads.mostRecentActivityScope(null);
+            case PER_ACTOR -> reads.mostRecentActivityScope(actors.currentActor());
+            case SESSION_AWARE -> reads.mostRecentActivityScopeForSession(requireSessionId());
         };
-        Optional<Scope> recent = reads.mostRecentActivityScope(actor);
         return recent.orElseThrow(() -> new ScopeUnresolvedException(
                 "no workspace/project given and no recent hook activity to default from; pass "
                         + "'workspace' and 'project' explicitly"));
+    }
+
+    /**
+     * The capture session id for a {@link AutoScope#SESSION_AWARE} resolution, or fail-fast (issue #87
+     * central guard): if no session id reached the boundary (the MCP request carried no
+     * {@code X-Agent-Memory-Session} header) we NEVER widen to the global scope — that would leak one
+     * session's default project to another on a shared server — but raise a clear, actionable error.
+     */
+    private String requireSessionId() {
+        String sessionId = sessions.currentSessionId();
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new ScopeUnresolvedException(
+                    "auto_scope 'session_aware' requires the capture session id, but this request "
+                            + "carried no '" + CaptureSessionResolver.SESSION_HEADER + "' header; pass "
+                            + "'workspace' and 'project' explicitly, or configure the agent-memory MCP "
+                            + "client to send the session header.");
+        }
+        return sessionId;
     }
 
     private static String str(Object o) {

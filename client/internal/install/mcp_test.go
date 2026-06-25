@@ -9,7 +9,7 @@ import (
 func TestInstallMcpCreatesEntryThenIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mcp.json")
 
-	ch, err := Mcp(path, "http://127.0.0.1:8080", "")
+	ch, err := Mcp(path, "http://127.0.0.1:8080", "", "")
 	if err != nil || ch != Created {
 		t.Fatalf("install: change=%v err=%v", ch, err)
 	}
@@ -21,17 +21,17 @@ func TestInstallMcpCreatesEntryThenIdempotent(t *testing.T) {
 		t.Errorf("no token → no headers, got %v", entry["headers"])
 	}
 
-	if ch2, err := Mcp(path, "http://127.0.0.1:8080", ""); err != nil || ch2 != Unchanged {
+	if ch2, err := Mcp(path, "http://127.0.0.1:8080", "", ""); err != nil || ch2 != Unchanged {
 		t.Fatalf("re-install: change=%v err=%v", ch2, err)
 	}
 }
 
 func TestInstallMcpTrimsTrailingSlashAndAddsTokenHeader(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mcp.json")
-	if _, err := Mcp(path, "http://127.0.0.1:8080", ""); err != nil {
+	if _, err := Mcp(path, "http://127.0.0.1:8080", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	ch, err := Mcp(path, "http://127.0.0.1:8080/", "secret")
+	ch, err := Mcp(path, "http://127.0.0.1:8080/", "secret", "")
 	if err != nil || ch != Updated {
 		t.Fatalf("update with token: change=%v err=%v", ch, err)
 	}
@@ -51,7 +51,7 @@ func TestInstallMcpPreservesForeignServersAndUninstall(t *testing.T) {
 		[]byte(`{"mcpServers":{"other":{"type":"stdio","command":"x"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Mcp(path, "http://127.0.0.1:8080", ""); err != nil {
+	if _, err := Mcp(path, "http://127.0.0.1:8080", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	servers := readJSON(t, path)["mcpServers"].(map[string]any)
@@ -78,5 +78,56 @@ func TestUninstallMcpAbsent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".mcp.json")
 	if ch, _ := UninstallMcp(path); ch != Absent {
 		t.Errorf("missing file should be Absent, got %v", ch)
+	}
+}
+
+func TestInstallMcpWritesHeadersHelperAndUpdatesOnChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mcp.json")
+	cmdStr := `"agent-memory" mcp-session-header --workspace acme --project alpha`
+
+	// First install with a headersHelper records it verbatim (the per-session header transport, #87).
+	if ch, err := Mcp(path, "http://127.0.0.1:8080", "", cmdStr); err != nil || ch != Created {
+		t.Fatalf("install: change=%v err=%v", ch, err)
+	}
+	entry := readJSON(t, path)["mcpServers"].(map[string]any)[McpServerName].(map[string]any)
+	if entry["headersHelper"] != cmdStr {
+		t.Fatalf("headersHelper = %v, want %q", entry["headersHelper"], cmdStr)
+	}
+
+	// Re-installing with the same command is a no-op; a changed command (e.g. a re-derived identity or
+	// upgraded binary path) is an Update.
+	if ch, _ := Mcp(path, "http://127.0.0.1:8080", "", cmdStr); ch != Unchanged {
+		t.Fatalf("re-install same headersHelper: change=%v, want Unchanged", ch)
+	}
+	changed := `"agent-memory" mcp-session-header --workspace acme --project beta`
+	if ch, _ := Mcp(path, "http://127.0.0.1:8080", "", changed); ch != Updated {
+		t.Fatalf("changed headersHelper: change=%v, want Updated", ch)
+	}
+}
+
+func TestInstallMcpOmitsHeadersHelperWhenEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".mcp.json")
+	if _, err := Mcp(path, "http://127.0.0.1:8080", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	entry := readJSON(t, path)["mcpServers"].(map[string]any)[McpServerName].(map[string]any)
+	if _, ok := entry["headersHelper"]; ok {
+		t.Errorf("empty session command → no headersHelper key, got %v", entry["headersHelper"])
+	}
+}
+
+func TestMcpSessionHeaderCommand(t *testing.T) {
+	got := McpSessionHeaderCommand("/opt/bin/agent memory", "acme", "alpha")
+	want := `"/opt/bin/agent memory" mcp-session-header --workspace acme --project alpha`
+	if got != want {
+		t.Fatalf("command = %q, want %q", got, want)
+	}
+	// Missing any component yields "" so the caller omits headersHelper rather than baking a broken one.
+	for _, c := range []struct{ bin, ws, proj string }{
+		{"", "acme", "alpha"}, {"bin", "", "alpha"}, {"bin", "acme", ""},
+	} {
+		if got := McpSessionHeaderCommand(c.bin, c.ws, c.proj); got != "" {
+			t.Errorf("McpSessionHeaderCommand(%q,%q,%q) = %q, want empty", c.bin, c.ws, c.proj, got)
+		}
 	}
 }
