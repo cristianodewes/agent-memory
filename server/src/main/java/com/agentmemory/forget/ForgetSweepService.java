@@ -8,6 +8,7 @@ import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.WorkspaceId;
 import com.agentmemory.store.AuditWriter;
 import com.agentmemory.store.RetentionScorer;
+import com.agentmemory.wiki.Slots;
 import com.agentmemory.wiki.WikiWriter;
 import java.time.Clock;
 import java.time.Duration;
@@ -36,11 +37,12 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <h2>Exemptions (never swept)</h2>
  * <ul>
  *   <li><strong>Semantic layer</strong> — timeless distilled knowledge does not age out.</li>
- *   <li><strong>Slots</strong> — pages under the reserved {@code _slots/} prefix are auto-pinned
- *       (#26). Detected by path here; this is the same rule {@code wiki.Slots.isExemptFromSweep}
- *       encodes — once #26 lands this delegates to that single seam. (Explicit {@code pinned}
- *       frontmatter on a non-slot page is not yet persisted to {@code pages}; honoring it is a
- *       follow-up once the column exists, tracked with #26.)</li>
+ *   <li><strong>Pinned / slots</strong> — delegated to {@link com.agentmemory.wiki.Slots#isExemptFromSweep
+ *       Slots.isExemptFromSweep} (#26), the single definition of "what is protected" shared with the
+ *       writer's auto-pin: slot pages (reserved {@code _slots/} prefix) are auto-pinned and exempt. The
+ *       persisted {@code pinned} flag is not yet a {@code pages} column, so an explicit pin on a
+ *       <em>non-slot</em> page is not honored yet (a follow-up once the column exists); slots are
+ *       already caught by path.</li>
  *   <li><strong>Recently accessed</strong> — a page touched within {@code recentlyAccessedDays}
  *       survives even if its score is cold.</li>
  * </ul>
@@ -54,9 +56,6 @@ import org.springframework.transaction.support.TransactionTemplate;
 public class ForgetSweepService {
 
     private static final Logger log = LoggerFactory.getLogger(ForgetSweepService.class);
-
-    /** Reserved slot prefix (mirrors {@code wiki.PageKind.SLOT} / {@code Slots.PREFIX}). */
-    static final String SLOT_PREFIX = "_slots/";
 
     /** Audit action key for a sweep (see {@code audit_log.action} examples). */
     static final String AUDIT_ACTION = "forget.sweep";
@@ -171,15 +170,22 @@ public class ForgetSweepService {
     }
 
     /**
-     * Whether a cold page must be spared. Exempt when it is semantic-layer, a slot (by reserved
-     * prefix), or was accessed within the recency window.
+     * Whether a cold page must be spared. Exempt when it is semantic-layer, pinned/slot, or was
+     * accessed within the recency window.
+     *
+     * <p>The pin/slot rule delegates to {@link Slots#isExemptFromSweep(PagePath, boolean)} — the single
+     * definition of "what is protected" shared with the writer's auto-pin (#26), so this never
+     * re-derives the {@code _slots/} prefix. The persisted {@code pinned} flag is not yet a column on
+     * {@code pages}, so {@code false} is passed for now; slots are still caught (they are pinned by
+     * path). When an explicit-pin column lands, thread it in here and non-slot pins become exempt with
+     * no other change.
      */
     private boolean isExempt(ForgetSweepRepository.Row row, Instant now) {
         if (row.layer() == MemoryLayer.SEMANTIC) {
             return true;
         }
-        if (row.path() != null && row.path().startsWith(SLOT_PREFIX)) {
-            return true; // slot: auto-pinned (#26); == wiki.Slots.isExemptFromSweep once merged
+        if (row.path() != null && Slots.isExemptFromSweep(PagePath.of(row.path()), /*pinned*/ false)) {
+            return true;
         }
         if (decay.recentlyAccessedDays() > 0 && row.lastAccessedAt() != null) {
             Instant cutoff = now.minus(Duration.ofDays(decay.recentlyAccessedDays()));
