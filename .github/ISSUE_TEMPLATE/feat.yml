@@ -1,0 +1,69 @@
+name: "Feature task (feat)"
+description: "A self-contained, agent-executable unit of work."
+title: "feat(<area>): <concise imperative>"
+labels: ["feat"]
+body:
+  - type: input
+    id: milestone
+    attributes:
+      label: Milestone
+      description: "M0–M9 (see docs/ROADMAP.md)."
+      placeholder: "M1 — Capture pipeline"
+    validations:
+      required: true
+  - type: input
+    id: area
+    attributes:
+      label: Area
+      placeholder: "server, client-go, db, mcp, hooks, search, consolidation, llm, web, security, infra, core"
+    validations:
+      required: true
+  - type: input
+    id: depends
+    attributes:
+      label: Depends on
+      placeholder: "#4, #6 (or 'none')"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: "Why this exists; link to ARCHITECTURE / design-decisions sections."
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: "What to build (bullet list)."
+    validations:
+      required: true
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: Out of scope
+    validations:
+      required: false
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: "Checklist; all boxes must be checked for Done."
+      value: |
+        - [ ] …
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Implementation notes
+      description: "Files/packages, key types, invariants to uphold."
+    validations:
+      required: false
+  - type: textarea
+    id: testing
+    attributes:
+      label: Testing
+    validations:
+      required: true
