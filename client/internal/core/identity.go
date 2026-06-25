@@ -6,29 +6,29 @@ import (
 	"strings"
 )
 
-// WorkspaceId is the top coordinate of the 3-tuple identity (workspace, project, path). It is a
+// WorkspaceID is the top coordinate of the 3-tuple identity (workspace, project, path). It is a
 // normalized slug (trimmed, lower-cased ASCII, single segment). Mirrors
 // com.agentmemory.core.WorkspaceId; serializes as a bare JSON string.
-type WorkspaceId struct{ value string }
+type WorkspaceID struct{ value string }
 
-// ProjectId is the middle coordinate. Same normal form as WorkspaceId. Mirrors
+// ProjectID is the middle coordinate. Same normal form as WorkspaceID. Mirrors
 // com.agentmemory.core.ProjectId; serializes as a bare JSON string.
-type ProjectId struct{ value string }
+type ProjectID struct{ value string }
 
 // PagePath is the innermost coordinate: a project-root-relative wiki page path in canonical form
 // (see normalizePagePath). Mirrors com.agentmemory.core.PagePath; serializes as a bare JSON string.
 type PagePath struct{ value string }
 
-// NewWorkspaceID normalizes raw into a WorkspaceId, or returns an error on blank/path-like input.
-func NewWorkspaceID(raw string) (WorkspaceId, error) {
+// NewWorkspaceID normalizes raw into a WorkspaceID, or returns an error on blank/path-like input.
+func NewWorkspaceID(raw string) (WorkspaceID, error) {
 	v, err := normalizeSlug(raw, "workspace")
-	return WorkspaceId{v}, err
+	return WorkspaceID{v}, err
 }
 
-// NewProjectID normalizes raw into a ProjectId, or returns an error on blank/path-like input.
-func NewProjectID(raw string) (ProjectId, error) {
+// NewProjectID normalizes raw into a ProjectID, or returns an error on blank/path-like input.
+func NewProjectID(raw string) (ProjectID, error) {
 	v, err := normalizeSlug(raw, "project")
-	return ProjectId{v}, err
+	return ProjectID{v}, err
 }
 
 // NewPagePath normalizes raw into a PagePath, or returns an error on traversal/empty/NUL input.
@@ -38,8 +38,8 @@ func NewPagePath(raw string) (PagePath, error) {
 }
 
 // String returns the normalized value.
-func (w WorkspaceId) String() string { return w.value }
-func (p ProjectId) String() string   { return p.value }
+func (w WorkspaceID) String() string { return w.value }
+func (p ProjectID) String() string   { return p.value }
 func (p PagePath) String() string    { return p.value }
 
 // FileName returns the final path segment (e.g. "recall.md" for "concepts/recall.md").
@@ -60,11 +60,11 @@ func (p PagePath) TopFolder() string {
 
 // --- JSON: bare normalized string on the wire -----------------------------------------------------
 
-func (w WorkspaceId) MarshalJSON() ([]byte, error) { return json.Marshal(w.value) }
-func (p ProjectId) MarshalJSON() ([]byte, error)   { return json.Marshal(p.value) }
+func (w WorkspaceID) MarshalJSON() ([]byte, error) { return json.Marshal(w.value) }
+func (p ProjectID) MarshalJSON() ([]byte, error)   { return json.Marshal(p.value) }
 func (p PagePath) MarshalJSON() ([]byte, error)    { return json.Marshal(p.value) }
 
-func (w *WorkspaceId) UnmarshalJSON(b []byte) error {
+func (w *WorkspaceID) UnmarshalJSON(b []byte) error {
 	s, err := unmarshalString(b, "workspace")
 	if err != nil {
 		return err
@@ -77,7 +77,7 @@ func (w *WorkspaceId) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (p *ProjectId) UnmarshalJSON(b []byte) error {
+func (p *ProjectID) UnmarshalJSON(b []byte) error {
 	s, err := unmarshalString(b, "project")
 	if err != nil {
 		return err
@@ -116,20 +116,20 @@ func unmarshalString(b []byte, label string) (string, error) {
 // com.agentmemory.core.Identity: serializes as a nested object {workspace, project, path?} with
 // path omitted when nil.
 type Identity struct {
-	Workspace WorkspaceId `json:"workspace"`
-	Project   ProjectId   `json:"project"`
+	Workspace WorkspaceID `json:"workspace"`
+	Project   ProjectID   `json:"project"`
 	// Path is a pointer so a project-scoped identity (nil) omits the field entirely, matching the
 	// server's @JsonInclude(NON_NULL); a page-scoped identity carries a non-nil PagePath.
 	Path *PagePath `json:"path,omitempty"`
 }
 
 // ProjectIdentity builds a project-scoped Identity (no page coordinate).
-func ProjectIdentity(ws WorkspaceId, p ProjectId) Identity {
+func ProjectIdentity(ws WorkspaceID, p ProjectID) Identity {
 	return Identity{Workspace: ws, Project: p}
 }
 
 // PageIdentity builds a page-scoped Identity.
-func PageIdentity(ws WorkspaceId, p ProjectId, path PagePath) Identity {
+func PageIdentity(ws WorkspaceID, p ProjectID, path PagePath) Identity {
 	return Identity{Workspace: ws, Project: p, Path: &path}
 }
 

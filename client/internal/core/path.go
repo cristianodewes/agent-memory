@@ -80,7 +80,7 @@ func hasMDSuffixFold(s string) bool {
 	return strings.EqualFold(s[len(s)-3:], ".md")
 }
 
-// normalizeSlug is the Go twin of WorkspaceId.normalizeSlug: trim, reject blanks and path-like
+// normalizeSlug is the Go twin of WorkspaceId.normalizeSlug (com.agentmemory.core): trim, reject blanks and path-like
 // values (a slug is one directory name), lower-case ASCII for case-insensitive identity.
 func normalizeSlug(raw, label string) (string, error) {
 	trimmed := strings.TrimSpace(raw)
