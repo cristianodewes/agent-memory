@@ -29,6 +29,7 @@ func newRootCmd() *cobra.Command {
 		},
 	})
 	root.AddCommand(newHookCmd())
+	root.AddCommand(newReindexCmd())
 	return root
 }
 

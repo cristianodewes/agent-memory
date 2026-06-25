@@ -3,13 +3,21 @@ package com.agentmemory.wiki;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.errors.GitAPIException;
+import org.eclipse.jgit.diff.DiffEntry;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
+import org.eclipse.jgit.revwalk.RevWalk;
 import org.eclipse.jgit.storage.file.FileRepositoryBuilder;
+import org.eclipse.jgit.treewalk.AbstractTreeIterator;
+import org.eclipse.jgit.treewalk.CanonicalTreeParser;
+import org.eclipse.jgit.treewalk.FileTreeIterator;
 
 /**
  * Commit-on-write over a single git repository covering the whole {@code wiki/} tree (issue #13,
@@ -102,6 +110,68 @@ public final class WikiGit implements AutoCloseable {
         }
     }
 
+    /**
+     * The page files that changed between a git revision and the current working tree — the input to
+     * an incremental reindex (#14). Compares {@code sinceRef}'s tree against the working tree (so both
+     * committed-since-ref and uncommitted edits count), returning absolute paths under the wiki root.
+     *
+     * <p>{@code sinceRef} null/blank means "since the previous commit" ({@code HEAD~1}). When the repo
+     * has no previous commit (only the seed root commit), or {@code sinceRef} cannot be resolved, the
+     * range is taken from the <em>empty tree</em> — i.e. every currently-tracked-or-present file is
+     * reported as modified, which makes a first incremental run behave like a full scan of the tree.
+     *
+     * @param sinceRef a git revision (sha, {@code HEAD~1}, tag, …), or null/blank for {@code HEAD~1}.
+     * @return the modified/added and deleted page files, with the ref actually used.
+     */
+    public synchronized ChangedFiles changedSince(String sinceRef) {
+        String requested = (sinceRef == null || sinceRef.isBlank()) ? "HEAD~1" : sinceRef.trim();
+        try {
+            ObjectId oldId = git.getRepository().resolve(requested + "^{tree}");
+            AbstractTreeIterator oldTree;
+            String usedRef;
+            if (oldId == null) {
+                oldTree = new org.eclipse.jgit.treewalk.EmptyTreeIterator();
+                usedRef = "(empty-tree)";
+            } else {
+                oldTree = treeIteratorFor(oldId);
+                usedRef = requested;
+            }
+
+            List<DiffEntry> diffs = git.diff()
+                    .setOldTree(oldTree)
+                    .setNewTree(new FileTreeIterator(git.getRepository()))
+                    .setShowNameAndStatusOnly(true)
+                    .call();
+
+            List<Path> modified = new ArrayList<>();
+            List<Path> deleted = new ArrayList<>();
+            for (DiffEntry d : diffs) {
+                switch (d.getChangeType()) {
+                    case ADD, MODIFY, COPY -> modified.add(wikiDir.resolve(d.getNewPath()));
+                    case DELETE -> deleted.add(wikiDir.resolve(d.getOldPath()));
+                    case RENAME -> {
+                        deleted.add(wikiDir.resolve(d.getOldPath()));
+                        modified.add(wikiDir.resolve(d.getNewPath()));
+                    }
+                    default -> { /* no other change types from name/status diff */ }
+                }
+            }
+            return new ChangedFiles(usedRef, List.copyOf(modified), List.copyOf(deleted));
+        } catch (IOException | GitAPIException e) {
+            throw new WikiGitException("could not compute changed files since " + requested, e);
+        }
+    }
+
+    private CanonicalTreeParser treeIteratorFor(ObjectId treeId) throws IOException {
+        try (RevWalk walk = new RevWalk(git.getRepository());
+                var reader = git.getRepository().newObjectReader()) {
+            // treeId already resolves to a tree (we asked for ^{tree}); parse it directly.
+            CanonicalTreeParser parser = new CanonicalTreeParser();
+            parser.reset(reader, treeId);
+            return parser;
+        }
+    }
+
     /** @return the underlying JGit handle (for tests / advanced callers). */
     public Git git() {
         return git;
@@ -117,5 +187,19 @@ public final class WikiGit implements AutoCloseable {
     @Override
     public void close() {
         git.close();
+    }
+
+    /**
+     * Result of {@link #changedSince}: the wiki files that changed in a revision range.
+     *
+     * @param sinceRef the ref actually diffed from ({@code "(empty-tree)"} when none resolved).
+     * @param modified absolute paths of added/modified (and rename-target) files under the wiki root.
+     * @param deleted  absolute paths of deleted (and rename-source) files under the wiki root.
+     */
+    public record ChangedFiles(String sinceRef, List<Path> modified, List<Path> deleted) {
+        public ChangedFiles {
+            modified = modified == null ? List.of() : List.copyOf(modified);
+            deleted = deleted == null ? List.of() : List.copyOf(deleted);
+        }
     }
 }
