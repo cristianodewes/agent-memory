@@ -48,7 +48,8 @@ class HookPayloadJsonRoundTripTest {
                 "hook_stop.json",
                 "hook_session_end.json",
                 "hook_extension.json",
-                "hook_minimal.json");
+                "hook_minimal.json",
+                "hook_idempotent.json");
     }
 
     private static JsonNode readFixtureTree(String name) throws IOException {
@@ -94,6 +95,14 @@ class HookPayloadJsonRoundTripTest {
         assertThat(p.kind()).isEqualTo(ObservationKind.OTHER);
         assertThat(p.event()).isEqualTo("deploy.finished");
         assertThat(p.isExtensionEvent()).isTrue();
+    }
+
+    /** The #8 idempotency key survives the round-trip and is exposed when present. */
+    @Test
+    void clientEventIdIsPreserved() throws IOException {
+        HookPayload p =
+                MAPPER.treeToValue(readFixtureTree("hook_idempotent.json"), HookPayload.class);
+        assertThat(p.clientEventId()).isEqualTo("spool-000123");
     }
 
     /** Unknown object fields are ignored on read (forward compatibility, per the contract). */

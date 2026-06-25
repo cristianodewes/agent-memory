@@ -36,9 +36,17 @@
  * secrets/keys/tokens, emails and home-dir paths, plus configurable custom regexes, and enforces a
  * deterministic size cap.
  *
- * <h2>Still scaffolding</h2>
- * The {@code /hook} ingress controller (#8) — which builds a {@code NewObservation} from a
- * {@link com.agentmemory.hooks.HookPayload} and feeds it through the sanitizer — arrives with its own
- * issue.
+ * <h2>Issue #8 — /hook ingestion + backpressure</h2>
+ * {@link com.agentmemory.hooks.IngestService} is the capture pipeline: it assembles a
+ * {@link com.agentmemory.hooks.NewObservation} from a {@link com.agentmemory.hooks.HookPayload}
+ * (flattening the structured fields to one text {@code payload} via
+ * {@link com.agentmemory.hooks.HookPayloadText}, keeping an array {@code toolResponse} verbatim —
+ * Bug A), runs it through the {@link com.agentmemory.hooks.Sanitizer} on the synchronous path, then
+ * hands the {@link com.agentmemory.hooks.Sanitized} value to a <strong>bounded</strong> queue drained
+ * by a single worker thread to the store's writer. A saturated queue yields
+ * {@link com.agentmemory.hooks.IngestStatus#THROTTLED} (HTTP 429, invariant #5); the handler never
+ * blocks the agent. The HTTP surface is {@code com.agentmemory.web.HookController}
+ * ({@code POST /hook}, {@code /hook/batch} with per-item partial-accept). Idempotent replay is the
+ * writer's job (dedupe on {@code clientEventId}); this layer just routes.
  */
 package com.agentmemory.hooks;

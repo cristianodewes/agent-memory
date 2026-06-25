@@ -84,11 +84,24 @@ var hookFixtures = []string{
 	"hook_session_end.json",
 	"hook_extension.json",
 	"hook_minimal.json",
+	"hook_idempotent.json",
 }
 
 func TestHookPayloadFixturesRoundTrip(t *testing.T) {
 	for _, name := range hookFixtures {
 		t.Run(name, func(t *testing.T) { assertPayloadRoundTrips(t, name) })
+	}
+}
+
+// TestClientEventIDRoundTrips pins the #8 idempotency-key field: it survives the round-trip and is
+// surfaced as a non-nil pointer when present in the payload.
+func TestClientEventIDRoundTrips(t *testing.T) {
+	var p Payload
+	if err := json.Unmarshal(readFixture(t, "hook_idempotent.json"), &p); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if p.ClientEventID == nil || *p.ClientEventID != "spool-000123" {
+		t.Fatalf("clientEventId = %v, want \"spool-000123\"", p.ClientEventID)
 	}
 }
 

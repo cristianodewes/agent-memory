@@ -35,25 +35,30 @@ import (
 // (which canonicalizes to KindOther) together with an Extension namespace; the pair
 // (Kind=other, Extension=<ns>, Event=<their name>) records the event without growing the enum (§5.4).
 //
+// Idempotency: ClientEventID is the client's stable per-event id. The client stamps each spooled
+// event with one and re-sends it on a retried drain; the server dedupes on (sessionId, clientEventId)
+// so a replay creates no duplicate observation (#8). Optional — omitted ⇒ the server always inserts.
+//
 // Serialization mirrors the core conventions (docs/contracts/serialization.md): lowerCamelCase
 // fields, nullable fields as pointers with `omitempty` to reproduce @JsonInclude(NON_NULL), value
 // types as bare scalars, timestamps as RFC-3339 Z instants. Field order matches the Java
 // @JsonPropertyOrder for stable, reviewable fixtures (consumers must not depend on order).
 type Payload struct {
-	Event        string               `json:"event"`
-	Kind         core.ObservationKind `json:"kind"`
-	SessionID    core.SessionID       `json:"sessionId"`
-	Workspace    core.WorkspaceID     `json:"workspace"`
-	Project      core.ProjectID       `json:"project"`
-	Cwd          *string              `json:"cwd,omitempty"`
-	Agent        *string              `json:"agent,omitempty"`
-	Title        *string              `json:"title,omitempty"`
-	Body         *string              `json:"body,omitempty"`
-	ToolName     *string              `json:"toolName,omitempty"`
-	ToolInput    *json.RawMessage     `json:"toolInput,omitempty"`
-	ToolResponse *json.RawMessage     `json:"toolResponse,omitempty"`
-	Extension    *string              `json:"extension,omitempty"`
-	Timestamp    time.Time            `json:"timestamp"`
+	Event         string               `json:"event"`
+	Kind          core.ObservationKind `json:"kind"`
+	SessionID     core.SessionID       `json:"sessionId"`
+	Workspace     core.WorkspaceID     `json:"workspace"`
+	Project       core.ProjectID       `json:"project"`
+	Cwd           *string              `json:"cwd,omitempty"`
+	Agent         *string              `json:"agent,omitempty"`
+	Title         *string              `json:"title,omitempty"`
+	Body          *string              `json:"body,omitempty"`
+	ToolName      *string              `json:"toolName,omitempty"`
+	ToolInput     *json.RawMessage     `json:"toolInput,omitempty"`
+	ToolResponse  *json.RawMessage     `json:"toolResponse,omitempty"`
+	Extension     *string              `json:"extension,omitempty"`
+	ClientEventID *string              `json:"clientEventId,omitempty"`
+	Timestamp     time.Time            `json:"timestamp"`
 }
 
 // NewPayload builds a project-scoped hook payload, canonicalizing event to its core.ObservationKind
