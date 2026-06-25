@@ -151,6 +151,21 @@ public class McpConfiguration {
     }
 
     /**
+     * The {@code memory_lint} tool (issue #29) over the {@link com.agentmemory.curate.MemoryLintService}
+     * bean wired by {@code CuratorConfiguration}. DataSource-gated and injecting the service directly —
+     * the same shape as {@code memorySweepTools} over the cross-configuration
+     * {@link com.agentmemory.forget.ForgetSweepService} — so it is present in every wired context (the
+     * lint service exists whenever a DataSource + the required LLM do) and absent in the DB-less smoke
+     * context. (A cross-configuration {@code @ConditionalOnBean} would be auto-config-ordering fragile.)
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public LintTools lintTools(
+            com.agentmemory.curate.MemoryLintService lint, ScopeResolver scopes) {
+        return new LintTools(lint, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The Streamable-HTTP transport provider (a Jakarta servlet). Built with the Jackson-3 JSON
      * mapper and the {@code /mcp} endpoint.
      */
@@ -192,7 +207,8 @@ public class McpConfiguration {
             MemoryWriteTools writeTools,
             MemorySweepTools sweepTools,
             ObjectProvider<HandoffTools> handoffTools,
-            ObjectProvider<ConsolidationTools> consolidationTools) {
+            ObjectProvider<ConsolidationTools> consolidationTools,
+            ObjectProvider<LintTools> lintTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
         specs.addAll(sweepTools.all());
@@ -203,6 +219,10 @@ public class McpConfiguration {
         ConsolidationTools consolidation = consolidationTools.getIfAvailable();
         if (consolidation != null) {
             specs.addAll(consolidation.all());
+        }
+        LintTools lints = lintTools.getIfAvailable();
+        if (lints != null) {
+            specs.addAll(lints.all());
         }
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")

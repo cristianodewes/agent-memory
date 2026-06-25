@@ -265,6 +265,12 @@ class McpEndpointTest {
         UUID projId = UUID.randomUUID();
         jdbc().update("INSERT INTO projects (id, workspace_id, workspace, slug) VALUES (?, ?, ?, ?)",
                 projId, wsId, ws, proj);
+        seedPageRow(wsId, projId, ws, proj, path, title, body);
+    }
+
+    /** Insert one latest page row under an already-existing project. */
+    private void seedPageRow(
+            UUID wsId, UUID projId, String ws, String proj, String path, String title, String body) {
         jdbc().update("INSERT INTO pages (id, workspace_id, project_id, workspace, project, path, "
                         + "title, body, is_latest, access_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 0)",
                 UUID.randomUUID(), wsId, projId, ws, proj, path, title, body);
@@ -311,6 +317,35 @@ class McpEndpointTest {
         }
         assertThat(alpha).as("alpha project reached by global query").isTrue();
         assertThat(beta).as("beta project reached by global query").isTrue();
+    }
+
+    // --- memory_lint (issue #29) -------------------------------------------------------------------
+
+    @Test
+    void memoryLintReportsRuleFindingsAndStagesALintPage() {
+        // Two same-title pages in ONE fresh project -> a DUPLICATE_TITLE rule finding.
+        String ws = "ws" + UUID.randomUUID().toString().replace("-", "");
+        UUID wsId = UUID.randomUUID();
+        UUID projId = UUID.randomUUID();
+        jdbc().update("INSERT INTO workspaces (id, slug) VALUES (?, ?)", wsId, ws);
+        jdbc().update("INSERT INTO projects (id, workspace_id, workspace, slug) VALUES (?, ?, ?, ?)",
+                projId, wsId, ws, "app");
+        seedPageRow(wsId, projId, ws, "app", "concepts/a.md", "Recall design", "body a");
+        seedPageRow(wsId, projId, ws, "app", "concepts/b.md", "recall design", "body b");
+
+        // Rule-only preview: no LLM, nothing written.
+        JsonNode preview = json(call("memory_lint", Map.of(
+                "workspace", ws, "project", "app", "dry_run", true, "contradictions", false)));
+        assertThat(preview.get("dryRun").asBoolean()).isTrue();
+        assertThat(preview.get("written").asBoolean()).isFalse();
+        assertThat(preview.get("ruleFindings")).anySatisfy(
+                f -> assertThat(f.get("rule").asString()).isEqualTo("DUPLICATE_TITLE"));
+
+        // Stage it: a _lint/ report page is written.
+        JsonNode staged = json(call("memory_lint", Map.of(
+                "workspace", ws, "project", "app", "dry_run", false, "contradictions", false)));
+        assertThat(staged.get("written").asBoolean()).isTrue();
+        assertThat(staged.get("lintPath").asString()).isEqualTo("_lint/report.md");
     }
 
     // --- memory_read_page --------------------------------------------------------------------------
