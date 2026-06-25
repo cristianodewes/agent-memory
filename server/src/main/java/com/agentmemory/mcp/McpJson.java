@@ -34,6 +34,11 @@ final class McpJson {
         return Map.of("type", "integer", "description", description);
     }
 
+    /** A boolean property descriptor for an input schema. */
+    static Map<String, Object> boolProp(String description) {
+        return Map.of("type", "boolean", "description", description);
+    }
+
     /**
      * Build a JSON-Schema object {@code Map} for a tool's input.
      *

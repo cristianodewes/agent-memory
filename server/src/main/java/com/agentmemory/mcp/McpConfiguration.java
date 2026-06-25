@@ -109,6 +109,18 @@ public class McpConfiguration {
     }
 
     /**
+     * The {@code memory_forget_sweep} tool (issue #25). Built here (where the package-private
+     * {@link McpJson} helper lives) over the {@link com.agentmemory.forget.ForgetSweepService} bean
+     * wired by {@code ForgetConfiguration}. DataSource-gated like the rest.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public MemorySweepTools memorySweepTools(
+            com.agentmemory.forget.ForgetSweepService sweep, ScopeResolver scopes) {
+        return new MemorySweepTools(sweep, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The Streamable-HTTP transport provider (a Jakarta servlet). Built with the Jackson-3 JSON
      * mapper and the {@code /mcp} endpoint.
      */
@@ -148,9 +160,11 @@ public class McpConfiguration {
             HttpServletStreamableServerTransportProvider transportProvider,
             MemoryTools tools,
             MemoryWriteTools writeTools,
+            MemorySweepTools sweepTools,
             ObjectProvider<HandoffTools> handoffTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
+        specs.addAll(sweepTools.all());
         HandoffTools handoff = handoffTools.getIfAvailable();
         if (handoff != null) {
             specs.addAll(handoff.all());
@@ -165,11 +179,12 @@ public class McpConfiguration {
                                 + "memory_status/memory_briefing for a project snapshot. Write (only when "
                                 + "the user explicitly asks to remember or delete): memory_write_page "
                                 + "creates/updates a durable page, memory_delete_page removes one by "
-                                + "path. Handoffs: memory_handoff_accept picks up where the previous "
-                                + "agent left off (single-use), memory_handoff_begin opens one "
-                                + "explicitly, memory_handoff_cancel expires a mistaken one. Scope "
-                                + "defaults to the most recently active project; pass workspace+project "
-                                + "to override.")
+                                + "path. Maintenance: memory_forget_sweep evicts cold pages (soft-delete "
+                                + "then purge; pass dry_run=true to preview). Handoffs: "
+                                + "memory_handoff_accept picks up where the previous agent left off "
+                                + "(single-use), memory_handoff_begin opens one explicitly, "
+                                + "memory_handoff_cancel expires a mistaken one. Scope defaults to the "
+                                + "most recently active project; pass workspace+project to override.")
                 .tools(specs)
                 .build();
     }
