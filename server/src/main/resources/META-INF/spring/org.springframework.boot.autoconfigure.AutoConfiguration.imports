@@ -5,4 +5,5 @@ com.agentmemory.recall.RecallConfiguration
 com.agentmemory.reindex.ReindexConfiguration
 com.agentmemory.mcp.McpConfiguration
 com.agentmemory.lifecycle.LifecycleConfiguration
+com.agentmemory.web.WebConfiguration
 com.agentmemory.consolidate.ConsolidateConfiguration
