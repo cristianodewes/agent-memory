@@ -61,6 +61,14 @@ public final class PostgresObservationWriter implements ObservationWriter {
     private final TransactionTemplate tx;
 
     /**
+     * Optional file side effect (issue #11): the {@code log.md} append + immutable {@code raw/} write,
+     * run inside the transaction after a new row is inserted so the row, ledger line and raw entry
+     * commit (or roll back) together. {@code null} means DB-only (the wiki layer is absent, e.g. the
+     * smoke configuration or a pure unit test).
+     */
+    private final ObservationSideEffect sideEffect;
+
+    /**
      * Serializes every {@link #append} so writes never interleave (invariant #2). The lock is held
      * across the whole transaction (commit included), so two appends can never be in-flight at once
      * regardless of how many threads call in. Fair ordering keeps a high-throughput drain from
@@ -69,14 +77,30 @@ public final class PostgresObservationWriter implements ObservationWriter {
     private final ReentrantLock writeLock = new ReentrantLock(true);
 
     /**
+     * DB-only writer (no file side effect) — used by the smoke configuration and pure unit tests.
+     *
      * @param jdbc      the JDBC access template bound to the single application {@code DataSource}.
      * @param txManager the JDBC transaction manager over the same {@code DataSource}; the
      *     multi-statement write runs in a transaction from it so a mid-sequence failure rolls back the
      *     session/observation/audit together.
      */
     public PostgresObservationWriter(JdbcTemplate jdbc, PlatformTransactionManager txManager) {
+        this(jdbc, txManager, null);
+    }
+
+    /**
+     * Writer with an optional file side effect (issue #11).
+     *
+     * @param jdbc       the JDBC access template bound to the single application {@code DataSource}.
+     * @param txManager  the JDBC transaction manager over the same {@code DataSource}.
+     * @param sideEffect the {@code log.md} + {@code raw/} writer run inside the transaction after a new
+     *     row is inserted, or {@code null} for DB-only.
+     */
+    public PostgresObservationWriter(
+            JdbcTemplate jdbc, PlatformTransactionManager txManager, ObservationSideEffect sideEffect) {
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(txManager);
+        this.sideEffect = sideEffect;
     }
 
     @Override
@@ -105,7 +129,9 @@ public final class PostgresObservationWriter implements ObservationWriter {
 
                 if (inserted) {
                     writeAudit(observationId, workspace, project, obs);
-                    return toDomain(observationId, obs);
+                    Observation persisted = toDomain(observationId, obs);
+                    runSideEffect(persisted);
+                    return persisted;
                 }
                 // Idempotent replay: the (session_id, client_event_id) row already exists. Return the
                 // stored observation unchanged — no duplicate row, no second audit entry.
@@ -116,6 +142,26 @@ public final class PostgresObservationWriter implements ObservationWriter {
             });
         } finally {
             writeLock.unlock();
+        }
+    }
+
+    /**
+     * Run the optional #11 file side effect inside the transaction. A failure is rethrown so the
+     * surrounding {@code tx.execute} rolls the observation/session/audit rows back — the row and its
+     * {@code log.md}/{@code raw/} writes are one logical operation (DD-002; invariants #3, #10).
+     */
+    private void runSideEffect(Observation persisted) {
+        if (sideEffect == null) {
+            return;
+        }
+        try {
+            sideEffect.afterObservationWritten(persisted);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new ObservationWriteException(
+                    "session-log/raw side effect failed for observation " + persisted.id().value()
+                            + "; rolling back the observation write", e);
         }
     }
 

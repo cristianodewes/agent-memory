@@ -58,6 +58,20 @@ public class WikiConfiguration {
     }
 
     /**
+     * The session ledger + immutable raw archive (issue #11). Exposed as an
+     * {@link com.agentmemory.store.ObservationSideEffect} so the {@code store} single writer picks it
+     * up (via an {@code ObjectProvider}) and runs the {@code log.md}/{@code raw/} writes inside the
+     * observation-write transaction — so the row and the file writes commit (or roll back) together.
+     * It performs no git commit of its own: {@code log.md} rides into history on the next wiki
+     * commit-on-write (#13). Always available (it needs only the resolved data-dir layout), independent
+     * of whether a {@code DataSource} exists; the writer that consumes it is itself DataSource-gated.
+     */
+    @Bean
+    public SessionLog sessionLog(WikiPaths wikiPaths, AgentMemoryConfig config) {
+        return new SessionLog(wikiPaths, config.rawDir());
+    }
+
+    /**
      * The external-edit watcher. Present only when there is a {@link PageRepository} to reconcile
      * into (i.e. a DataSource is configured) and not explicitly disabled. Started on context
      * refresh and closed on shutdown (its {@code close()} stops the watch thread).
