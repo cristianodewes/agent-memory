@@ -1,7 +1,9 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.consolidate.Consolidator;
 import com.agentmemory.consolidate.MemoryExplore;
+import com.agentmemory.core.ActorResolver;
 import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
@@ -57,10 +59,18 @@ public class McpConfiguration {
         return new McpReadRepository(jdbcTemplate);
     }
 
+    /**
+     * The MCP scope resolver (DD-003), configured with the {@code auto_scope} isolation mode (#39). In
+     * {@link com.agentmemory.config.AutoScope#PER_ACTOR PER_ACTOR} mode it reads the authenticated
+     * caller from the {@link ActorResolver} (resolved via an {@link ObjectProvider} so a context
+     * without the security auto-config still wires — it then never attributes, i.e. global default).
+     */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public ScopeResolver mcpScopeResolver(McpReadRepository reads) {
-        return new ScopeResolver(reads);
+    public ScopeResolver mcpScopeResolver(
+            McpReadRepository reads, AgentMemoryConfig config, ObjectProvider<ActorResolver> actors) {
+        return new ScopeResolver(
+                reads, config.scope().auto(), actors.getIfAvailable(() -> ActorResolver.NONE));
     }
 
     @Bean

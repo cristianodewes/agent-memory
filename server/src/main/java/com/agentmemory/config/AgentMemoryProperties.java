@@ -27,6 +27,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param sanitization privacy-strip tuning (size cap + custom patterns) — boundary in #9.
  * @param ingest       /hook ingest backpressure tuning (bounded queue + worker) — #8.
  * @param decay        layered-memory decay/retention tuning (λ, σ, μ + cold threshold) — #24.
+ * @param scope        multi-user scope-isolation tuning (the {@code auto_scope} mode) — #39.
  */
 @ConfigurationProperties(prefix = "agent-memory")
 public record AgentMemoryProperties(
@@ -38,7 +39,8 @@ public record AgentMemoryProperties(
         @DefaultValue Auth auth,
         @DefaultValue Sanitization sanitization,
         @DefaultValue Ingest ingest,
-        @DefaultValue Decay decay) {
+        @DefaultValue Decay decay,
+        @DefaultValue Scope scope) {
 
     /**
      * HTTP server surface.
@@ -296,6 +298,25 @@ public record AgentMemoryProperties(
             if (!(value >= 0) || !Double.isFinite(value)) {
                 throw new IllegalArgumentException(
                         "agent-memory.decay." + key + " must be a finite value >= 0, was " + value);
+            }
+        }
+    }
+
+    /**
+     * Multi-user scope isolation (issue #39). Governs the <em>default</em> {@code (workspace, project)}
+     * an MCP tool resolves to when a call gives no explicit scope (DD-003). Independent of the decay
+     * and auth groups so single-user setups can ignore it entirely (the default is the prior behavior).
+     *
+     * @param auto the {@link AutoScope} mode; defaults to {@link AutoScope#SINGLE_SLOT} (the server's
+     *     globally most-recent project — unchanged single-user behavior). {@link AutoScope#PER_ACTOR}
+     *     scopes the default to the authenticated user's own most-recent activity. Bound from
+     *     {@code agent-memory.scope.auto}.
+     */
+    public record Scope(@DefaultValue("single_slot") AutoScope auto) {
+
+        public Scope {
+            if (auto == null) {
+                auto = AutoScope.SINGLE_SLOT;
             }
         }
     }

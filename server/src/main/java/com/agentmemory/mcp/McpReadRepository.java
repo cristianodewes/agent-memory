@@ -27,22 +27,46 @@ public class McpReadRepository {
     /**
      * Resolve the most recently active project from hook capture — the latest of any observation or
      * session across the store (DD-003). Used as the default scope when an MCP request gives no
-     * explicit {@code workspace}/{@code project}.
+     * explicit {@code workspace}/{@code project}. This is the {@code single_slot} default.
      *
      * @return the most-recently-active {@code (workspace, project)}, or empty if nothing captured yet.
      */
     @Transactional(readOnly = true)
     public Optional<Scope> mostRecentActivityScope() {
-        // Union the newest observation and newest session, pick the overall newest (wsq), and read its
-        // identity slugs. observations.created_at and sessions.started_at are the activity timestamps.
+        return mostRecentActivityScope(null);
+    }
+
+    /**
+     * Most recently active project, optionally restricted to one {@code actor} — the {@code per_actor}
+     * isolation of issue #39's {@code auto_scope}. With {@code actor == null}/blank this is the global
+     * newest activity ({@code single_slot}, identical to {@link #mostRecentActivityScope()}). With an
+     * actor, only that user's {@code observations} are considered — {@code sessions} carry no actor — so
+     * a shared server resolves each user's no-scope call to their own lane.
+     *
+     * @param actor the authenticated user to restrict to, or {@code null}/blank for global.
+     * @return the most-recently-active {@code (workspace, project)}, or empty if none matches.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Scope> mostRecentActivityScope(String actor) {
         try {
+            if (actor == null || actor.isBlank()) {
+                // Global: union the newest observation and newest session, pick the overall newest, and
+                // read its identity slugs. observations.created_at / sessions.started_at are the
+                // activity timestamps.
+                return Optional.ofNullable(jdbc.queryForObject(
+                        "SELECT workspace, project FROM ( "
+                                + "  SELECT workspace, project, created_at AS at FROM observations "
+                                + "  UNION ALL "
+                                + "  SELECT workspace, project, started_at AS at FROM sessions "
+                                + ") activity ORDER BY at DESC NULLS LAST LIMIT 1",
+                        (rs, n) -> Scope.of(rs.getString("workspace"), rs.getString("project"))));
+            }
+            // Per-actor: only observations are attributed, so pick this user's newest observation.
             return Optional.ofNullable(jdbc.queryForObject(
-                    "SELECT workspace, project FROM ( "
-                            + "  SELECT workspace, project, created_at AS at FROM observations "
-                            + "  UNION ALL "
-                            + "  SELECT workspace, project, started_at AS at FROM sessions "
-                            + ") activity ORDER BY at DESC NULLS LAST LIMIT 1",
-                    (rs, n) -> Scope.of(rs.getString("workspace"), rs.getString("project"))));
+                    "SELECT workspace, project FROM observations WHERE actor = ? "
+                            + "ORDER BY created_at DESC LIMIT 1",
+                    (rs, n) -> Scope.of(rs.getString("workspace"), rs.getString("project")),
+                    actor));
         } catch (EmptyResultDataAccessException e) {
             return Optional.empty();
         }

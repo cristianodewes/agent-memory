@@ -27,7 +27,8 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Auth(false, "", java.util.List.of(), ""),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
-                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7),
+                new AgentMemoryProperties.Scope(com.agentmemory.config.AutoScope.SINGLE_SLOT));
     }
 
     // --- canonicalization ----------------------------------------------------------------------
@@ -146,6 +147,27 @@ class AgentMemoryConfigTest {
             AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(false, "", java.util.List.of(), ""));
             // Enabled with a token.
             AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(true, "tok", java.util.List.of(), ""));
+        }).doesNotThrowAnyException();
+    }
+
+    // --- auto_scope fail-fast (#39) ------------------------------------------------------------
+
+    @Test
+    void failsFastOnUnsupportedSessionAwareAutoScope() {
+        // session_aware must abort startup with a clear error, never silently degrade to single_slot
+        // (a silent fall-back to the global scope would leak activity across sessions on a shared server).
+        assertThatThrownBy(() -> AgentMemoryConfig.validateScope(
+                new AgentMemoryProperties.Scope(AutoScope.SESSION_AWARE)))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("session_aware is not yet supported")
+                .hasMessageContaining("per_actor");
+    }
+
+    @Test
+    void scopeValidationPassesForSupportedModes() {
+        assertThatCode(() -> {
+            AgentMemoryConfig.validateScope(new AgentMemoryProperties.Scope(AutoScope.SINGLE_SLOT));
+            AgentMemoryConfig.validateScope(new AgentMemoryProperties.Scope(AutoScope.PER_ACTOR));
         }).doesNotThrowAnyException();
     }
 
