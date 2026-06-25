@@ -83,6 +83,25 @@ public final class Sanitizer {
     }
 
     /**
+     * Apply the same redaction pipeline (secrets/keys/tokens, emails, home-dir paths, then any
+     * configured custom patterns) to free text that is <em>not</em> a hook observation — the explicit
+     * durable-write admission path ({@code memory_write_page}, issue #20). A page the user asks to
+     * remember must still be privacy-stripped (invariant #6: no special-case bypass of redaction), but
+     * it deliberately does <strong>not</strong> get the observation size-cap (a durable page may be
+     * long) and is not wrapped as {@link Sanitized}{@code <NewObservation>} — that type is the store's
+     * <em>capture</em> boundary, a different trust context from content the user authored on purpose.
+     *
+     * @param text input text; never null.
+     * @return the text with every redactor applied in order (no truncation).
+     */
+    public String redactText(String text) {
+        if (text == null) {
+            throw new IllegalArgumentException("cannot redact null text");
+        }
+        return redact(text);
+    }
+
+    /**
      * Run the full redaction pipeline over an arbitrary string. Exposed (package-private) for the
      * redaction unit tests; the boundary guarantee is on {@link #sanitize}.
      *
