@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/cristianodewes/agent-memory/client/internal/config"
+	"github.com/cristianodewes/agent-memory/client/internal/core"
 	"github.com/cristianodewes/agent-memory/client/internal/identity"
 	"github.com/cristianodewes/agent-memory/client/internal/install"
 	"github.com/spf13/cobra"
@@ -26,9 +27,18 @@ type resolved struct {
 	bin          string
 	serverURL    string
 	token        string
+	workspace    string // normalized identity slug, for the per-session MCP header (#87)
+	project      string // normalized identity slug, for the per-session MCP header (#87)
 	settingsPath string
 	mcpPath      string
 	instrPath    string
+}
+
+// sessionHeaderCommand is the headersHelper command baked into this project's .mcp.json so Claude Code
+// emits the per-session X-Agent-Memory-Session header (#87). Empty when identity did not normalize, so
+// the MCP entry is still written (just without the header).
+func (r resolved) sessionHeaderCommand() string {
+	return install.McpSessionHeaderCommand(r.bin, r.workspace, r.project)
 }
 
 func (f installFlags) resolve() (resolved, error) {
@@ -62,6 +72,11 @@ func (f installFlags) resolve() (resolved, error) {
 		token = f.token
 	}
 
+	// Normalize identity to the SAME slugs the hook attributes events under, so the per-session header
+	// command (#87) reads back the file the SessionStart hook writes. A non-normalizable name (rare for
+	// a derived basename) leaves the slugs empty, and the MCP entry is written without the header.
+	workspace, project := normalizedIdentity(id)
+
 	file := f.file
 	if file == "" {
 		file = "CLAUDE.md"
@@ -72,10 +87,25 @@ func (f installFlags) resolve() (resolved, error) {
 		bin:          bin,
 		serverURL:    serverURL,
 		token:        token,
+		workspace:    workspace,
+		project:      project,
 		settingsPath: install.SettingsPath(root),
 		mcpPath:      install.McpPath(root),
 		instrPath:    filepath.Join(root, file),
 	}, nil
+}
+
+// normalizedIdentity returns the (workspace, project) slugs for id, normalized exactly as the hook
+// does (core.NewWorkspaceID/NewProjectID). Either is "" when its raw name does not normalize.
+func normalizedIdentity(id identity.Resolved) (string, string) {
+	var workspace, project string
+	if w, err := core.NewWorkspaceID(id.Workspace); err == nil {
+		workspace = w.String()
+	}
+	if p, err := core.NewProjectID(id.Project); err == nil {
+		project = p.String()
+	}
+	return workspace, project
 }
 
 // report prints "<label>: <change> (<path>)" for one install op.
@@ -126,7 +156,7 @@ func newInstallMcpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			change, err := install.Mcp(r.mcpPath, r.serverURL, r.token)
+			change, err := install.Mcp(r.mcpPath, r.serverURL, r.token, r.sessionHeaderCommand())
 			if err != nil {
 				return err
 			}
@@ -177,7 +207,7 @@ func runSetup(cmd *cobra.Command, r resolved) error {
 	}
 	report(cmd, "hooks", hooks, r.settingsPath)
 
-	mcp, err := install.Mcp(r.mcpPath, r.serverURL, r.token)
+	mcp, err := install.Mcp(r.mcpPath, r.serverURL, r.token, r.sessionHeaderCommand())
 	if err != nil {
 		return err
 	}

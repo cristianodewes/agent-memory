@@ -108,16 +108,37 @@ no security context) and threaded through; synchronous admin mutations resolve i
 thread. Single-user mode is unchanged: with no pepper the lone root token satisfies the admin gate
 and rows carry no actor.
 
-**auto_scope (#39).** `agent-memory.scope.auto` governs the *default* `(workspace, project)` an MCP
-call resolves to when it gives no explicit scope (DD-003): `single_slot` (default) keeps the prior
-behavior — the server's globally most-recent project — while `per_actor` resolves to the
-authenticated caller's *own* most-recent activity (via `observations.actor`), so users on a shared
-server don't default into each other's project. An explicit scope always wins; with no authenticated
-actor `per_actor` falls back to the global default. Selecting the not-yet-supported `session_aware`
-mode is rejected at startup with a clear error (never a silent fall-back to the global scope, which
-would leak activity across sessions). (The `session_aware` mode — which needs a capture-session id
-the MCP tool boundary doesn't yet carry — is the tracked follow-up #87; the OIDC device grant below
-brings the session-bound verified identity it builds on.)
+**auto_scope (#39, #87).** `agent-memory.scope.auto` governs the *default* `(workspace, project)` an
+MCP call resolves to when it gives no explicit scope (DD-003): `single_slot` (default) keeps the prior
+behavior — the server's globally most-recent project — `per_actor` resolves to the authenticated
+caller's *own* most-recent activity (via `observations.actor`), so users on a shared server don't
+default into each other's project, and `session_aware` (#87) narrows that one step further to *this
+capture session's* most-recent activity (via `observations.session_id`), so two sessions of the **same**
+user in different projects default into their own lanes. An explicit scope always wins; with no
+authenticated actor `per_actor` falls back to the global default.
+
+*The session_aware security property (#87): fail closed, never fall back.* Unlike the other modes,
+`session_aware` will **never** silently widen to the global or per-actor scope when it lacks a session
+id — that would leak one session's project into another. If no session id reached the request, a
+no-scope call raises `ScopeUnresolvedException` (a clear error naming the missing `X-Agent-Memory-Session`
+header) rather than guessing. This is the central guarantee, and it holds regardless of how the client
+is wired, so a misconfigured or absent transport degrades to a hard error, not a cross-session leak.
+
+*The transport (how a session id reaches the boundary).* Claude Code does not send its session id to a
+remote MCP server, so #87 carries it explicitly. The native hook — which knows the session id and runs
+in the project tree — records it at SessionStart under `<data_dir>/sessions/<workspace>/<project>`
+(0600). Claude Code's MCP `headersHelper` then runs `agent-memory mcp-session-header` (with the project
+identity baked into its arguments at install time, since the helper runs in an unspecified working
+directory) to read that id back and emit the `X-Agent-Memory-Session` header. On the server an
+`OncePerRequestFilter` validates the header as a UUID and binds it to the request thread; the
+`ScopeResolver` reads it there and queries the per-session most-recent scope. *Isolation guarantee &
+limits:* different projects use different files (keyed by cwd-derived identity), so they isolate
+cleanly — the real win. Two sessions of the same user in the **same** project share one file
+(last-writer-wins); that is a deliberate no-op, because the same project resolves to the same default
+scope either way. And because `headersHelper` runs once per connection at session start, a connection
+that races ahead of the SessionStart write reads the previous session's id (same project → benign) or
+none (→ the fail-closed error above); never another project's scope. The OIDC device grant below brings
+the session-bound verified identity this builds on.
 
 **OIDC device auth for native hooks (#39 PR2).** A native hook runs headless, so it cannot do a
 browser redirect; it uses the OAuth 2.0 Device Authorization Grant (RFC 8628) instead. Setting

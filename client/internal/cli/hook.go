@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cristianodewes/agent-memory/client/internal/apiclient"
+	"github.com/cristianodewes/agent-memory/client/internal/capturesession"
 	"github.com/cristianodewes/agent-memory/client/internal/config"
 	"github.com/cristianodewes/agent-memory/client/internal/core"
 	"github.com/cristianodewes/agent-memory/client/internal/drain"
@@ -109,6 +110,10 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 	// Capture is done and durable. From here on, nothing may fail the command.
 	switch p.Kind {
 	case core.KindSessionStart:
+		// Record this project's current capture session (#87) BEFORE the slow boundary drain, so the
+		// MCP `headersHelper` reads the freshest id with the smallest startup window. Best-effort: a
+		// write failure only means session_aware MCP calls fail-closed on the server, never a leak.
+		recordCaptureSession(cmd, cfg, p)
 		maybeWarnOidcExpired(cmd, oidcExpired)
 		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, true)
 	case core.KindSessionEnd:
@@ -138,6 +143,19 @@ func maybeWarnOidcExpired(cmd *cobra.Command, expired bool) {
 	if expired {
 		fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: your OIDC login has expired; "+
 			"run `agent-memory auth login oidc-device` to re-authenticate")
+	}
+}
+
+// recordCaptureSession records this project's current capture session id (issue #87) so the MCP
+// transport can bind a no-scope tool call to the right session under auto_scope=session_aware. It is
+// keyed by the SAME normalized (workspace, project) the event was attributed to, so the
+// `mcp-session-header` command — invoked by Claude Code's headersHelper with that identity baked in at
+// install time — reads back exactly this id. Best-effort and non-fatal: capture has already succeeded,
+// and on any error the server simply fails closed (session_aware never defaults to a global scope).
+func recordCaptureSession(cmd *cobra.Command, cfg config.Config, p hook.Payload) {
+	if err := capturesession.Write(
+		cfg.DataDir, p.Workspace.String(), p.Project.String(), p.SessionID.String()); err != nil {
+		fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: record capture session:", err)
 	}
 }
 
