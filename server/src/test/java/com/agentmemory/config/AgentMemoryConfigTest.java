@@ -26,7 +26,8 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Embeddings(ProviderAuth.NONE),
                 new AgentMemoryProperties.Auth(false, ""),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
-                new AgentMemoryProperties.Ingest(1024, 0));
+                new AgentMemoryProperties.Ingest(1024, 0),
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
     }
 
     // --- canonicalization ----------------------------------------------------------------------
@@ -125,5 +126,37 @@ class AgentMemoryConfigTest {
         assertThatThrownBy(() -> AgentMemoryConfig.resolve(propsWithDataDir(target.toString())))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("Could not create data dir");
+    }
+
+    // --- decay tuning (#24) --------------------------------------------------------------------
+
+    @Test
+    void decayDefaultsAreExposedThroughTheResolvedConfig(@TempDir Path tmp) {
+        AgentMemoryConfig config = AgentMemoryConfig.resolve(propsWithDataDir(tmp.toString()));
+        AgentMemoryProperties.Decay decay = config.decay();
+        assertThat(decay.lambda()).isEqualTo(0.02);
+        assertThat(decay.sigma()).isEqualTo(1.0);
+        assertThat(decay.mu()).isEqualTo(0.01);
+        assertThat(decay.defaultSalience()).isEqualTo(1.0);
+        assertThat(decay.coldThreshold()).isEqualTo(0.05);
+    }
+
+    @Test
+    void decayRejectsNegativeRatesAndNonPositiveSalience() {
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(-0.01, 1.0, 0.01, 1.0, 0.05))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("lambda");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, -1.0, 0.01, 1.0, 0.05))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("sigma");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, -0.01, 1.0, 0.05))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("mu");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 0.0, 0.05))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("default-salience");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, -0.05))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("cold-threshold");
     }
 }

@@ -3,6 +3,7 @@ package com.agentmemory.wiki;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentmemory.core.Identity;
+import com.agentmemory.core.MemoryLayer;
 import com.agentmemory.core.Page;
 import com.agentmemory.core.PageId;
 import com.agentmemory.core.PagePath;
@@ -67,7 +68,8 @@ class WikiWriterTest {
                 WorkspaceId.of("ws"), ProjectId.of("p"), PagePath.of("decisions/storage.md"));
         Page page = new Page(PageId.newId(), id, "Storage decision", "body\n", true, null,
                 Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-02T00:00:00Z"));
-        MarkdownDocument document = WikiWriter.toDocument(new PageRecord(page, 0, null));
+        MarkdownDocument document =
+                WikiWriter.toDocument(new PageRecord(page, MemoryLayer.SEMANTIC, 0, null));
 
         assertThat(document.frontmatter().kind()).isEqualTo(PageKind.DECISION);
         assertThat(document.frontmatter().title()).isEqualTo("Storage decision");
@@ -85,7 +87,8 @@ class WikiWriterTest {
         Page page = new Page(PageId.newId(), id, "Identity", "who I am\n", true, null,
                 Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-02T00:00:00Z"));
 
-        MarkdownDocument document = WikiWriter.toDocument(new PageRecord(page, 0, null));
+        MarkdownDocument document =
+                WikiWriter.toDocument(new PageRecord(page, MemoryLayer.SEMANTIC, 0, null));
 
         assertThat(document.frontmatter().kind()).isEqualTo(PageKind.SLOT);
         assertThat(document.frontmatter().pinned()).as("slots are auto-pinned").isTrue();

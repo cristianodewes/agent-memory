@@ -1,9 +1,13 @@
 package com.agentmemory.store;
 
+import com.agentmemory.config.AgentMemoryConfig;
+import com.agentmemory.config.AgentMemoryProperties;
+import java.time.Clock;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.jdbc.autoconfigure.DataSourceTransactionManagerAutoConfiguration;
 import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
@@ -12,13 +16,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.PlatformTransactionManager;
 
 /**
- * Wires the {@code store} beans (issues #12, #8). They need a JDBC {@link DataSource} /
- * {@link JdbcTemplate}; each is registered only when one is present
+ * Wires the {@code store} beans (issues #12, #8, #24). The DB-backed beans
+ * ({@link #pageRepository}, {@link #observationWriter}) need a JDBC {@link DataSource} /
+ * {@link JdbcTemplate} and are each registered only when one is present
  * ({@link ConditionalOnSingleCandidate}) — the same gate Spring Boot's own
  * {@code JdbcTemplateAutoConfiguration} uses for the {@code JdbcTemplate} itself. This keeps the
  * DB-less smoke test (which excludes {@code DataSourceAutoConfiguration}) loading cleanly, while
  * production and the Testcontainers integration tests, where a DataSource exists, get fully wired
- * beans.
+ * beans. The pure-math {@link #retentionScorer} (#24) has no DataSource dependency and is always
+ * registered, so recall (#15) and the forget sweep (#25) share one decay implementation regardless
+ * of whether a DB is wired.
  *
  * <p>Declared as an {@link AutoConfiguration} ordered {@link AutoConfigureAfter} the JDBC + tx-manager
  * auto-configurations (and listed in {@code META-INF/spring/.../AutoConfiguration.imports}) so the
@@ -75,5 +82,38 @@ public class StoreConfiguration {
             PlatformTransactionManager txManager,
             ObjectProvider<ObservationSideEffect> sideEffect) {
         return new PostgresObservationWriter(jdbcTemplate, txManager, sideEffect.getIfAvailable());
+    }
+
+    /**
+     * The clock the decay math reads "now" from (UTC). Declared
+     * {@link ConditionalOnMissingBean @ConditionalOnMissingBean} so a test can substitute a fixed
+     * clock to assert the decay curve over elapsed time deterministically.
+     *
+     * @return the system UTC clock.
+     */
+    @Bean
+    @ConditionalOnMissingBean(Clock.class)
+    public Clock retentionClock() {
+        return Clock.systemUTC();
+    }
+
+    /**
+     * The shared retention/decay scorer (issue #24, ARCHITECTURE §3.3) — the single implementation of
+     * the {@code salience·exp(−λ·Δt) + σ·log(1+access)·exp(−μ·days_since_access)} curve that recall
+     * ranking (#15) and the forget sweep (#25) both consume. Its λ/σ/μ + cold threshold come from the
+     * single config (#2) via {@link AgentMemoryConfig}; no DataSource is required, so it is always
+     * available.
+     *
+     * @param config the resolved server config (source of the decay knobs).
+     * @param clock  the clock "now" is read from.
+     * @return the retention scorer.
+     */
+    @Bean
+    @ConditionalOnMissingBean(RetentionScorer.class)
+    public RetentionScorer retentionScorer(AgentMemoryConfig config, Clock clock) {
+        AgentMemoryProperties.Decay d = config.decay();
+        RetentionParameters params = new RetentionParameters(
+                d.lambda(), d.sigma(), d.mu(), d.defaultSalience(), d.coldThreshold());
+        return new RetentionScorer(params, clock);
     }
 }

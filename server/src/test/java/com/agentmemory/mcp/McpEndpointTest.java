@@ -144,10 +144,12 @@ class McpEndpointTest {
     @Test
     void listsTheFiveReadOnlyTools() {
         List<Tool> tools = client.listTools().tools();
-        assertThat(tools).extracting(Tool::name).contains(
+        List<String> readTools = List.of(
                 "memory_query", "memory_recent", "memory_read_page", "memory_status", "memory_briefing");
-        // every advertised tool is flagged read-only
-        assertThat(tools).filteredOn(t -> t.name().startsWith("memory_"))
+        assertThat(tools).extracting(Tool::name).containsAll(readTools);
+        // each of the five read tools is flagged read-only (write tools, #20, are not — covered by
+        // McpWriteEndpointTest).
+        assertThat(tools).filteredOn(t -> readTools.contains(t.name()))
                 .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isTrue());
     }
 
