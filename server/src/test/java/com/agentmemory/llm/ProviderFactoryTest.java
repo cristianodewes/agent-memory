@@ -62,16 +62,27 @@ class ProviderFactoryTest {
     }
 
     @Test
-    void openAiProviderIsRegisteredButStubbed() {
+    void selectsOpenAiProviderWithDefaultEndpoint() {
+        // 'openai' resolves a real provider that defaults to the OpenAI endpoint/model (issue #46).
+        // Construction only — no network call; the round-trip is covered in OpenAiCompatLlmProviderTest.
         ProviderAuth auth = new ProviderAuth("openai", "sk-x", null, null);
 
         LlmProvider provider = factory.createLlmProvider(auth);
 
         assertThat(provider).isInstanceOf(OpenAiCompatLlmProvider.class);
-        // Registered (so #40 can fill it in) but any call fails fast rather than silently degrading.
-        assertThatThrownBy(provider::probe)
+        assertThat(provider.id()).isEqualTo("openai");
+        assertThat(provider.model()).isEqualTo(OpenAiCompatLlmProvider.DEFAULT_MODEL);
+    }
+
+    @Test
+    void selectsOpenAiCompatAndFailsFastWithoutBaseUrl() {
+        // 'openai-compat' is registered and requires an explicit base_url — fail fast at construction.
+        assertThat(factory.llmProviderKeys()).contains("openai-compat");
+
+        ProviderAuth noBase = new ProviderAuth("openai-compat", "sk-x", null, null);
+        assertThatThrownBy(() -> factory.createLlmProvider(noBase))
                 .isInstanceOf(LlmException.class)
-                .hasMessageContaining("not implemented");
+                .hasMessageContaining("requires an explicit base URL");
     }
 
     @Test

@@ -1,10 +1,12 @@
 package com.agentmemory.llm;
 
+import com.sun.net.httpserver.Headers;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -22,6 +24,10 @@ final class StubHttpServer implements AutoCloseable {
 
     private final HttpServer server;
     private final AtomicReference<String> lastRequestBody = new AtomicReference<>();
+    private final AtomicReference<Headers> lastRequestHeaders = new AtomicReference<>();
+    private final AtomicReference<String> lastRequestPath = new AtomicReference<>();
+    private final java.util.List<String> bodies =
+            java.util.Collections.synchronizedList(new java.util.ArrayList<>());
 
     private StubHttpServer(HttpServer server) {
         this.server = server;
@@ -37,6 +43,9 @@ final class StubHttpServer implements AutoCloseable {
         server.createContext("/", (HttpExchange exchange) -> {
             String requestBody = readBody(exchange);
             stub.lastRequestBody.set(requestBody);
+            stub.lastRequestHeaders.set(exchange.getRequestHeaders());
+            URI uri = exchange.getRequestURI();
+            stub.lastRequestPath.set(uri == null ? null : uri.getPath());
             byte[] response = responder.apply(requestBody).getBytes(StandardCharsets.UTF_8);
             exchange.getResponseHeaders().set("content-type", "application/json");
             exchange.sendResponseHeaders(status, response.length);
@@ -53,6 +62,41 @@ final class StubHttpServer implements AutoCloseable {
         return start(status, req -> body);
     }
 
+    /**
+     * Start a stub that replays a fixed sequence of {@code (status, body)} responses, one per request
+     * (the last entry is repeated if more requests arrive). Lets a test drive the structured-output
+     * fallback: first call returns {@code 400} (json_schema unsupported), second returns {@code 200}.
+     */
+    static StubHttpServer startSequence(Response... responses) throws IOException {
+        if (responses.length == 0) {
+            throw new IllegalArgumentException("at least one scripted response is required");
+        }
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        StubHttpServer stub = new StubHttpServer(server);
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        server.createContext("/", (HttpExchange exchange) -> {
+            String requestBody = readBody(exchange);
+            int idx = Math.min(calls.getAndIncrement(), responses.length - 1);
+            stub.bodies.add(requestBody);
+            stub.lastRequestBody.set(requestBody);
+            stub.lastRequestHeaders.set(exchange.getRequestHeaders());
+            URI uri = exchange.getRequestURI();
+            stub.lastRequestPath.set(uri == null ? null : uri.getPath());
+            Response r = responses[idx];
+            byte[] response = r.body().getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("content-type", "application/json");
+            exchange.sendResponseHeaders(r.status(), response.length);
+            try (var os = exchange.getResponseBody()) {
+                os.write(response);
+            }
+        });
+        server.start();
+        return stub;
+    }
+
+    /** A single scripted {@code (status, body)} reply for {@link #startSequence}. */
+    record Response(int status, String body) {}
+
     /** The base URL ({@code http://127.0.0.1:<port>}) to hand to a provider via {@code ProviderAuth.baseUrl}. */
     String baseUrl() {
         return "http://127.0.0.1:" + server.getAddress().getPort();
@@ -61,6 +105,25 @@ final class StubHttpServer implements AutoCloseable {
     /** The most recent request body the stub received, for asserting request shape. */
     String lastRequestBody() {
         return lastRequestBody.get();
+    }
+
+    /**
+     * The first value of request header {@code name} on the most recent request, or {@code null} if
+     * the header was absent — for asserting auth-header presence/omission (keyless engines).
+     */
+    String lastRequestHeader(String name) {
+        Headers headers = lastRequestHeaders.get();
+        return headers == null ? null : headers.getFirst(name);
+    }
+
+    /** The path of the most recent request (e.g. {@code /v1/chat/completions}), for URL assertions. */
+    String lastRequestPath() {
+        return lastRequestPath.get();
+    }
+
+    /** All request bodies captured so far, in order — for asserting a multi-call fallback sequence. */
+    java.util.List<String> requestBodies() {
+        return java.util.List.copyOf(bodies);
     }
 
     @Override
