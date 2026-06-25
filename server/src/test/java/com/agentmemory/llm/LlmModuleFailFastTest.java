@@ -33,7 +33,7 @@ class LlmModuleFailFastTest {
 
     private static AgentMemoryConfig configWithProviders(Path dataDir, String llm, String embeddings) {
         AgentMemoryProperties props = new AgentMemoryProperties(
-                new AgentMemoryProperties.Server("127.0.0.1", 0, "/"),
+                new AgentMemoryProperties.Server("127.0.0.1", 0, "/", ""),
                 new AgentMemoryProperties.Data(dataDir.toString()),
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(new ProviderAuth(llm, null, null, null)),
@@ -42,7 +42,7 @@ class LlmModuleFailFastTest {
                 new AgentMemoryProperties.Auth(false, ""),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
-                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
         return AgentMemoryConfig.resolve(props);
     }
 

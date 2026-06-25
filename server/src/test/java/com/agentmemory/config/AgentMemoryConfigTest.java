@@ -19,7 +19,7 @@ class AgentMemoryConfigTest {
 
     private static AgentMemoryProperties propsWithDataDir(String dir) {
         return new AgentMemoryProperties(
-                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/"),
+                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/", ""),
                 new AgentMemoryProperties.Data(dir),
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
@@ -27,7 +27,7 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Auth(false, ""),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
-                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
     }
 
     // --- canonicalization ----------------------------------------------------------------------
@@ -139,24 +139,32 @@ class AgentMemoryConfigTest {
         assertThat(decay.mu()).isEqualTo(0.01);
         assertThat(decay.defaultSalience()).isEqualTo(1.0);
         assertThat(decay.coldThreshold()).isEqualTo(0.05);
+        assertThat(decay.hardDeleteAfterDays()).isEqualTo(30);
+        assertThat(decay.recentlyAccessedDays()).isEqualTo(7);
     }
 
     @Test
     void decayRejectsNegativeRatesAndNonPositiveSalience() {
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(-0.01, 1.0, 0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(-0.01, 1.0, 0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("lambda");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, -1.0, 0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, -1.0, 0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("sigma");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, -0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, -0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("mu");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 0.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 0.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("default-salience");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, -0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, -0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cold-threshold");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, -1, 7))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("hard-delete-after-days");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recently-accessed-days");
     }
 }
