@@ -16,6 +16,7 @@ import (
 	"github.com/cristianodewes/agent-memory/client/internal/handoff"
 	"github.com/cristianodewes/agent-memory/client/internal/hook"
 	"github.com/cristianodewes/agent-memory/client/internal/identity"
+	"github.com/cristianodewes/agent-memory/client/internal/oidc"
 	"github.com/cristianodewes/agent-memory/client/internal/orientation"
 	"github.com/cristianodewes/agent-memory/client/internal/spool"
 	"github.com/spf13/cobra"
@@ -75,6 +76,16 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 	cwd, _ := os.Getwd()
 	id := identity.Resolve(cwd)
 	cfg := config.Load().WithIdentityOverrides(id.ServerURL, id.Token)
+	// OIDC fallback (issue #39 PR2): when no explicit token is configured (env or .agent-memory.toml
+	// marker), attach the device-grant access token from `auth login oidc-device` so the native hook
+	// authenticates as the verified OIDC subject. A single small file read; the explicit token always
+	// wins, so this never overrides a configured one. `oidcExpired` records the "credential present but
+	// expired" case so the network-bound events below can surface a clear re-login hint instead of a
+	// silent 401.
+	var oidcExpired bool
+	if cfg.Token == "" {
+		cfg.Token, oidcExpired = oidc.AccessTokenStatus(cfg.DataDir)
+	}
 
 	p, err := hook.BuildPayload(raw, hook.InputContext{
 		Event:     eventFlag,
@@ -98,13 +109,16 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 	// Capture is done and durable. From here on, nothing may fail the command.
 	switch p.Kind {
 	case core.KindSessionStart:
+		maybeWarnOidcExpired(cmd, oidcExpired)
 		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, true)
 	case core.KindSessionEnd:
+		maybeWarnOidcExpired(cmd, oidcExpired)
 		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, false)
 	case core.KindUserPrompt:
 		// Proactive recall injection (#84, closing the recall-gap): pull memory relevant to THIS prompt
 		// and inject it as additional-context. The prompt text is the captured body. Bounded + advisory
 		// — it never blocks or fails the prompt.
+		maybeWarnOidcExpired(cmd, oidcExpired)
 		var prompt string
 		if p.Body != nil {
 			prompt = *p.Body
@@ -114,6 +128,17 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 		// Regular event: no network on the hot path.
 	}
 	return nil
+}
+
+// maybeWarnOidcExpired prints a one-line re-login hint when the only available OIDC credential is
+// expired, so the request that is about to go out unauthenticated surfaces clear guidance instead of a
+// silent 401. Called only on the events that actually reach the server (boundaries + prompt), never on
+// the per-event capture hot path. (#39 PR2)
+func maybeWarnOidcExpired(cmd *cobra.Command, expired bool) {
+	if expired {
+		fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: your OIDC login has expired; "+
+			"run `agent-memory auth login oidc-device` to re-authenticate")
+	}
 }
 
 // runBoundaryDrain ships the spool at a session boundary. start=true runs the session-start shape (a

@@ -40,6 +40,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newRestoreCmd())
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newUserCmd())
+	root.AddCommand(newAuthCmd())
 	root.AddCommand(newInstallHooksCmd())
 	root.AddCommand(newInstallMcpCmd())
 	root.AddCommand(newInstallInstructionsCmd())

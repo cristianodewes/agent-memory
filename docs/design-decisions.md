@@ -115,9 +115,39 @@ authenticated caller's *own* most-recent activity (via `observations.actor`), so
 server don't default into each other's project. An explicit scope always wins; with no authenticated
 actor `per_actor` falls back to the global default. Selecting the not-yet-supported `session_aware`
 mode is rejected at startup with a clear error (never a silent fall-back to the global scope, which
-would leak activity across sessions). (OIDC device auth for native hooks, and the `session_aware`
-mode — which needs a capture-session id the MCP tool boundary doesn't yet carry — are tracked
-follow-ups; session_aware is #87.)
+would leak activity across sessions). (The `session_aware` mode — which needs a capture-session id
+the MCP tool boundary doesn't yet carry — is the tracked follow-up #87; the OIDC device grant below
+brings the session-bound verified identity it builds on.)
+
+**OIDC device auth for native hooks (#39 PR2).** A native hook runs headless, so it cannot do a
+browser redirect; it uses the OAuth 2.0 Device Authorization Grant (RFC 8628) instead. Setting
+`agent-memory.auth.oidc.issuer` (plus `audience`, and an optional explicit `jwks-uri`) makes the
+server accept a JWT bearer **in addition** to the opaque root/per-user tokens: a token shaped like a
+JWT is validated against the IdP — signature against the issuer's JWKS, plus `iss`, `aud` and expiry
+— by Spring Security's `NimbusJwtDecoder` (never hand-rolled), and authenticates as its verified
+subject claim (the `actor`, exactly like a per-user token). A JWT that fails validation is rejected
+outright, never retried as an opaque token; OIDC subjects are ordinary users, **forbidden** on the
+root-only admin routes. The client side (`agent-memory auth login oidc-device --issuer … --client-id
+…`) runs the device flow — discover the endpoints, print the verification URL + user code, poll the
+token endpoint (honoring `authorization_pending` / `slow_down`) — and stores the access token at
+`~/.agent-memory/credentials.json` (0600). The native hook attaches that token as its bearer when no
+explicit `$AGENT_MEMORY_TOKEN` (or `.agent-memory.toml` token) is set, so an interactive `login`
+gives every subsequent headless capture a verified identity without putting a long-lived secret in
+the environment. The server is the sole authority on token validity; the client only obtains, stores
+and presents it.
+
+*Security model (the access decision).* **Audience is the gate**: with an issuer set, `audience` is
+config-required (startup fails without it) and the token's `aud` must contain it exactly — so only a
+token minted *for this server* is accepted, never just "any token the IdP issued". The accepted JWS
+algorithms are **pinned to the asymmetric set** (RSA / ECDSA / RSA-PSS), rejecting `alg:none` and any
+HMAC and so closing the RS256→HS256 key-confusion attack. OIDC requires `auth.enabled=true` (an issuer
+configured while auth is off fails fast — no half-on identity). **Revocation**: an OIDC subject has no
+row in `users`, hence no local kill-switch — trust derives from the issuer + (tight) audience, and
+revocation relies on the IdP plus short token TTLs; this is acceptable precisely *because* the audience
+is exact and required. A per-subject allow-list (`agent-memory.auth.oidc.allowed-subjects`) is a named
+follow-up if a local kill-switch is later wanted. On the client, an **expired** stored credential
+yields no bearer and, on the events that reach the server, prints a clear "run `auth login
+oidc-device`" hint rather than looping silently on 401s (`auth status` shows the same).
 
 ## DD-008 — Monorepo
 

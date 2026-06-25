@@ -63,8 +63,51 @@ public final class AgentMemoryConfig {
         ensureWritableDirectory(resolved);
         ensureLayout(resolved);
         validateAuth(props.auth());
+        validateOidc(props.auth());
         validateScope(props.scope());
         return new AgentMemoryConfig(props, resolved);
+    }
+
+    /**
+     * Fail fast on an inconsistent OIDC config (issue #39 PR2). When OIDC is enabled (an issuer is set):
+     *
+     * <ul>
+     *   <li><strong>auth must be enabled</strong> — OIDC layers on top of the token auth filter, which
+     *       is only installed when {@code agent-memory.auth.enabled=true}. An issuer configured while
+     *       auth is disabled (the loopback default permits every route) is a half-on state that gives a
+     *       false sense of an enforced identity, so we refuse it rather than silently ignore the OIDC
+     *       config.</li>
+     *   <li><strong>audience is required</strong> — it is the access gate: accepting any audience would
+     *       let a token minted for a different application authenticate here, so we refuse to start
+     *       without one (and {@code OidcJwtAuthenticator} rejects a token whose {@code aud} does not
+     *       contain it).</li>
+     *   <li><strong>issuer must be an absolute {@code http(s)} URL</strong> — the JWKS discovery and
+     *       {@code iss} validation need it.</li>
+     * </ul>
+     */
+    static void validateOidc(AgentMemoryProperties.Auth auth) {
+        AgentMemoryProperties.Auth.Oidc oidc = auth.oidc();
+        if (!oidc.enabled()) {
+            return;
+        }
+        if (!auth.enabled()) {
+            throw new ConfigException(
+                    "agent-memory.auth.oidc.issuer is set but agent-memory.auth.enabled is false. OIDC "
+                            + "identity only applies when auth is enabled (it has no route to guard "
+                            + "otherwise); set agent-memory.auth.enabled=true with a root token, or unset "
+                            + "the OIDC issuer.");
+        }
+        if (!(oidc.issuer().startsWith("http://") || oidc.issuer().startsWith("https://"))) {
+            throw new ConfigException(
+                    "agent-memory.auth.oidc.issuer must be an absolute http(s) URL, was '"
+                            + oidc.issuer() + "'.");
+        }
+        if (oidc.audience() == null || oidc.audience().isBlank()) {
+            throw new ConfigException(
+                    "agent-memory.auth.oidc.issuer is set but agent-memory.auth.oidc.audience is blank. "
+                            + "An audience (the client/app id the token is issued for) is required so a "
+                            + "token minted for another application cannot authenticate here.");
+        }
     }
 
     /**
