@@ -36,6 +36,7 @@ class SanitizedBoundaryTest {
                 ObservationKind.POST_TOOL_USE,
                 "PostToolUse",
                 null,
+                null,
                 payload,
                 Instant.parse("2026-06-25T12:00:00Z"));
     }

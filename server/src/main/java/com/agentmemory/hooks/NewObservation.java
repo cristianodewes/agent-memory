@@ -19,17 +19,24 @@ import java.time.Instant;
  *
  * <p>Everything except {@code payload} is already-typed, already-trusted structure (ids, the
  * canonical {@link ObservationKind}, the project-scoped {@link Identity}); the sanitizer only ever
- * rewrites the free-text {@code payload}. {@code sourceEvent} and {@code extension} are short
- * machine tokens (the agent-native event name and a third-party namespace) and are validated, not
- * scrubbed.
+ * rewrites the free-text {@code payload}. {@code sourceEvent}, {@code extension} and
+ * {@code clientEventId} are short machine tokens (the agent-native event name, a third-party
+ * namespace, and the client's stable per-event dedupe id) and are validated, not scrubbed.
  *
- * @param sessionId   the session this event belongs to; never null.
- * @param identity    project-scoped identity (path must be null); never null.
- * @param kind        canonical event kind; never null.
- * @param sourceEvent the raw agent-native event name pre-canonicalization, or {@code null}.
- * @param extension   third-party namespace for non-canonical events (§5.4), or {@code null}.
- * @param payload     the raw, <strong>unsanitized</strong> captured text; never null (may be empty).
- * @param createdAt   when the event occurred (UTC instant); never null.
+ * <p>{@code clientEventId} is the idempotency key the ingest layer (#8) threads through to the
+ * store: a retried spool drain re-sends the same id, and the writer dedupes on
+ * {@code (sessionId, clientEventId)} so a replay creates no duplicate row. It is optional — a
+ * payload that omits it is always inserted (no dedupe).
+ *
+ * @param sessionId     the session this event belongs to; never null.
+ * @param identity      project-scoped identity (path must be null); never null.
+ * @param kind          canonical event kind; never null.
+ * @param sourceEvent   the raw agent-native event name pre-canonicalization, or {@code null}.
+ * @param extension     third-party namespace for non-canonical events (§5.4), or {@code null}.
+ * @param clientEventId client-supplied stable per-event id for idempotent replay (#8), or
+ *     {@code null} (no dedupe).
+ * @param payload       the raw, <strong>unsanitized</strong> captured text; never null (may be empty).
+ * @param createdAt     when the event occurred (UTC instant); never null.
  */
 public record NewObservation(
         SessionId sessionId,
@@ -37,6 +44,7 @@ public record NewObservation(
         ObservationKind kind,
         String sourceEvent,
         String extension,
+        String clientEventId,
         String payload,
         Instant createdAt) {
 
@@ -69,6 +77,7 @@ public record NewObservation(
      * @return a new {@code NewObservation} identical except for its payload.
      */
     NewObservation withPayload(String scrubbed) {
-        return new NewObservation(sessionId, identity, kind, sourceEvent, extension, scrubbed, createdAt);
+        return new NewObservation(
+                sessionId, identity, kind, sourceEvent, extension, clientEventId, scrubbed, createdAt);
     }
 }

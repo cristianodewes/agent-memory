@@ -25,6 +25,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param embeddings   embeddings provider stub (separate axis from {@link #llm}) — full wiring in #6.
  * @param auth         server auth stub — enforcement in #38.
  * @param sanitization privacy-strip tuning (size cap + custom patterns) — boundary in #9.
+ * @param ingest       /hook ingest backpressure tuning (bounded queue + worker) — #8.
  */
 @ConfigurationProperties(prefix = "agent-memory")
 public record AgentMemoryProperties(
@@ -34,7 +35,8 @@ public record AgentMemoryProperties(
         @DefaultValue Llm llm,
         @DefaultValue Embeddings embeddings,
         @DefaultValue Auth auth,
-        @DefaultValue Sanitization sanitization) {
+        @DefaultValue Sanitization sanitization,
+        @DefaultValue Ingest ingest) {
 
     /**
      * HTTP server surface.
@@ -165,6 +167,34 @@ public record AgentMemoryProperties(
                 if (label == null || label.isBlank()) {
                     label = "custom";
                 }
+            }
+        }
+    }
+
+    /**
+     * {@code /hook} ingest backpressure (issue #8 / invariant #5). Hooks are fire-and-forget: the
+     * server accepts an event into a <strong>bounded</strong> queue and a single worker drains it to
+     * the writer. When the queue is full the server replies {@code 429} rather than enqueuing
+     * unbounded work or blocking the caller.
+     *
+     * @param queueCapacity max events buffered between the HTTP handler and the single writer. Must
+     *     be {@code > 0}; defaults to 1024. A full queue ⇒ {@code 429}.
+     * @param offerTimeoutMillis how long the handler may wait to enqueue before giving up with
+     *     {@code 429}. {@code 0} = never block (pure non-blocking offer); the default. Kept small so a
+     *     slow store can never stall the caller (the "hard request budget").
+     */
+    public record Ingest(
+            @DefaultValue("1024") int queueCapacity,
+            @DefaultValue("0") long offerTimeoutMillis) {
+
+        public Ingest {
+            if (queueCapacity <= 0) {
+                throw new IllegalArgumentException(
+                        "agent-memory.ingest.queue-capacity must be > 0, was " + queueCapacity);
+            }
+            if (offerTimeoutMillis < 0) {
+                throw new IllegalArgumentException(
+                        "agent-memory.ingest.offer-timeout-millis must be >= 0, was " + offerTimeoutMillis);
             }
         }
     }
