@@ -7,13 +7,14 @@ import java.util.List;
 /**
  * Turns a finished session into proposed durable-knowledge edits (issue #30) — the "review engine" the
  * scheduler runs over each freshly-finished session. A seam, deliberately the only coupling point to the
- * actual review machinery: production wires it to the #29 curator and/or #19 consolidation (mapped onto
- * {@link ProposedWrite}); this PR ships <strong>no production binding</strong>, so the scheduler is inert
- * until those engines land (it logs and skips when no source is wired). Tests supply a fake.
+ * actual review machinery: production binds it to the #19 consolidation in propose-only mode
+ * ({@link ConsolidationProposalSource}), which maps each distilled page onto a {@link ProposedWrite}; a
+ * future action-shaped source over the #29 curator (forget/merge/fix) is tracked separately (#101). With no
+ * source wired (e.g. a DB-less / no-LLM context) the scheduler logs and skips. Tests supply a fake.
  *
  * <p>Keeping the engine behind this interface is what lets the scheduler, the approval gate, and the
- * {@code memory_auto_improve} tool be built and tested now without pulling the curator/LLM stack into the
- * loop, and without adding a production call-site that fires before the engines are ready.
+ * {@code memory_auto_improve} tool stay independent of the consolidation/LLM stack and be unit-tested with a
+ * fake source.
  */
 @FunctionalInterface
 public interface ProposalSource {

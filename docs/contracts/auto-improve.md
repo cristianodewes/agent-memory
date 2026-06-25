@@ -6,7 +6,7 @@ failing review can never block or corrupt capture. It is **off by default**.
 
 ```
 sessions ─▶ AutoImproveScheduler ─▶ ProposalSource ─▶ AutoImproveGate ─▶ EvalGate ─▶ pending_writes
- (finished)    (watermark + claims)   (#29 curator)     (approval gate)    (#31, off)  (proposed→applied/rejected)
+ (finished)    (watermark + claims)  (#19 consolidate) (approval gate)    (#31, off)  (proposed→applied/rejected)
                                                                                 │
                                                                 ProposalApplier ▼  (apply = #19/#20 write path)
 ```
@@ -22,12 +22,14 @@ sessions ─▶ AutoImproveScheduler ─▶ ProposalSource ─▶ AutoImproveGat
    - **Claim** (`auto_improve_session_review`) — a per-session row (`PRIMARY KEY (session_id)`) that
      de-dupes overlapping ticks, records the outcome (`claimed → done | failed`), and caps retries via
      `attempts` so a permanently-failing session stops being fed.
-2. **ProposalSource** (the review engine) — turns a project's state into `ProposedWrite`s. Production is
-   the **#29 curator adapter** (`CuratorProposalSource`): it renders the rule-based curator's findings into
-   the canonical `_lint/report.md` page (mirroring `memory_lint`) and stays **quiescent** when that report
-   is unchanged. The seam is an interface, so unit tests substitute a fake; if no source is wired the
-   scheduler logs and returns **before** claiming anything, never burning a session against an empty engine.
-   (Turning findings into corrective *actions* — forget/merge/fix — is a richer, action-shaped follow-up.)
+2. **ProposalSource** (the review engine) — turns a finished session into `ProposedWrite`s. Production is
+   the **#19 consolidation source** (`ConsolidationProposalSource`): the #19 `Consolidator` in *propose-only*
+   mode distils the session's durable knowledge into pages (`concepts/`, `decisions/`, `gotchas/`,
+   `procedures/`) **without writing them**, so each page is staged for approval instead of committed. The
+   seam is an interface, so unit tests substitute a fake; if no source is wired the scheduler logs and
+   returns **before** claiming anything, never burning a session against an empty engine. (Turning the #29
+   curator's *diagnostics* into corrective *actions* — forget/merge/fix — is a richer, action-shaped source
+   tracked separately, #101.)
 3. **Approval gate** (`AutoImproveGate`) — records every proposal in `pending_writes`, then **gates every
    apply through the #31 [eval gate](./eval-gate.md)**: a `BLOCKED` verdict rejects the proposal
    (fail-closed, never applied); `PASSED`/`SKIPPED` proceed, and the verdict is recorded in `eval_result`.
@@ -84,6 +86,6 @@ agent-memory:
 ```
 
 The `[auto_improve]` namespace is the shared umbrella; `[auto_improve.eval]` (#31) binds to its own
-properties type and nests under it. The loop is fully wired (curator source + eval gate) but **off by
+properties type and nests under it. The loop is fully wired (consolidation source + eval gate) but **off by
 default**: nothing runs until `scheduler.enabled=true`, and the eval gate stays `SKIPPED` until
 `eval.enabled=true` with a configured `command` (see [eval-gate.md](./eval-gate.md)).

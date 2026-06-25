@@ -105,19 +105,10 @@ public class Consolidator {
      * @throws ConsolidationException if the LLM reply cannot be parsed/validated or the write fails.
      */
     public ConsolidationOutcome consolidate(Scope scope, SessionId session, boolean multiPage, String actor) {
-        if (scope == null || session == null) {
-            throw new IllegalArgumentException("scope and session must not be null");
-        }
-        List<Observation> observations = reader.observationsFor(session);
-        if (observations.isEmpty()) {
-            log.debug("session {} has no observations; nothing to consolidate", session.value());
+        List<ConsolidatedPages.Page> chosen = proposePages(scope, session, multiPage);
+        if (chosen.isEmpty()) {
             return ConsolidationOutcome.noObservations(session);
         }
-
-        ConsolidatedPages result = callLlm(scope, observations, multiPage);
-        List<ConsolidatedPages.Page> chosen = multiPage
-                ? result.pages()
-                : List.of(result.pages().get(0)); // single-page request: take the first
 
         List<MemoryWriteService.PageWrite> pageWrites = new ArrayList<>(chosen.size());
         for (ConsolidatedPages.Page p : chosen) {
@@ -130,6 +121,31 @@ public class Consolidator {
         log.info("consolidated session {} into {} durable page(s) (multiPage={})",
                 session.value(), written.size(), multiPage);
         return ConsolidationOutcome.written(session, written);
+    }
+
+    /**
+     * Distil {@code session} into its durable pages <em>without writing them</em> — the propose-only half
+     * of {@link #consolidate}, for the auto-improve approval loop (issue #30), which stages each page in
+     * {@code pending_writes} for human review + the eval gate instead of committing it directly. Same LLM
+     * distillation and {@code multiPage} selection as {@link #consolidate}; only the atomic write is omitted.
+     *
+     * @param scope     the project the pages target; never null.
+     * @param session   the session to distil; never null.
+     * @param multiPage whether to return the whole fan-out ({@code true}) or only the first page.
+     * @return the proposed durable pages, or an empty list when the session has no observations.
+     * @throws ConsolidationException if the LLM reply cannot be parsed/validated.
+     */
+    public List<ConsolidatedPages.Page> proposePages(Scope scope, SessionId session, boolean multiPage) {
+        if (scope == null || session == null) {
+            throw new IllegalArgumentException("scope and session must not be null");
+        }
+        List<Observation> observations = reader.observationsFor(session);
+        if (observations.isEmpty()) {
+            log.debug("session {} has no observations; nothing to propose", session.value());
+            return List.of();
+        }
+        ConsolidatedPages result = callLlm(scope, observations, multiPage);
+        return multiPage ? result.pages() : List.of(result.pages().get(0)); // single-page: take the first
     }
 
     // --- LLM call -------------------------------------------------------------------------------
