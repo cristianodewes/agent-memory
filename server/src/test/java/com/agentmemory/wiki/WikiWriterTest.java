@@ -75,5 +75,22 @@ class WikiWriterTest {
         assertThat(document.frontmatter().title()).isEqualTo("Storage decision");
         assertThat(document.frontmatter().path()).isEqualTo(PagePath.of("decisions/storage.md"));
         assertThat(document.body()).isEqualTo("body\n");
+        // Ordinary page: not auto-pinned.
+        assertThat(document.frontmatter().pinned()).isFalse();
+    }
+
+    @Test
+    void toDocumentAutoPinsSlotPages() {
+        // A _slots/ page is auto-pinned regardless of its (false) record state (issue #26).
+        Identity id = Identity.ofPage(
+                WorkspaceId.of("ws"), ProjectId.of("p"), PagePath.of("_slots/identity.md"));
+        Page page = new Page(PageId.newId(), id, "Identity", "who I am\n", true, null,
+                Instant.parse("2026-01-01T00:00:00Z"), Instant.parse("2026-01-02T00:00:00Z"));
+
+        MarkdownDocument document =
+                WikiWriter.toDocument(new PageRecord(page, MemoryLayer.SEMANTIC, 0, null));
+
+        assertThat(document.frontmatter().kind()).isEqualTo(PageKind.SLOT);
+        assertThat(document.frontmatter().pinned()).as("slots are auto-pinned").isTrue();
     }
 }

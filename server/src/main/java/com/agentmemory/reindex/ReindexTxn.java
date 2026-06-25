@@ -1,9 +1,7 @@
 package com.agentmemory.reindex;
 
 import com.agentmemory.core.Identity;
-import com.agentmemory.core.Link;
-import com.agentmemory.core.LinkId;
-import com.agentmemory.store.LinkRepository;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.MarkdownDocument;
@@ -21,17 +19,24 @@ import java.util.Optional;
  * prior index intact — resumable); the incremental units ({@link #indexOnePage}, {@link #retirePage},
  * {@link #resolveDeferred}) are each their own transaction so a long incremental run is resumable
  * file-by-file.
+ *
+ * <p><strong>Link graph.</strong> Link extraction + maintenance is delegated to the issue #27
+ * {@link WikiLinkService} — the single authority for the {@code links} table and the canonical scoped
+ * wikilink grammar ({@code [[path]]}, {@code [[project:path]]}, {@code [[workspace/project:path]]}).
+ * Per page, {@link WikiLinkService#syncPageLinks(PageRecord)} rebuilds the page's outgoing links
+ * (deleting the prior version's by source identity) and re-points inbound links at the new version, so
+ * reindex produces exactly the same graph a normal page write does (issue #27 AC4). A full rebuild
+ * wipes the graph first ({@link WikiLinkService#deleteAllLinks()}) and finishes by resolving any
+ * still-deferred forward links ({@link WikiLinkService#resolveAllDeferred()}).
  */
 public class ReindexTxn {
 
     private final PageRepository pages;
-    private final LinkRepository links;
-    private final WikilinkParser wikilinkParser;
+    private final WikiLinkService links;
 
-    public ReindexTxn(PageRepository pages, LinkRepository links, WikilinkParser wikilinkParser) {
+    public ReindexTxn(PageRepository pages, WikiLinkService links) {
         this.pages = pages;
         this.links = links;
-        this.wikilinkParser = wikilinkParser;
     }
 
     /**
@@ -43,7 +48,7 @@ public class ReindexTxn {
      */
     @org.springframework.transaction.annotation.Transactional
     public FullResult fullRebuild(List<MarkdownDocument> docs) {
-        links.truncateAll();
+        links.deleteAllLinks();
 
         List<PageRecord> indexed = new ArrayList<>(docs.size());
         for (MarkdownDocument doc : docs) {
@@ -53,16 +58,17 @@ public class ReindexTxn {
 
         int linksWritten = 0;
         for (PageRecord record : indexed) {
-            linksWritten += writeLinks(record);
+            linksWritten += links.syncPageLinks(record);
         }
-        int linksResolved = links.resolveDeferred();
+        int linksResolved = links.resolveAllDeferred();
         return new FullResult(indexed, linksWritten, linksResolved);
     }
 
     /**
      * Create a new version for one changed page unless its content already equals the current latest
-     * (idempotent re-run). On change: drop the prior version's links, create the new version, write
-     * its links, and re-point inbound links at the new version.
+     * (idempotent re-run). On change: create the new version and sync its links —
+     * {@link WikiLinkService#syncPageLinks} replaces the prior version's outgoing links (keyed by
+     * source identity) and re-points inbound links at the new version in one step.
      *
      * @return the new record + links written, or empty when unchanged (a no-op).
      */
@@ -78,16 +84,15 @@ public class ReindexTxn {
                 && current.get().page().body().equals(body)) {
             return Optional.empty();
         }
-        current.ifPresent(prev -> links.deleteLinksFrom(prev.id()));
         PageRecord record = pages.create(identity, title, body);
-        int linksWritten = writeLinks(record);
-        links.reresolveTarget(identity); // inbound links follow the page to its new version
+        int linksWritten = links.syncPageLinks(record);
         return Optional.of(new OneResult(record, linksWritten));
     }
 
     /**
-     * Retire a page whose file was deleted: drop its links and supersede it with an empty tombstone
-     * version so it stops matching FTS/graph, preserving history (#12 never hard-deletes versions).
+     * Retire a page whose file was deleted: supersede it with an empty tombstone version so it stops
+     * matching FTS/graph, preserving history (#12 never hard-deletes versions). Syncing the tombstone
+     * drops its outgoing links (empty body → none) and re-points inbound links at the tombstone.
      *
      * @return {@code true} if a page existed at this identity and was retired.
      */
@@ -97,25 +102,15 @@ public class ReindexTxn {
         if (current.isEmpty()) {
             return false;
         }
-        links.deleteLinksFrom(current.get().id());
-        pages.create(identity, current.get().page().title(), "");
-        links.reresolveTarget(identity);
+        PageRecord tombstone = pages.create(identity, current.get().page().title(), "");
+        links.syncPageLinks(tombstone);
         return true;
     }
 
     /** Resolve any still-deferred links to their now-existing targets (own transaction). */
     @org.springframework.transaction.annotation.Transactional
     public int resolveDeferred() {
-        return links.resolveDeferred();
-    }
-
-    private int writeLinks(PageRecord record) {
-        Identity source = record.identity();
-        List<WikilinkRef> refs = wikilinkParser.parse(source, record.page().body());
-        for (WikilinkRef ref : refs) {
-            links.insert(record.id(), new Link(LinkId.newId(), source, ref.target(), ref.anchor(), false));
-        }
-        return refs.size();
+        return links.resolveAllDeferred();
     }
 
     /** Counts + records from a full rebuild. */
