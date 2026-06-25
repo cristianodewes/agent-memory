@@ -2,3 +2,4 @@ com.agentmemory.store.StoreConfiguration
 com.agentmemory.wiki.WikiConfiguration
 com.agentmemory.hooks.IngestModule
 com.agentmemory.recall.RecallConfiguration
+com.agentmemory.consolidate.ConsolidateConfiguration
