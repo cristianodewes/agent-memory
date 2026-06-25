@@ -102,6 +102,31 @@ public class McpReadRepository {
                 scope.workspaceSlug(), scope.projectSlug(), like(prefix), limit);
     }
 
+    /**
+     * Whole days since the project's most recent activity (latest observation or session), for
+     * calibrating {@code memory_explore}'s verbosity (issue #19). Returns empty when the project has no
+     * captured activity at all (a brand-new project).
+     *
+     * @param scope the project.
+     * @return days since the last activity, or empty if there is none.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Long> daysSinceLastActivity(Scope scope) {
+        try {
+            return Optional.ofNullable(jdbc.queryForObject(
+                    "SELECT floor(extract(epoch FROM (now() - max(at))) / 86400)::bigint FROM ( "
+                            + "  SELECT created_at AS at FROM observations WHERE workspace = ? AND project = ? "
+                            + "  UNION ALL "
+                            + "  SELECT started_at AS at FROM sessions WHERE workspace = ? AND project = ? "
+                            + ") activity",
+                    Long.class,
+                    scope.workspaceSlug(), scope.projectSlug(),
+                    scope.workspaceSlug(), scope.projectSlug()));
+        } catch (EmptyResultDataAccessException e) {
+            return Optional.empty();
+        }
+    }
+
     private long count(String sql, Object... args) {
         Long n = jdbc.queryForObject(sql, Long.class, args);
         return n == null ? 0L : n;

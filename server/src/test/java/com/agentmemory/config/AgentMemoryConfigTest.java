@@ -19,15 +19,15 @@ class AgentMemoryConfigTest {
 
     private static AgentMemoryProperties propsWithDataDir(String dir) {
         return new AgentMemoryProperties(
-                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/"),
+                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/", ""),
                 new AgentMemoryProperties.Data(dir),
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
                 new AgentMemoryProperties.Embeddings(ProviderAuth.NONE),
-                new AgentMemoryProperties.Auth(false, ""),
+                new AgentMemoryProperties.Auth(false, "", java.util.List.of()),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
-                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
     }
 
     // --- canonicalization ----------------------------------------------------------------------
@@ -128,6 +128,27 @@ class AgentMemoryConfigTest {
                 .hasMessageContaining("Could not create data dir");
     }
 
+    // --- auth fail-fast (#38) ------------------------------------------------------------------
+
+    @Test
+    void failsFastWhenAuthEnabledWithoutToken() {
+        // Enabling auth but leaving the token blank would lock everyone out (or accept a blank token).
+        assertThatThrownBy(() -> AgentMemoryConfig.validateAuth(
+                new AgentMemoryProperties.Auth(true, "", java.util.List.of())))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("agent-memory.auth.enabled");
+    }
+
+    @Test
+    void authValidationPassesWhenDisabledOrTokenPresent() {
+        assertThatCode(() -> {
+            // Default: disabled, no token.
+            AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(false, "", java.util.List.of()));
+            // Enabled with a token.
+            AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(true, "tok", java.util.List.of()));
+        }).doesNotThrowAnyException();
+    }
+
     // --- decay tuning (#24) --------------------------------------------------------------------
 
     @Test
@@ -139,24 +160,32 @@ class AgentMemoryConfigTest {
         assertThat(decay.mu()).isEqualTo(0.01);
         assertThat(decay.defaultSalience()).isEqualTo(1.0);
         assertThat(decay.coldThreshold()).isEqualTo(0.05);
+        assertThat(decay.hardDeleteAfterDays()).isEqualTo(30);
+        assertThat(decay.recentlyAccessedDays()).isEqualTo(7);
     }
 
     @Test
     void decayRejectsNegativeRatesAndNonPositiveSalience() {
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(-0.01, 1.0, 0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(-0.01, 1.0, 0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("lambda");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, -1.0, 0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, -1.0, 0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("sigma");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, -0.01, 1.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, -0.01, 1.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("mu");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 0.0, 0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 0.0, 0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("default-salience");
-        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, -0.05))
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, -0.05, 30, 7))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("cold-threshold");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, -1, 7))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("hard-delete-after-days");
+        assertThatThrownBy(() -> new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, -1))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("recently-accessed-days");
     }
 }

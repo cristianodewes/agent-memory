@@ -48,6 +48,42 @@ class ProviderFactoryTest {
     }
 
     @Test
+    void selectsGeminiForChatAxis() {
+        // Native Gemini chat provider (issue #40). Construction only — round-trip in GeminiLlmProviderTest.
+        ProviderAuth auth = new ProviderAuth("gemini", "k-x", null, null);
+
+        LlmProvider provider = factory.createLlmProvider(auth);
+
+        assertThat(provider).isInstanceOf(GeminiLlmProvider.class);
+        assertThat(provider.id()).isEqualTo("gemini");
+        assertThat(provider.model()).isEqualTo(GeminiLlmProvider.DEFAULT_MODEL);
+    }
+
+    @Test
+    void selectsOpenAiForEmbeddingsAxis() {
+        // 'openai' on the embeddings axis resolves the OpenAI embedder (issue #40), distinct from the
+        // 'openai' chat provider on the chat axis.
+        ProviderAuth auth = new ProviderAuth("openai", "sk-x", null, null);
+
+        Embedder embedder = factory.createEmbedder(auth);
+
+        assertThat(embedder).isInstanceOf(OpenAiEmbedder.class);
+        assertThat(embedder.id()).isEqualTo("openai");
+        assertThat(embedder.dimensions()).isEqualTo(OpenAiEmbedder.DIMENSIONS);
+    }
+
+    @Test
+    void selectsGoogleForEmbeddingsAxis() {
+        ProviderAuth auth = new ProviderAuth("google", "k-x", null, null);
+
+        Embedder embedder = factory.createEmbedder(auth);
+
+        assertThat(embedder).isInstanceOf(GoogleEmbedder.class);
+        assertThat(embedder.id()).isEqualTo("google");
+        assertThat(embedder.dimensions()).isEqualTo(GoogleEmbedder.DIMENSIONS);
+    }
+
+    @Test
     void testKeyReturnsSharedDoubleForBothAxes() {
         TestDoubleProvider shared = TestDoubleProvider.create();
         ProviderFactory f = new ProviderFactory(shared);

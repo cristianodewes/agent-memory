@@ -7,5 +7,10 @@ com.agentmemory.mcp.McpConfiguration
 com.agentmemory.lifecycle.LifecycleConfiguration
 com.agentmemory.web.WebConfiguration
 com.agentmemory.consolidate.ConsolidateConfiguration
+com.agentmemory.llmrecall.LlmRecallConfiguration
+com.agentmemory.handoff.HandoffConfiguration
 com.agentmemory.links.LinksConfiguration
 com.agentmemory.graph.GraphConfiguration
+com.agentmemory.timetravel.TimeTravelConfiguration
+com.agentmemory.forget.ForgetConfiguration
+com.agentmemory.security.SecurityConfiguration

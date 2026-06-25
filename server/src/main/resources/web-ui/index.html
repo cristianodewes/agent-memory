@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-memory — browser</title>
+<style>
+  /*
+   * Reference read-only browser for agent-memory (#36). Single self-contained file: no build step,
+   * no external fonts/CDN, works offline same-origin. Consumes /api/v1 at a relative path so it
+   * rides --base-path. Aesthetic: refined utilitarian — monospace UI, hairline borders, one amber
+   * accent, warm-paper light / deep-charcoal dark. Strictly read-only.
+   */
+  :root {
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, "Times New Roman", serif;
+    --accent: #b4541a;
+    --accent-soft: rgba(180, 84, 26, 0.12);
+    --mark-bg: rgba(180, 84, 26, 0.22);
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f1ea;
+    --panel: #faf8f3;
+    --panel-2: #efe9dd;
+    --ink: #1f1b16;
+    --ink-soft: #6b6358;
+    --ink-faint: #97907f;
+    --line: #ddd5c6;
+    --line-strong: #c6bca8;
+    --selected: #ece3d2;
+    --shadow: 0 1px 0 rgba(0,0,0,0.03);
+  }
+  :root[data-theme="dark"] {
+    --bg: #16140f;
+    --panel: #1d1a14;
+    --panel-2: #232019;
+    --ink: #e9e3d6;
+    --ink-soft: #a59c89;
+    --ink-faint: #6f6857;
+    --line: #2e2a21;
+    --line-strong: #3c3729;
+    --selected: #2a261d;
+    --accent: #d9824a;
+    --accent-soft: rgba(217, 130, 74, 0.14);
+    --mark-bg: rgba(217, 130, 74, 0.28);
+    --shadow: none;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    display: grid;
+    grid-template-rows: auto 1fr auto;
+    height: 100vh;
+    overflow: hidden;
+  }
+
+  /* ---- top bar ------------------------------------------------------------------------------ */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 10px 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line-strong);
+    flex-wrap: wrap;
+  }
+  .brand {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    white-space: nowrap;
+  }
+  .brand .dot {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--accent);
+    align-self: center;
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .brand b { font-weight: 700; letter-spacing: 0.02em; }
+  .brand .ro {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: var(--ink-faint);
+    border: 1px solid var(--line-strong);
+    padding: 1px 6px;
+    border-radius: 2px;
+  }
+
+  .pickers { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  label.field {
+    display: inline-flex; align-items: center; gap: 6px;
+    color: var(--ink-soft);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  select, input[type="search"] {
+    font-family: var(--mono); font-size: 13px;
+    color: var(--ink);
+    background: var(--panel-2);
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    padding: 5px 8px;
+    min-width: 130px;
+  }
+  select:focus, input[type="search"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+  }
+  .search { flex: 1; min-width: 200px; display: flex; }
+  .search input { flex: 1; min-width: 0; }
+
+  .spacer { flex: 1; }
+  button.icon {
+    font-family: var(--mono);
+    background: var(--panel-2);
+    color: var(--ink-soft);
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    padding: 5px 10px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  button.icon:hover { color: var(--ink); border-color: var(--accent); }
+
+  /* ---- body ---------------------------------------------------------------------------------- */
+  main { display: grid; grid-template-columns: 300px 1fr; min-height: 0; }
+  aside {
+    border-right: 1px solid var(--line-strong);
+    background: var(--panel);
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .pane-title {
+    position: sticky; top: 0;
+    background: var(--panel);
+    padding: 9px 14px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.14em;
+    color: var(--ink-faint);
+    border-bottom: 1px solid var(--line);
+    z-index: 1;
+  }
+
+  /* tree */
+  .tree { padding: 6px 0 24px; }
+  .folder { margin-top: 2px; }
+  .folder > .folder-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 14px;
+    color: var(--ink-soft);
+    cursor: pointer; user-select: none;
+  }
+  .folder > .folder-row:hover { color: var(--ink); }
+  .folder-row .tw {
+    display: inline-block; width: 9px; transition: transform 0.12s ease;
+    color: var(--ink-faint);
+  }
+  .folder.collapsed .tw { transform: rotate(-90deg); }
+  .folder.collapsed .leaves { display: none; }
+  .folder-name { font-weight: 600; letter-spacing: 0.02em; }
+  .folder-count { color: var(--ink-faint); font-size: 11px; }
+  .leaves { }
+  .leaf {
+    display: block;
+    padding: 3px 14px 3px 32px;
+    color: var(--ink-soft);
+    cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    border-left: 2px solid transparent;
+  }
+  .leaf:hover { color: var(--ink); background: var(--panel-2); }
+  .leaf.active {
+    color: var(--ink); background: var(--selected);
+    border-left-color: var(--accent);
+  }
+
+  /* content pane */
+  section.content { overflow-y: auto; min-height: 0; background: var(--bg); }
+  .content-inner { max-width: 760px; margin: 0 auto; padding: 30px 40px 80px; }
+
+  .crumbs {
+    font-size: 11px; color: var(--ink-faint);
+    letter-spacing: 0.04em; margin-bottom: 4px;
+    display: flex; gap: 6px; align-items: center; flex-wrap: wrap;
+  }
+  .crumbs .sep { opacity: 0.5; }
+  .doc-meta {
+    display: flex; gap: 14px; flex-wrap: wrap;
+    font-size: 11px; color: var(--ink-faint);
+    border-bottom: 1px solid var(--line);
+    padding-bottom: 14px; margin-bottom: 22px;
+  }
+  .doc-meta .tag {
+    text-transform: uppercase; letter-spacing: 0.1em;
+    color: var(--accent);
+  }
+
+  /* search results */
+  .results { padding: 4px 0 24px; }
+  .result {
+    display: block; width: 100%; text-align: left;
+    background: none; border: 0; border-bottom: 1px solid var(--line);
+    padding: 10px 14px; cursor: pointer; color: inherit; font-family: var(--mono);
+  }
+  .result:hover { background: var(--panel-2); }
+  .result .rk { color: var(--ink-faint); font-size: 11px; }
+  .result .rp { color: var(--accent); font-size: 12px; word-break: break-all; }
+  .result .rs { color: var(--ink-soft); font-size: 12px; margin-top: 3px; }
+  .result mark, .markdown mark { background: var(--mark-bg); color: inherit; border-radius: 2px; padding: 0 1px; }
+
+  /* placeholder / states */
+  .empty {
+    height: 100%; display: flex; align-items: center; justify-content: center;
+    color: var(--ink-faint); text-align: center; padding: 40px;
+  }
+  .empty .big { font-size: 13px; letter-spacing: 0.04em; }
+  .empty .sub { font-size: 11px; margin-top: 8px; max-width: 360px; line-height: 1.7; }
+  .loading { color: var(--ink-faint); padding: 14px; font-size: 12px; }
+  .errbox {
+    margin: 14px; padding: 10px 12px;
+    border: 1px solid var(--accent); border-left-width: 3px; border-radius: 3px;
+    background: var(--accent-soft); color: var(--ink); font-size: 12px;
+  }
+
+  /* ---- rendered markdown -------------------------------------------------------------------- */
+  .markdown { font-family: var(--serif); font-size: 16px; line-height: 1.68; color: var(--ink); }
+  .markdown h1, .markdown h2, .markdown h3, .markdown h4 {
+    font-family: var(--mono); line-height: 1.25; margin: 1.8em 0 0.6em;
+    letter-spacing: -0.01em;
+  }
+  .markdown h1 { font-size: 1.5em; margin-top: 0; }
+  .markdown h2 { font-size: 1.25em; padding-bottom: 0.2em; border-bottom: 1px solid var(--line); }
+  .markdown h3 { font-size: 1.08em; }
+  .markdown h4 { font-size: 0.95em; color: var(--ink-soft); }
+  .markdown p { margin: 0.85em 0; }
+  .markdown a { color: var(--accent); text-decoration: none; border-bottom: 1px solid var(--accent-soft); }
+  .markdown a:hover { border-bottom-color: var(--accent); }
+  .markdown ul, .markdown ol { margin: 0.7em 0; padding-left: 1.6em; }
+  .markdown li { margin: 0.25em 0; }
+  .markdown blockquote {
+    margin: 1em 0; padding: 0.4em 1em; color: var(--ink-soft);
+    border-left: 3px solid var(--line-strong); background: var(--panel);
+  }
+  .markdown code {
+    font-family: var(--mono); font-size: 0.85em;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 0.1em 0.35em; border-radius: 3px;
+  }
+  .markdown pre {
+    font-family: var(--mono); font-size: 0.82em; line-height: 1.5;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+    padding: 12px 14px; overflow-x: auto; margin: 1.1em 0;
+  }
+  .markdown pre code { background: none; border: 0; padding: 0; }
+  .markdown hr { border: 0; border-top: 1px solid var(--line); margin: 1.8em 0; }
+  .markdown table { border-collapse: collapse; margin: 1em 0; font-family: var(--mono); font-size: 0.85em; }
+  .markdown th, .markdown td { border: 1px solid var(--line-strong); padding: 5px 10px; text-align: left; }
+  .markdown th { background: var(--panel-2); }
+
+  /* ---- footer ------------------------------------------------------------------------------- */
+  footer {
+    display: flex; align-items: center; gap: 14px;
+    padding: 6px 16px;
+    background: var(--panel);
+    border-top: 1px solid var(--line-strong);
+    color: var(--ink-faint);
+    font-size: 11px; letter-spacing: 0.03em;
+  }
+  footer .ok::before { content: "●"; color: var(--accent); margin-right: 5px; font-size: 9px; }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 6px; border: 2px solid var(--panel); }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+  <header>
+    <div class="brand">
+      <span class="dot"></span>
+      <b>agent-memory</b>
+      <span class="ro">read-only</span>
+    </div>
+    <div class="pickers">
+      <label class="field">ws
+        <select id="ws-select" aria-label="Workspace"></select>
+      </label>
+      <label class="field">proj
+        <select id="proj-select" aria-label="Project"></select>
+      </label>
+    </div>
+    <form class="search" id="search-form" role="search" autocomplete="off">
+      <input id="search-input" type="search" placeholder="Search this project (full-text)…"
+             aria-label="Search">
+    </form>
+    <div class="spacer"></div>
+    <button class="icon" id="theme-toggle" type="button" aria-label="Toggle dark mode"></button>
+  </header>
+
+  <main>
+    <aside>
+      <div class="pane-title" id="aside-title">Pages</div>
+      <div id="aside-body"><div class="loading">Loading…</div></div>
+    </aside>
+    <section class="content">
+      <div id="content-body">
+        <div class="empty">
+          <div>
+            <div class="big">Select a project to begin.</div>
+            <div class="sub">Pick a workspace and project above to browse its compiled pages, or
+              type a query to search. Everything here is read-only.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <span class="ok" id="status">ready</span>
+    <span class="spacer" style="flex:1"></span>
+    <span id="api-base"></span>
+  </footer>
+
+<script>
+"use strict";
+(function () {
+  // ------------------------------------------------------------------------------------------
+  // API base: relative to this page, so /web and /api/v1 stay same-origin AND ride --base-path.
+  // This page is served at <base>/web/ ; the API is at <base>/api/v1 — one directory up.
+  // ------------------------------------------------------------------------------------------
+  var API = new URL("../api/v1/", window.location.href);
+  document.getElementById("api-base").textContent = API.pathname;
+
+  function apiUrl(path, params) {
+    var u = new URL(path.replace(/^\//, ""), API);
+    if (params) {
+      Object.keys(params).forEach(function (k) {
+        if (params[k] !== undefined && params[k] !== null) u.searchParams.set(k, params[k]);
+      });
+    }
+    return u.toString();
+  }
+
+  // All requests are GET — this UI never mutates (read-only, #36 acceptance).
+  function getJson(path, params) {
+    return fetch(apiUrl(path, params), { method: "GET", headers: { "Accept": "application/json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("HTTP " + r.status + " for " + path);
+        return r.json();
+      });
+  }
+
+  function setStatus(msg) { document.getElementById("status").textContent = msg; }
+  function el(id) { return document.getElementById(id); }
+
+  // ------------------------------------------------------------------------------------------
+  // Theme: default to OS preference, persist the user's explicit choice.
+  // ------------------------------------------------------------------------------------------
+  var THEME_KEY = "agent-memory.web.theme";
+  function applyTheme(t) {
+    document.documentElement.setAttribute("data-theme", t);
+    el("theme-toggle").textContent = t === "dark" ? "☀ light" : "☾ dark";
+  }
+  (function initTheme() {
+    var saved = null;
+    try { saved = localStorage.getItem(THEME_KEY); } catch (e) {}
+    var osDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+    applyTheme(saved || (osDark ? "dark" : "light"));
+  })();
+  el("theme-toggle").addEventListener("click", function () {
+    var next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
+    applyTheme(next);
+    try { localStorage.setItem(THEME_KEY, next); } catch (e) {}
+  });
+
+  // ------------------------------------------------------------------------------------------
+  // Tiny, safe markdown renderer. Escapes HTML first (so page bodies can never inject markup),
+  // then applies a deliberately small subset: headings, fenced/inline code, bold/italic, links,
+  // blockquotes, hr, ordered/unordered lists, paragraphs. No external library.
+  // ------------------------------------------------------------------------------------------
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function inline(s) {
+    // s is already HTML-escaped. Order matters: code spans first so their contents are literal.
+    var codes = [];
+    s = s.replace(/`([^`]+)`/g, function (_, c) {
+      codes.push(c); return " " + (codes.length - 1) + " ";
+    });
+    s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+         .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
+         .replace(/\b_([^_]+)_\b/g, "<em>$1</em>");
+    // [text](url) — only http(s) or relative; never javascript: etc.
+    s = s.replace(/\[([^\]]+)\]\(([^)]+)\)/g, function (_, t, href) {
+      var safe = /^(https?:\/\/|\/|\.\.?\/|#)/i.test(href) ? href : "#";
+      // href lands inside a double-quoted attribute; escapeHtml (applied upstream) escapes & < >
+      // but NOT quotes, so a " in the href would break out and inject an event handler. Attribute-
+      // escape the quote characters here to close that stored-XSS vector.
+      safe = safe.replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;");
+      return '<a href="' + safe + '" rel="noopener noreferrer">' + t + "</a>";
+    });
+    s = s.replace(/ (\d+) /g, function (_, i) { return "<code>" + codes[+i] + "</code>"; });
+    return s;
+  }
+  function renderMarkdown(md) {
+    var lines = String(md == null ? "" : md).replace(/\r\n?/g, "\n").split("\n");
+    var out = [], i = 0;
+    function flushList(stack) { while (stack.length) out.push(stack.pop()); }
+    var listStack = [];
+    while (i < lines.length) {
+      var line = lines[i];
+
+      // fenced code block
+      var fence = line.match(/^```(.*)$/);
+      if (fence) {
+        flushList(listStack);
+        var buf = []; i++;
+        while (i < lines.length && !/^```/.test(lines[i])) { buf.push(lines[i]); i++; }
+        i++; // closing fence
+        out.push("<pre><code>" + escapeHtml(buf.join("\n")) + "</code></pre>");
+        continue;
+      }
+      // heading
+      var h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        flushList(listStack);
+        var lvl = h[1].length;
+        out.push("<h" + lvl + ">" + inline(escapeHtml(h[2].trim())) + "</h" + lvl + ">");
+        i++; continue;
+      }
+      // hr
+      if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
+        flushList(listStack); out.push("<hr>"); i++; continue;
+      }
+      // blockquote (collapse consecutive)
+      if (/^>\s?/.test(line)) {
+        flushList(listStack);
+        var q = [];
+        while (i < lines.length && /^>\s?/.test(lines[i])) { q.push(lines[i].replace(/^>\s?/, "")); i++; }
+        out.push("<blockquote>" + inline(escapeHtml(q.join(" "))) + "</blockquote>");
+        continue;
+      }
+      // list item (unordered or ordered)
+      var ul = line.match(/^(\s*)[-*+]\s+(.*)$/);
+      var ol = line.match(/^(\s*)\d+\.\s+(.*)$/);
+      if (ul || ol) {
+        var tag = ul ? "ul" : "ol";
+        if (!listStack.length || listStack[listStack.length - 1].tag !== tag) {
+          flushList(listStack);
+          out.push("<" + tag + ">");
+          listStack.push({ tag: tag, close: "</" + tag + ">" });
+        }
+        out.push("<li>" + inline(escapeHtml((ul ? ul[2] : ol[2]).trim())) + "</li>");
+        i++; continue;
+      }
+      // blank line ends a list / paragraph
+      if (/^\s*$/.test(line)) {
+        if (listStack.length) { out.push(listStack.pop().close); }
+        i++; continue;
+      }
+      // paragraph (gather until blank or block start)
+      flushList(listStack);
+      var para = [line]; i++;
+      while (i < lines.length && !/^\s*$/.test(lines[i]) &&
+             !/^(#{1,6}\s|>|```|\s*[-*+]\s|\s*\d+\.\s)/.test(lines[i])) {
+        para.push(lines[i]); i++;
+      }
+      out.push("<p>" + inline(escapeHtml(para.join(" ").trim())) + "</p>");
+    }
+    while (listStack.length) out.push(listStack.pop().close);
+    return out.join("\n");
+  }
+
+  // ------------------------------------------------------------------------------------------
+  // State + data flow.
+  // ------------------------------------------------------------------------------------------
+  var state = { ws: null, proj: null, activePath: null, searchSeq: 0 };
+  var PAGE_LIMIT = 100;
+
+  function loadWorkspaces() {
+    setStatus("loading workspaces…");
+    return getJson("workspaces", { limit: PAGE_LIMIT }).then(function (page) {
+      var sel = el("ws-select");
+      sel.innerHTML = "";
+      var items = (page.items || []);
+      if (!items.length) {
+        sel.innerHTML = '<option value="">(none)</option>';
+        el("proj-select").innerHTML = '<option value="">(none)</option>';
+        setStatus("no workspaces yet");
+        return;
+      }
+      items.forEach(function (w) {
+        var o = document.createElement("option");
+        o.value = w.workspace; o.textContent = w.workspace; sel.appendChild(o);
+      });
+      state.ws = items[0].workspace;
+      sel.value = state.ws;
+      return loadProjects();
+    });
+  }
+
+  function loadProjects() {
+    var sel = el("proj-select");
+    sel.innerHTML = '<option value="">…</option>';
+    return getJson("projects", { workspace: state.ws, limit: PAGE_LIMIT }).then(function (page) {
+      sel.innerHTML = "";
+      var items = (page.items || []);
+      if (!items.length) {
+        sel.innerHTML = '<option value="">(none)</option>';
+        state.proj = null;
+        renderEmpty("This workspace has no projects.");
+        setStatus("ready");
+        return;
+      }
+      items.forEach(function (p) {
+        var o = document.createElement("option");
+        o.value = p.project; o.textContent = p.project; sel.appendChild(o);
+      });
+      state.proj = items[0].project;
+      sel.value = state.proj;
+      return loadTree();
+    });
+  }
+
+  function projBase() {
+    return "workspaces/" + encodeURIComponent(state.ws) + "/projects/" + encodeURIComponent(state.proj);
+  }
+
+  function loadTree() {
+    state.activePath = null;
+    el("aside-title").textContent = "Pages";
+    el("aside-body").innerHTML = '<div class="loading">Loading pages…</div>';
+    renderEmpty("Select a page from the tree, or search above.");
+    setStatus("loading pages…");
+    return getJson(projBase() + "/pages", { limit: PAGE_LIMIT }).then(function (page) {
+      renderTree(page.items || [], page.total || 0);
+      setStatus("ready");
+    }).catch(showError);
+  }
+
+  function topFolder(path) {
+    var i = path.indexOf("/");
+    return i < 0 ? "" : path.slice(0, i);
+  }
+
+  function renderTree(items, total) {
+    var body = el("aside-body");
+    if (!items.length) {
+      body.innerHTML = '<div class="loading">No pages in this project.</div>';
+      return;
+    }
+    // group by top folder
+    var groups = {};
+    items.forEach(function (p) {
+      var f = topFolder(p.path) || "(root)";
+      (groups[f] = groups[f] || []).push(p);
+    });
+    var names = Object.keys(groups).sort();
+    var frag = document.createElement("div");
+    frag.className = "tree";
+    names.forEach(function (name) {
+      var folder = document.createElement("div");
+      folder.className = "folder";
+      var row = document.createElement("div");
+      row.className = "folder-row";
+      row.innerHTML = '<span class="tw">▾</span><span class="folder-name"></span>' +
+                      '<span class="folder-count"></span>';
+      row.querySelector(".folder-name").textContent = name;
+      row.querySelector(".folder-count").textContent = groups[name].length;
+      row.addEventListener("click", function () { folder.classList.toggle("collapsed"); });
+      folder.appendChild(row);
+
+      var leaves = document.createElement("div");
+      leaves.className = "leaves";
+      groups[name].sort(function (a, b) { return a.path.localeCompare(b.path); });
+      groups[name].forEach(function (p) {
+        var leaf = document.createElement("div");
+        leaf.className = "leaf";
+        leaf.textContent = p.path.indexOf("/") >= 0 ? p.path.slice(p.path.indexOf("/") + 1) : p.path;
+        leaf.title = p.path;
+        leaf.dataset.path = p.path;
+        leaf.addEventListener("click", function () { openPage(p.path); });
+        leaves.appendChild(leaf);
+      });
+      folder.appendChild(leaves);
+      frag.appendChild(folder);
+    });
+    body.innerHTML = "";
+    body.appendChild(frag);
+    var hint = document.createElement("div");
+    hint.className = "pane-title";
+    hint.style.cssText = "position:static;border:0;border-top:1px solid var(--line);";
+    hint.textContent = total + " page" + (total === 1 ? "" : "s");
+    body.appendChild(hint);
+  }
+
+  function markActiveLeaf(path) {
+    var leaves = document.querySelectorAll(".leaf");
+    for (var i = 0; i < leaves.length; i++) {
+      leaves[i].classList.toggle("active", leaves[i].dataset.path === path);
+    }
+  }
+
+  function openPage(path) {
+    state.activePath = path;
+    markActiveLeaf(path);
+    var content = el("content-body");
+    content.innerHTML = '<div class="loading">Loading page…</div>';
+    setStatus("loading " + path);
+    // {*path} captures with a leading slash; the controller strips it. Encode each segment but
+    // keep the slashes so the wildcard path matches.
+    var encoded = path.split("/").map(encodeURIComponent).join("/");
+    getJson(projBase() + "/pages/" + encoded).then(function (pg) {
+      renderPage(pg);
+      setStatus("ready");
+    }).catch(showError);
+  }
+
+  function renderPage(pg) {
+    var content = el("content-body");
+    var wrap = document.createElement("div");
+    wrap.className = "content-inner";
+
+    var crumbs = document.createElement("div");
+    crumbs.className = "crumbs";
+    var parts = [state.ws, state.proj].concat(pg.path.split("/"));
+    parts.forEach(function (p, idx) {
+      if (idx) { var s = document.createElement("span"); s.className = "sep"; s.textContent = "/"; crumbs.appendChild(s); }
+      var span = document.createElement("span"); span.textContent = p; crumbs.appendChild(span);
+    });
+    wrap.appendChild(crumbs);
+
+    var meta = document.createElement("div");
+    meta.className = "doc-meta";
+    function metaItem(label, val) {
+      if (val === undefined || val === null || val === "") return;
+      var d = document.createElement("span");
+      d.innerHTML = '<span class="tag"></span> ';
+      d.querySelector(".tag").textContent = label;
+      d.appendChild(document.createTextNode(val));
+      meta.appendChild(d);
+    }
+    metaItem("layer", pg.layer);
+    metaItem("updated", (pg.updatedAt || "").replace("T", " ").replace(/\..*$/, ""));
+    metaItem("hits", (pg.accessCount != null ? String(pg.accessCount) : null));
+    if (meta.children.length) wrap.appendChild(meta);
+
+    var md = document.createElement("div");
+    md.className = "markdown";
+    md.innerHTML = renderMarkdown(pg.body || "");
+    wrap.appendChild(md);
+
+    content.innerHTML = "";
+    content.appendChild(wrap);
+    content.parentElement.scrollTop = 0;
+  }
+
+  // ---- search -------------------------------------------------------------------------------
+  var searchTimer = null;
+  el("search-form").addEventListener("submit", function (e) { e.preventDefault(); runSearch(); });
+  el("search-input").addEventListener("input", function () {
+    clearTimeout(searchTimer);
+    var v = this.value.trim();
+    if (!v) { if (state.proj) loadTree(); return; }
+    searchTimer = setTimeout(runSearch, 220);
+  });
+
+  function runSearch() {
+    var q = el("search-input").value.trim();
+    if (!q || !state.proj) return;
+    var seq = ++state.searchSeq;
+    el("aside-title").textContent = "Search";
+    el("aside-body").innerHTML = '<div class="loading">Searching…</div>';
+    setStatus("searching “" + q + "”");
+    getJson("search", { q: q, workspace: state.ws, project: state.proj, limit: 50 })
+      .then(function (res) {
+        if (seq !== state.searchSeq) return; // a newer search superseded this one
+        renderResults(res, q);
+        setStatus("ready");
+      }).catch(showError);
+  }
+
+  function renderResults(res, q) {
+    var body = el("aside-body");
+    var hits = res.hits || [];
+    body.innerHTML = "";
+    var head = document.createElement("div");
+    head.className = "pane-title"; head.style.position = "static";
+    head.textContent = hits.length + " hit" + (hits.length === 1 ? "" : "s") +
+                       (res.rawFallback ? " · raw fallback" : "");
+    body.appendChild(head);
+    if (!hits.length) {
+      var none = document.createElement("div");
+      none.className = "loading"; none.textContent = "No matches for “" + q + "”.";
+      body.appendChild(none);
+      return;
+    }
+    var list = document.createElement("div"); list.className = "results";
+    hits.forEach(function (h) {
+      var b = document.createElement("button");
+      b.className = "result"; b.type = "button";
+      var rk = document.createElement("div"); rk.className = "rk";
+      rk.textContent = "#" + h.rank + " · " + (h.source || "").toLowerCase();
+      var rp = document.createElement("div"); rp.className = "rp";
+      rp.textContent = h.path || h.title || h.id;
+      var rs = document.createElement("div"); rs.className = "rs";
+      rs.innerHTML = sanitizeSnippet(h.snippet || "");
+      b.appendChild(rk); b.appendChild(rp); b.appendChild(rs);
+      if (h.path) b.addEventListener("click", function () { openPage(h.path); });
+      else b.disabled = true;
+      list.appendChild(b);
+    });
+    body.appendChild(list);
+  }
+
+  // The API's snippets carry <mark> tags (ts_headline). Allow ONLY <mark>/</mark>; escape the rest,
+  // so a snippet can never inject other markup.
+  function sanitizeSnippet(s) {
+    return escapeHtml(s)
+      .replace(/&lt;mark&gt;/g, "<mark>")
+      .replace(/&lt;\/mark&gt;/g, "</mark>");
+  }
+
+  function renderEmpty(msg) {
+    el("content-body").innerHTML =
+      '<div class="empty"><div><div class="big"></div></div></div>';
+    el("content-body").querySelector(".big").textContent = msg;
+  }
+  function showError(err) {
+    setStatus("error");
+    var box = '<div class="errbox"></div>';
+    el("content-body").innerHTML = box;
+    el("content-body").querySelector(".errbox").textContent =
+      "Could not reach the API: " + (err && err.message ? err.message : err) +
+      ". The server may be starting, or the read store is not configured.";
+  }
+
+  // ---- wiring -------------------------------------------------------------------------------
+  el("ws-select").addEventListener("change", function () {
+    state.ws = this.value; el("search-input").value = ""; loadProjects().catch(showError);
+  });
+  el("proj-select").addEventListener("change", function () {
+    state.proj = this.value; el("search-input").value = ""; loadTree().catch(showError);
+  });
+
+  loadWorkspaces().catch(showError);
+})();
+</script>
+</body>
+</html>

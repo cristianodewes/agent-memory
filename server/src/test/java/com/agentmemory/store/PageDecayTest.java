@@ -178,6 +178,27 @@ class PageDecayTest {
         assertThat(pages.dropWorkingFromLatest(ws, ProjectId.of("proj"))).isZero();
     }
 
+    @Test
+    void slotPagesAreSemanticAndSurviveTheSessionEndWorkingDrop() {
+        // Regression guard (#26): a _slots/ page must be auto-pinned / sweep-exempt — it is classified
+        // SEMANTIC (not WORKING), so the session-end working-drop never demotes it from latest.
+        WorkspaceId ws = freshWorkspace();
+        ProjectId proj = ProjectId.of("proj");
+        PageRecord slot = pages.create(pageAt(ws, "_slots/identity.md"), "Identity", "who I am");
+        PageRecord working = pages.create(pageAt(ws, "scratch/wip.md"), "t", "b");
+
+        assertThat(slot.layer()).as("a slot is SEMANTIC, never WORKING").isEqualTo(MemoryLayer.SEMANTIC);
+
+        int demoted = pages.dropWorkingFromLatest(ws, proj);
+        assertThat(demoted).as("only the scratch page is demoted").isEqualTo(1);
+
+        // The slot is still latest after the drop; the working page is gone from latest.
+        assertThat(pages.readLatest(pageAt(ws, "_slots/identity.md")))
+                .as("slot survives session end").isPresent();
+        assertThat(pages.readLatest(pageAt(ws, "scratch/wip.md"))).isEmpty();
+        assertThat(pages.listLatest(ws, proj)).extracting(PageRecord::id).contains(slot.id());
+    }
+
     // --- the scorer bean is wired from config ---------------------------------------------------
 
     @Test
