@@ -23,9 +23,10 @@ import org.springframework.context.annotation.Bean;
  *
  * <p>The session-end trigger is added to the {@link IngestService} as a post-write listener at
  * startup via {@link #handoffSessionEndRegistration} (the listeners fan out, so it coexists with
- * session consolidation's trigger, #18/#32); it fires on the ingest worker thread after a
- * {@code session-end} event is captured. The registration depends on an {@code ObjectProvider} so it
- * is a no-op when ingest is absent (DB-less context).
+ * session consolidation's trigger, #18/#32). The cheap {@code session-end} check runs on the ingest
+ * worker after the event is captured, but the blocking LLM generation is dispatched off the worker by
+ * the trigger's own executor (issue #78), so it never stalls the ingest drain. The registration
+ * depends on an {@code ObjectProvider} so it is a no-op when ingest is absent (DB-less context).
  */
 @AutoConfiguration(after = StoreConfiguration.class)
 public class HandoffConfiguration {
@@ -36,7 +37,11 @@ public class HandoffConfiguration {
         return new HandoffService(llmProvider, handoffRepository);
     }
 
-    @Bean
+    /**
+     * The session-end → open-handoff trigger. Returned with {@code destroyMethod = "close"} so its
+     * dedicated off-worker executor (issue #78) is shut down with the application context.
+     */
+    @Bean(destroyMethod = "close")
     @ConditionalOnSingleCandidate(DataSource.class)
     public SessionEndHandoffTrigger sessionEndHandoffTrigger(HandoffService handoffService) {
         return new SessionEndHandoffTrigger(handoffService);
