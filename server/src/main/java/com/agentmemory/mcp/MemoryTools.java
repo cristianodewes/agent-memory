@@ -57,9 +57,10 @@ public final class MemoryTools {
         this.json = json;
     }
 
-    /** @return the five read tool specifications to register on the MCP server. */
+    /** @return the read tool specifications to register on the MCP server. */
     public List<SyncToolSpecification> all() {
-        return List.of(memoryQuery(), memoryRecent(), memoryReadPage(), memoryStatus(), memoryBriefing());
+        return List.of(memoryQuery(), memoryRecent(), memoryReadPage(), memoryStatus(), memoryBriefing(),
+                memoryInstallSelfRouting());
     }
 
     // --- shared bits -------------------------------------------------------------------------------
@@ -263,6 +264,27 @@ public final class MemoryTools {
                     slotViews,
                     recent));
         });
+    }
+
+    // --- memory_install_self_routing ---------------------------------------------------------------
+
+    private SyncToolSpecification memoryInstallSelfRouting() {
+        Tool tool = readTool(
+                "memory_install_self_routing",
+                "Return the canonical self-routing snippet to paste into the agent's project "
+                        + "instructions (CLAUDE.md / AGENTS.md) so the agent knows when to recall from "
+                        + "and write to this project's memory. Idempotent: the block is fenced by stable "
+                        + "markers so an installer can replace it in place. Takes no arguments.",
+                Map.of(),
+                List.of());
+        // No scope resolution: self-routing install must work on a brand-new project where nothing is
+        // active yet. The snippet is project-agnostic (scope defaults to the current project at call
+        // time), so there is nothing to resolve here.
+        return spec(tool, request -> json.ok(new McpDtos.SelfRoutingResult(
+                SelfRoutingSnippet.markdown(),
+                SelfRoutingSnippet.BEGIN_MARKER,
+                SelfRoutingSnippet.END_MARKER,
+                "CLAUDE.md or AGENTS.md")));
     }
 
     private static String str(Object o) {

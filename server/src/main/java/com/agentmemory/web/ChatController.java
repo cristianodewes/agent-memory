@@ -84,7 +84,8 @@ public class ChatController {
      * @param body     the request carrying the user's {@code message}.
      * @param response the servlet response the SSE frames are written to.
      * @throws ResponseStatusException {@code 503} when chat is unwired, {@code 400} on a missing message
-     *     or invalid scope (thrown before any streaming begins).
+     *     or invalid scope, or {@code 500} when retrieval fails — all thrown before any streaming begins,
+     *     so a pre-stream failure is a real HTTP error status, not a 200 with an in-band error event.
      */
     @PostMapping(value = "/workspaces/{ws}/projects/{p}/chat",
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -109,17 +110,33 @@ public class ChatController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "invalid scope: " + e.getMessage());
         }
 
-        // Past validation: commit to a 200 event-stream and write the events directly.
+        String question = body.message();
+
+        // Retrieve BEFORE committing to a 200 stream. Recall + page reads are the DB-dependent step most
+        // likely to fail (datasource down, recall pool exhausted); doing it here means such a failure is
+        // a proper HTTP error — nothing has been written yet — rather than a 200 carrying an in-band
+        // "error" event that load balancers and health probes would count as success.
+        ChatService.Grounding grounding;
+        try {
+            grounding = service.retrieve(scope, question);
+        } catch (RuntimeException e) {
+            log.warn("chat retrieve failed for {}/{}: {}",
+                    scope.workspaceSlug(), scope.projectSlug(), e.toString());
+            throw new ResponseStatusException(
+                    HttpStatus.INTERNAL_SERVER_ERROR, "chat retrieval failed");
+        }
+
+        // Past retrieval: commit to a 200 event-stream and write the events directly. A failure of the
+        // (now already-committed) generation step is surfaced as a terminal "error" event instead.
         response.setStatus(HttpStatus.OK.value());
         response.setContentType(MediaType.TEXT_EVENT_STREAM_VALUE);
         response.setCharacterEncoding(StandardCharsets.UTF_8.name());
         response.setHeader("Cache-Control", "no-cache");
         response.setHeader("X-Accel-Buffering", "no"); // disable proxy buffering so events flush promptly
 
-        String question = body.message();
         try {
             PrintWriter writer = response.getWriter();
-            stream(writer, service, scope, question);
+            stream(writer, service, scope, question, grounding);
         } catch (IOException disconnect) {
             // The client went away mid-stream; nothing more to send.
             log.debug("chat stream client disconnected: {}", disconnect.toString());
@@ -127,21 +144,20 @@ public class ChatController {
     }
 
     /** Produce the SSE events synchronously, flushing each so the client renders progressively. */
-    private void stream(PrintWriter writer, ChatService service, Scope scope, String question)
-            throws IOException {
-        ChatService.Grounding grounding;
+    private void stream(PrintWriter writer, ChatService service, Scope scope, String question,
+            ChatService.Grounding grounding) throws IOException {
         ChatService.Answer answer;
         try {
-            grounding = service.retrieve(scope, question);
             sendEvent(writer, "sources",
                     new SourcesEvent(grounding.citations(), grounding.rawFallback()));
             answer = service.answer(question, grounding);
         } catch (RuntimeException e) {
-            // A recall/LLM failure: report it as a terminal error event (the stream has already started,
-            // so we cannot switch to an HTTP error status), then end.
-            log.warn("chat stream failed for {}/{}: {}",
+            // The generation step failed after the stream was committed, so we cannot switch to an HTTP
+            // error status: report a terminal, generic error event. The detail (which may carry SQL or
+            // upstream-provider text) is logged server-side only, never streamed to the client.
+            log.warn("chat generation failed for {}/{}: {}",
                     scope.workspaceSlug(), scope.projectSlug(), e.toString());
-            sendEvent(writer, "error", new ErrorEvent("chat failed: " + e.getMessage()));
+            sendEvent(writer, "error", new ErrorEvent("chat generation failed"));
             return;
         }
 

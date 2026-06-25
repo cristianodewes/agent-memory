@@ -94,6 +94,31 @@ class ChatServiceTest {
     }
 
     @Test
+    void resolvesVectorOnlyPageHitsByIdInsteadOfMislabelingThemAsRaw() {
+        // A page surfaced ONLY by the semantic/vector arm (#16) carries just its surrogate id — its
+        // path, title and snippet are null (HybridRecallService registers it putIfAbsent). Chat must
+        // resolve it by id and cite it like any other page, not render "[1] null (raw observation)".
+        String pageId = "0192f1a0-0000-7000-8000-000000000001";
+        when(recall.search(any())).thenReturn(RecallResult.ofPages(List.of(
+                new RecallHit(HitSource.PAGE, pageId, null, null, null, 0.9, 1, null))));
+        when(pages.findById(any())).thenReturn(Optional.of(pageWithBody("semantic body about retention")));
+
+        ChatService.ChatResult result = service(new ChatProperties(true, 6, 6000, 1024))
+                .chat(Scope.of("acme", "proj"), "how does decay work");
+
+        // It resolved to a real, citeable page (path + title from the store) — not an empty raw blob.
+        assertThat(result.citations()).hasSize(1);
+        assertThat(result.citations()).extracting(ChatService.Citation::path)
+                .containsExactly("notes/page.md");
+        assertThat(result.citations()).extracting(ChatService.Citation::title)
+                .containsExactly("Stored Title");
+        String userPrompt = captured.get().messages().get(1).content();
+        assertThat(userPrompt).contains("[1]").contains("notes/page.md")
+                .contains("semantic body about retention")
+                .doesNotContain("raw observation").doesNotContain("null");
+    }
+
+    @Test
     void boundsTheGroundingContextByMaxContextChars() {
         int maxContextChars = 40;
         when(recall.search(any())).thenReturn(RecallResult.ofPages(List.of(
