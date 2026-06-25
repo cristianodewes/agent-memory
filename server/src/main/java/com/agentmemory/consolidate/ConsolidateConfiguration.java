@@ -2,6 +2,8 @@ package com.agentmemory.consolidate;
 
 import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.mcp.McpReadRepository;
+import com.agentmemory.mcp.MemoryWriteService;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.WikiWriter;
 import javax.sql.DataSource;
@@ -28,7 +30,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @AutoConfiguration(afterName = {
     "com.agentmemory.store.StoreConfiguration",
     "com.agentmemory.links.LinksConfiguration",
-    "com.agentmemory.wiki.WikiConfiguration"
+    "com.agentmemory.wiki.WikiConfiguration",
+    "com.agentmemory.mcp.McpConfiguration"
 })
 public class ConsolidateConfiguration {
 
@@ -56,5 +59,34 @@ public class ConsolidateConfiguration {
     @ConditionalOnBean(SessionSynthesizer.class)
     public SessionConsolidationTrigger sessionConsolidationTrigger(SessionSynthesizer synthesizer) {
         return new SessionConsolidationTrigger(synthesizer);
+    }
+
+    /**
+     * The LLM multi-page consolidation orchestrator (issue #19) behind {@code memory_consolidate}.
+     * Reuses the {@link MemoryWriteService} admission chain for the atomic fan-out (rows + files + one
+     * commit) and {@link McpReadRepository} to show the model existing durable pages as update context.
+     * Gated on those beans being present (a wired store + MCP layer).
+     */
+    @Bean
+    @ConditionalOnBean({SessionObservationReader.class, MemoryWriteService.class, McpReadRepository.class})
+    public Consolidator consolidator(
+            SessionObservationReader reader,
+            LlmProvider llmProvider,
+            MemoryWriteService memoryWriteService,
+            McpReadRepository mcpReadRepository) {
+        return new Consolidator(reader, llmProvider, memoryWriteService, mcpReadRepository);
+    }
+
+    /**
+     * The {@code memory_explore} prose-digest service (issue #19): the briefing snapshot plus one LLM
+     * call, calibrated to staleness. Gated on the read repository + page repository being present.
+     */
+    @Bean
+    @ConditionalOnBean({McpReadRepository.class, PageRepository.class})
+    public MemoryExplore memoryExplore(
+            LlmProvider llmProvider,
+            McpReadRepository mcpReadRepository,
+            PageRepository pageRepository) {
+        return new MemoryExplore(llmProvider, mcpReadRepository, pageRepository);
     }
 }
