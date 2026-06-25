@@ -1,6 +1,10 @@
 package com.agentmemory.recall;
 
+import com.agentmemory.llm.Embedder;
+import com.agentmemory.store.PageEmbeddingStore;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
@@ -21,6 +25,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * Declared {@link AutoConfigureAfter} the JDBC auto-configuration and listed in
  * {@code META-INF/spring/.../AutoConfiguration.imports} so the {@code JdbcTemplate} bean exists when
  * the condition is evaluated.
+ *
+ * <p><strong>Vector arm (#16).</strong> {@link PageEmbeddingStore}, {@link VectorArm}, and
+ * {@link PageEmbeddingService} are also registered when a {@link DataSource} is present. The
+ * {@link Embedder} they need is optional (DD-005): it is injected by bean name via an
+ * {@link ObjectProvider} (the {@code test} double implements both {@link Embedder} and the chat
+ * provider, so a by-type injection would be ambiguous, exactly as in {@code LlmModule}), and may
+ * resolve to {@code null}. When absent or width-mismatched, the vector arm contributes nothing and
+ * recall degrades to FTS + graph — the {@link HybridRecallService} is wired with the arm regardless,
+ * and the arm self-disables.
  */
 @AutoConfiguration(after = JdbcTemplateAutoConfiguration.class)
 public class RecallConfiguration {
@@ -44,9 +57,44 @@ public class RecallConfiguration {
         return new RecallRepository(jdbcTemplate);
     }
 
+    /**
+     * The {@code page_embeddings} persistence (#16). DB-backed, so gated on a {@link DataSource}.
+     */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public RecallService recallService(RecallRepository recallRepository, Fusion fusion) {
-        return new HybridRecallService(recallRepository, fusion);
+    public PageEmbeddingStore pageEmbeddingStore(JdbcTemplate jdbcTemplate) {
+        return new PageEmbeddingStore(jdbcTemplate);
+    }
+
+    /**
+     * The vector (semantic) recall arm (#16). The {@link Embedder} is optional (DD-005) and injected
+     * by name through an {@link ObjectProvider}; {@code getIfAvailable()} yields {@code null} when the
+     * embeddings axis is off, and the arm self-disables.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public VectorArm vectorArm(
+            PageEmbeddingStore store,
+            @Qualifier("embedder") ObjectProvider<Embedder> embedder) {
+        return new VectorArm(store, embedder.getIfAvailable());
+    }
+
+    /**
+     * The embed-on-write / backfill (#14 seam) service (#16). Optional {@link Embedder} as above;
+     * never throws into a write when embeddings are unavailable.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public PageEmbeddingService pageEmbeddingService(
+            PageEmbeddingStore store,
+            @Qualifier("embedder") ObjectProvider<Embedder> embedder) {
+        return new PageEmbeddingService(store, embedder.getIfAvailable());
+    }
+
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public RecallService recallService(
+            RecallRepository recallRepository, Fusion fusion, VectorArm vectorArm) {
+        return new HybridRecallService(recallRepository, fusion, vectorArm);
     }
 }
