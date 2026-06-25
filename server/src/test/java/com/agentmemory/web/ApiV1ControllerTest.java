@@ -107,6 +107,22 @@ class ApiV1ControllerTest {
                 UUID.randomUUID(), wsId, projId, ws, proj, path, title, body);
     }
 
+    /** Seed a resolved wikilink from one page to another (for inbound-link / hub assertions, #28/#85). */
+    private void seedLink(String ws, String proj, String fromPath, String toPath) {
+        JdbcTemplate j = jdbc();
+        UUID fromId = j.queryForObject(
+                "SELECT id FROM pages WHERE workspace=? AND project=? AND path=? AND is_latest",
+                UUID.class, ws, proj, fromPath);
+        UUID toId = j.queryForObject(
+                "SELECT id FROM pages WHERE workspace=? AND project=? AND path=? AND is_latest",
+                UUID.class, ws, proj, toPath);
+        j.update("INSERT INTO links (id, from_page_id, source_workspace, source_project, source_path, "
+                        + "to_page_id, target_workspace, target_project, target_path, anchor, "
+                        + "target_resolved, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, true, ?)",
+                UUID.randomUUID(), fromId, ws, proj, fromPath, toId, ws, proj, toPath, toPath,
+                java.sql.Timestamp.from(Instant.now()));
+    }
+
     private JsonNode getJson(String path) {
         return http.getJsonOk(path);
     }
@@ -186,6 +202,43 @@ class ApiV1ControllerTest {
         assertThat(r.get("rules").isArray()).isTrue();
         assertThat(r.get("rules")).anySatisfy(n -> assertThat(n.asString()).isEqualTo("_rules/no-secrets.md"));
         assertThat(r.get("recent")).isNotEmpty();
+    }
+
+    // --- scent (orientation map: busiest folders + hub pages) -------------------------------------
+
+    @Test
+    void scentReturnsBusiestFoldersAndHubPages() {
+        String[] s = seedProject("concepts/recall.md", "Recall", "b", "x");
+        seedPage(s[0], s[1], "concepts/wiki.md", "Wiki", "b");
+        seedPage(s[0], s[1], "decisions/ddd.md", "DDD", "b");
+        seedPage(s[0], s[1], "README.md", "Readme", "b"); // a root-level page
+        // Make concepts/recall.md a hub with two resolved inbound links.
+        seedLink(s[0], s[1], "concepts/wiki.md", "concepts/recall.md");
+        seedLink(s[0], s[1], "decisions/ddd.md", "concepts/recall.md");
+
+        JsonNode r = getJson("/api/v1/workspaces/" + s[0] + "/projects/" + s[1] + "/scent");
+        assertThat(r.get("scope").get("project").asString()).isEqualTo(s[1]);
+
+        // Folders: concepts(2) is busiest; decisions(1) and (root)(1) also present.
+        JsonNode folders = r.get("folders");
+        assertThat(folders.get(0).get("folder").asString()).isEqualTo("concepts");
+        assertThat(folders.get(0).get("pages").asLong()).isEqualTo(2);
+        assertThat(folders).anySatisfy(f -> assertThat(f.get("folder").asString()).isEqualTo("decisions"));
+        assertThat(folders).anySatisfy(f -> assertThat(f.get("folder").asString()).isEqualTo("(root)"));
+
+        // Hubs: recall is the most-linked page (inbound 2), title hydrated from the latest page.
+        JsonNode hubs = r.get("hubs");
+        assertThat(hubs.get(0).get("path").asString()).isEqualTo("concepts/recall.md");
+        assertThat(hubs.get(0).get("title").asString()).isEqualTo("Recall");
+        assertThat(hubs.get(0).get("inbound").asLong()).isEqualTo(2);
+    }
+
+    @Test
+    void scentHasNoHubsForAProjectWithoutLinks() {
+        String[] s = seedProject("concepts/recall.md", "Recall", "b", "x");
+        JsonNode r = getJson("/api/v1/workspaces/" + s[0] + "/projects/" + s[1] + "/scent");
+        assertThat(r.get("folders")).isNotEmpty();
+        assertThat(r.get("hubs")).isEmpty();
     }
 
     // --- overview bundle ---------------------------------------------------------------------------
