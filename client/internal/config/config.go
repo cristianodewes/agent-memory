@@ -57,6 +57,21 @@ func (c Config) SpoolDir() string {
 	return filepath.Join(c.DataDir, spoolSubdir)
 }
 
+// WithIdentityOverrides returns a copy of c with the server URL and/or token replaced by the
+// non-empty values a .agent-memory.toml marker supplied (see internal/identity). An empty argument
+// leaves the corresponding field untouched, so a marker that pins only identity (no server fields)
+// keeps the environment-derived endpoint. This is how a per-tree marker can also point a project at
+// a different server without environment variables.
+func (c Config) WithIdentityOverrides(serverURL, token string) Config {
+	if s := strings.TrimSpace(serverURL); s != "" {
+		c.ServerURL = s
+	}
+	if t := strings.TrimSpace(token); t != "" {
+		c.Token = t
+	}
+	return c
+}
+
 // resolveDataDir expands and absolutizes the configured data dir, defaulting to ~/.agent-memory.
 func resolveDataDir(configured string) string {
 	configured = strings.TrimSpace(configured)
