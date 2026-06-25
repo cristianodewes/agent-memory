@@ -14,5 +14,6 @@ com.agentmemory.graph.GraphConfiguration
 com.agentmemory.timetravel.TimeTravelConfiguration
 com.agentmemory.forget.ForgetConfiguration
 com.agentmemory.security.SecurityConfiguration
+com.agentmemory.curate.CuratorConfiguration
 com.agentmemory.chat.ChatConfiguration
 com.agentmemory.eval.EvalGateConfiguration

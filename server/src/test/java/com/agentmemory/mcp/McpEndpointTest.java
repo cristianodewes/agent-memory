@@ -283,6 +283,104 @@ class McpEndpointTest {
         assertThat(top.get("rank").asInt()).isEqualTo(1);
     }
 
+    /** Seed two sibling projects (alpha, beta) in a fresh workspace, each with a page carrying {@code token}. */
+    private String seedCrossProjectCorpus(String token) {
+        String ws = "ws" + UUID.randomUUID().toString().replace("-", "");
+        UUID wsId = UUID.randomUUID();
+        jdbc().update("INSERT INTO workspaces (id, slug) VALUES (?, ?)", wsId, ws);
+        seedProjectPage(wsId, ws, "alpha", "concepts/a.md", "Alpha page", "alpha covers " + token);
+        seedProjectPage(wsId, ws, "beta", "concepts/b.md", "Beta page", "beta covers " + token);
+        return ws;
+    }
+
+    private void seedProjectPage(
+            UUID wsId, String ws, String proj, String path, String title, String body) {
+        UUID projId = UUID.randomUUID();
+        jdbc().update("INSERT INTO projects (id, workspace_id, workspace, slug) VALUES (?, ?, ?, ?)",
+                projId, wsId, ws, proj);
+        seedPageRow(wsId, projId, ws, proj, path, title, body);
+    }
+
+    /** Insert one latest page row under an already-existing project. */
+    private void seedPageRow(
+            UUID wsId, UUID projId, String ws, String proj, String path, String title, String body) {
+        jdbc().update("INSERT INTO pages (id, workspace_id, project_id, workspace, project, path, "
+                        + "title, body, is_latest, access_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 0)",
+                UUID.randomUUID(), wsId, projId, ws, proj, path, title, body);
+    }
+
+    @Test
+    void memoryQueryAcrossNamedScopesAnnotatesEachHitsOrigin() {
+        String tok = "ztoken" + UUID.randomUUID().toString().replace("-", "");
+        String ws = seedCrossProjectCorpus(tok);
+        JsonNode r = json(call("memory_query", Map.of(
+                "query", tok,
+                "scopes", List.of(
+                        Map.of("workspace", ws, "project", "alpha"),
+                        Map.of("workspace", ws, "project", "beta")))));
+
+        assertThat(r.get("global").asBoolean()).isFalse();
+        assertThat(r.get("scopes")).hasSize(2);
+        assertThat(r.get("hits")).isNotEmpty();
+        // Every hit is annotated with its origin workspace + project, and only the requested ones appear.
+        for (JsonNode h : r.get("hits")) {
+            assertThat(h.get("workspace").asString()).isEqualTo(ws);
+            assertThat(h.get("project").asString()).isIn("alpha", "beta");
+        }
+    }
+
+    @Test
+    void memoryQueryGlobalSearchesEveryProject() {
+        String tok = "ztoken" + UUID.randomUUID().toString().replace("-", "");
+        String ws = seedCrossProjectCorpus(tok);
+        JsonNode r = json(call("memory_query", Map.of("query", tok, "global", true)));
+
+        assertThat(r.get("global").asBoolean()).isTrue();
+        // The nonce keeps other tests' data out, so the global result is exactly alpha + beta here.
+        boolean alpha = false;
+        boolean beta = false;
+        for (JsonNode h : r.get("hits")) {
+            assertThat(h.get("workspace").asString()).isEqualTo(ws);
+            if ("alpha".equals(h.get("project").asString())) {
+                alpha = true;
+            }
+            if ("beta".equals(h.get("project").asString())) {
+                beta = true;
+            }
+        }
+        assertThat(alpha).as("alpha project reached by global query").isTrue();
+        assertThat(beta).as("beta project reached by global query").isTrue();
+    }
+
+    // --- memory_lint (issue #29) -------------------------------------------------------------------
+
+    @Test
+    void memoryLintReportsRuleFindingsAndStagesALintPage() {
+        // Two same-title pages in ONE fresh project -> a DUPLICATE_TITLE rule finding.
+        String ws = "ws" + UUID.randomUUID().toString().replace("-", "");
+        UUID wsId = UUID.randomUUID();
+        UUID projId = UUID.randomUUID();
+        jdbc().update("INSERT INTO workspaces (id, slug) VALUES (?, ?)", wsId, ws);
+        jdbc().update("INSERT INTO projects (id, workspace_id, workspace, slug) VALUES (?, ?, ?, ?)",
+                projId, wsId, ws, "app");
+        seedPageRow(wsId, projId, ws, "app", "concepts/a.md", "Recall design", "body a");
+        seedPageRow(wsId, projId, ws, "app", "concepts/b.md", "recall design", "body b");
+
+        // Rule-only preview: no LLM, nothing written.
+        JsonNode preview = json(call("memory_lint", Map.of(
+                "workspace", ws, "project", "app", "dry_run", true, "contradictions", false)));
+        assertThat(preview.get("dryRun").asBoolean()).isTrue();
+        assertThat(preview.get("written").asBoolean()).isFalse();
+        assertThat(preview.get("ruleFindings")).anySatisfy(
+                f -> assertThat(f.get("rule").asString()).isEqualTo("DUPLICATE_TITLE"));
+
+        // Stage it: a _lint/ report page is written.
+        JsonNode staged = json(call("memory_lint", Map.of(
+                "workspace", ws, "project", "app", "dry_run", false, "contradictions", false)));
+        assertThat(staged.get("written").asBoolean()).isTrue();
+        assertThat(staged.get("lintPath").asString()).isEqualTo("_lint/report.md");
+    }
+
     // --- memory_read_page --------------------------------------------------------------------------
 
     @Test
