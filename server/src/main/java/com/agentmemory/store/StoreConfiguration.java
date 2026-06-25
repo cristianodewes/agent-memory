@@ -59,6 +59,20 @@ public class StoreConfiguration {
     }
 
     /**
+     * The {@code audit_log} writer (issue #33). The shared seam for recording mutations with their
+     * before/after identity (lifecycle ops, and reusable by other writers); gated on a
+     * {@code DataSource} like the others.
+     *
+     * @param jdbcTemplate the auto-configured JDBC template.
+     * @return the audit-log writer.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public AuditWriter auditWriter(JdbcTemplate jdbcTemplate) {
+        return new JdbcAuditWriter(jdbcTemplate);
+    }
+
+    /**
      * The single observation writer (issue #8, invariant #2). Gated on a {@code DataSource} exactly
      * like {@link #pageRepository}; consumes the auto-configured {@link JdbcTemplate} and
      * {@link PlatformTransactionManager} rather than minting its own, so there is one of each in the
