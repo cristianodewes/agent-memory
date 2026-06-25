@@ -60,7 +60,23 @@ public final class AgentMemoryConfig {
         Path resolved = canonicalizeDataDir(props.data().dir());
         ensureWritableDirectory(resolved);
         ensureLayout(resolved);
+        validateAuth(props.auth());
         return new AgentMemoryConfig(props, resolved);
+    }
+
+    /**
+     * Fail fast on an auth misconfiguration (issue #38): enabling auth without a token would either
+     * lock every caller out or accept an empty/blank token, so require a non-blank token whenever
+     * {@code enabled} is true. Disabled auth (the loopback default) needs nothing.
+     */
+    static void validateAuth(AgentMemoryProperties.Auth auth) {
+        if (auth.enabled() && !auth.hasToken()) {
+            throw new ConfigException(
+                    "agent-memory.auth.enabled is true but no token is set. Provide a bearer token "
+                            + "(config key 'agent-memory.auth.token' or env AGENT_MEMORY_AUTH_TOKEN), or "
+                            + "generate one with '--generate-auth-token'. To run loopback-only without "
+                            + "auth, leave agent-memory.auth.enabled unset (false).");
+        }
     }
 
     // --- data-dir resolution -------------------------------------------------------------------

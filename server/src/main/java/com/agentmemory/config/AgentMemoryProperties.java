@@ -114,15 +114,33 @@ public record AgentMemoryProperties(
     }
 
     /**
-     * Server auth stub. Enforcement (bearer token on {@code /mcp} etc., allowed-hosts guard) is
-     * #38; here we only carry the toggle + token so call sites compile against a typed value.
+     * Server auth (issue #38 / DD-007). Secure-by-default: the single-user laptop runs loopback-only
+     * with no auth ({@code enabled=false}); exposing the server is a deliberate opt-in that turns on a
+     * bearer token (and HTTP Basic on {@code /web} with the token as the password) plus, on a non-loopback
+     * bind, an allowed-hosts guard against DNS rebinding.
      *
-     * @param enabled whether bearer auth is required; {@code false} = loopback-only mode (DD-007).
-     * @param token   bearer token expected on protected routes; redacted in {@link #toString()}.
+     * @param enabled      whether bearer auth is required; {@code false} = loopback-only mode (DD-007).
+     * @param token        bearer token expected on protected routes; redacted in {@link #toString()}.
+     *     Required when {@code enabled} is true (validated in {@link AgentMemoryConfig}).
+     * @param allowedHosts Host-header values permitted on a non-loopback bind (the anti-DNS-rebinding
+     *     allow-list, {@code AGENT_MEMORY_AUTH_ALLOWED_HOSTS}). Empty ⇒ only loopback host names are
+     *     accepted; a non-loopback bind with an empty list rejects browser requests by Host (the guard).
+     *     Compared case-insensitively against the host portion of the {@code Host} header (port ignored).
      */
     public record Auth(
             @DefaultValue("false") boolean enabled,
-            @DefaultValue("") String token) {
+            @DefaultValue("") String token,
+            @DefaultValue List<String> allowedHosts) {
+
+        public Auth {
+            // Normalize the allow-list to a defensive, lower-cased copy with blanks dropped so the
+            // guard's membership test is a simple contains() and never NPEs on an unset list.
+            allowedHosts = allowedHosts == null ? List.of()
+                    : allowedHosts.stream()
+                            .filter(h -> h != null && !h.isBlank())
+                            .map(h -> h.trim().toLowerCase(java.util.Locale.ROOT))
+                            .toList();
+        }
 
         public boolean hasToken() {
             return token != null && !token.isBlank();
@@ -130,7 +148,8 @@ public record AgentMemoryProperties(
 
         @Override
         public String toString() {
-            return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>") + "]";
+            return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>")
+                    + ", allowedHosts=" + allowedHosts + "]";
         }
     }
 
