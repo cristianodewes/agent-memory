@@ -3,6 +3,7 @@ package com.agentmemory.mcp;
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.Uuid7;
 import com.agentmemory.hooks.Sanitizer;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.store.PageWriteCallback;
@@ -29,7 +30,10 @@ import org.springframework.transaction.support.TransactionTemplate;
  * to git ({@link WikiWriter}, DD-002) and (2) records the mutation in {@code audit_log}. Row, file,
  * commit and audit are therefore one atomic logical operation — and because the {@code pages}
  * full-text {@code search_vector} is a {@code GENERATED ... STORED} column populated by the INSERT,
- * the page is immediately searchable, with no post-commit indexing step.
+ * the page is immediately searchable, with no post-commit indexing step. The page's wikilink graph is
+ * then maintained via {@link WikiLinkService#syncPageLinks} (#27), so any {@code [[links]]} the user
+ * wrote in the body become live edges — this is the write path's slice of the same link maintenance
+ * reindex and consolidation perform.
  *
  * <h2>memory_delete_page</h2>
  * Delete by exact path, idempotent. In one transaction: the page's version rows are removed from the
@@ -52,6 +56,7 @@ public final class MemoryWriteService {
 
     private final PageRepository pages;
     private final WikiWriter wikiWriter;
+    private final WikiLinkService links;
     private final Sanitizer sanitizer;
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
@@ -59,11 +64,13 @@ public final class MemoryWriteService {
     public MemoryWriteService(
             PageRepository pages,
             WikiWriter wikiWriter,
+            WikiLinkService links,
             Sanitizer sanitizer,
             JdbcTemplate jdbc,
             PlatformTransactionManager txManager) {
         this.pages = pages;
         this.wikiWriter = wikiWriter;
+        this.links = links;
         this.sanitizer = sanitizer;
         this.jdbc = jdbc;
         this.tx = new TransactionTemplate(txManager);
@@ -101,6 +108,10 @@ public final class MemoryWriteService {
                     "{\"existed\":" + (persisted.page().supersedes() != null) + "}");
         };
         PageRecord persisted = pages.create(identity, title, redacted, callback);
+        // Maintain the wikilink graph for the page just written (#27): record its outgoing [[links]]
+        // and re-point any inbound links now that this page (version) exists. Same seam reindex and
+        // consolidation use, so memory_write_page is not a dormant write path for links.
+        links.syncPageLinks(persisted);
         log.debug("memory_write_page {} by {} -> {}",
                 identity.page().value(), actor, persisted.id().value());
         return persisted;
