@@ -216,11 +216,11 @@ func (d *Drainer) countRemaining() int {
 	return len(entries)
 }
 
-// nextBackoff doubles d, capped at max.
-func nextBackoff(d, max time.Duration) time.Duration {
+// nextBackoff doubles d, capped at limit.
+func nextBackoff(d, limit time.Duration) time.Duration {
 	n := d * 2
-	if n > max {
-		return max
+	if n > limit {
+		return limit
 	}
 	return n
 }

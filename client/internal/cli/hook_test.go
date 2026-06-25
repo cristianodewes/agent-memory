@@ -12,8 +12,8 @@ import (
 
 // runHookCmd executes the `hook` subcommand with the given args and stdin, isolating the data dir to
 // a temp dir (so the spool lands there) and pointing the server at an unused port (so any boundary
-// drain hits a refused connection). Returns the command error and the captured stderr.
-func runHookCmd(t *testing.T, stdin string, args ...string) (error, string) {
+// drain hits a refused connection). Returns the captured stderr and the command error.
+func runHookCmd(t *testing.T, stdin string, args ...string) (string, error) {
 	t.Helper()
 	dataDir := t.TempDir()
 	t.Setenv(config.EnvDataDir, dataDir)
@@ -27,7 +27,7 @@ func runHookCmd(t *testing.T, stdin string, args ...string) (error, string) {
 	root.SetErr(&errBuf)
 	root.SetOut(&errBuf)
 	err := root.Execute()
-	return err, errBuf.String()
+	return errBuf.String(), err
 }
 
 func spoolFiles(t *testing.T, dataDir string) []string {
@@ -115,7 +115,7 @@ func TestCaptureReadsPayloadFlagLiteral(t *testing.T) {
 
 func TestCaptureMissingEventIsAnError(t *testing.T) {
 	// No --event and no hook_event_name ⇒ capture cannot classify the event: it is a usage error.
-	err, _ := runHookCmd(t, `{"prompt":"hi"}`)
+	_, err := runHookCmd(t, `{"prompt":"hi"}`)
 	if err == nil {
 		t.Fatal("expected an error when no event is provided")
 	}
