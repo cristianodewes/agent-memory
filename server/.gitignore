@@ -1,6 +1,10 @@
 HELP.md
 target/
 .mvn/wrapper/maven-wrapper.jar
+
+# Local agent-memory config (issue #2); the .example template is tracked.
+/agent-memory.yml
+/agent-memory.toml
 !**/src/main/**/target/
 !**/src/test/**/target/
 

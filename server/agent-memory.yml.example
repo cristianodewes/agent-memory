@@ -1,0 +1,44 @@
+# agent-memory server configuration (example).
+#
+# Copy this file to `agent-memory.yml` next to where you start the server, or point
+# AGENT_MEMORY_CONFIG at it. Every value below is optional and shown at its built-in default;
+# delete the keys you don't need. Environment variables override this file (e.g. set
+# AGENT_MEMORY_SERVER_PORT to override agent-memory.server.port), which overrides these defaults.
+#
+# Precedence (lowest first):  built-in defaults  ->  this file  ->  environment variables.
+
+agent-memory:
+  server:
+    address: 127.0.0.1   # loopback by default (DD-007); set 0.0.0.0 to expose (then enable auth)
+    port: 8080
+    base-path: /
+
+  data:
+    # Canonical data dir. Resolved to an absolute path and created at startup; a leading ~ is
+    # expanded to your home directory. Holds wiki/ raw/ db/ logs/.
+    dir: ~/.agent-memory
+
+  db:
+    url: jdbc:postgresql://127.0.0.1:5432/agent_memory
+    username: agent_memory
+    password: ""
+
+  # LLM is required at runtime (DD-005) but only wired/validated in issue #6. These are stubs.
+  llm:
+    auth:
+      provider: ""       # anthropic | openai | openai-compat | gemini
+      api-key: ""
+      base-url: ""       # for openai-compat / self-hosted endpoints
+      model: ""
+
+  embeddings:
+    auth:
+      provider: ""
+      api-key: ""
+      base-url: ""
+      model: ""
+
+  # Server auth is a stub here; enforcement lands in issue #38.
+  auth:
+    enabled: false       # false = loopback-only, no token required (DD-007)
+    token: ""
