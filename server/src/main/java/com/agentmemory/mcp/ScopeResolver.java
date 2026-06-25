@@ -1,5 +1,7 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.config.AutoScope;
+import com.agentmemory.core.ActorResolver;
 import com.agentmemory.recall.Scope;
 import java.util.Map;
 import java.util.Optional;
@@ -14,13 +16,39 @@ import java.util.Optional;
  * <p>If {@code workspace} is given, {@code project} must be too (and vice-versa) — a half-specified
  * scope is a usage error, surfaced to the tool as a {@link ScopeUnresolvedException} so it returns a
  * clear tool error rather than guessing.
+ *
+ * <h2>auto_scope (issue #39)</h2>
+ * On a shared server the implicit default is isolated per the configured {@link AutoScope} mode:
+ * <ul>
+ *   <li>{@link AutoScope#SINGLE_SLOT} (default) — the server's globally most-recent project (unchanged
+ *       single-user behavior).</li>
+ *   <li>{@link AutoScope#PER_ACTOR} — the most-recent project of the <em>authenticated</em> caller
+ *       ({@link ActorResolver}, read on this MCP request thread). With no authenticated actor it falls
+ *       back to the global default, so loopback / single-user is unaffected.</li>
+ * </ul>
+ * An explicit {@code workspace}+{@code project} always wins regardless of mode.
  */
 public class ScopeResolver {
 
     private final McpReadRepository reads;
+    private final AutoScope autoScope;
+    private final ActorResolver actors;
 
+    /** Default resolver: {@link AutoScope#SINGLE_SLOT}, no actor (single-user / tests). */
     public ScopeResolver(McpReadRepository reads) {
+        this(reads, AutoScope.SINGLE_SLOT, ActorResolver.NONE);
+    }
+
+    /**
+     * @param reads     the activity-scope reads.
+     * @param autoScope the auto_scope isolation mode (#39); {@code null} ⇒ {@link AutoScope#SINGLE_SLOT}.
+     * @param actors    resolves the authenticated caller for {@link AutoScope#PER_ACTOR}; {@code null} ⇒
+     *     {@link ActorResolver#NONE} (never attributes, i.e. always the global default).
+     */
+    public ScopeResolver(McpReadRepository reads, AutoScope autoScope, ActorResolver actors) {
         this.reads = reads;
+        this.autoScope = (autoScope == null) ? AutoScope.SINGLE_SLOT : autoScope;
+        this.actors = (actors == null) ? ActorResolver.NONE : actors;
     }
 
     /**
@@ -50,8 +78,18 @@ public class ScopeResolver {
                 throw new ScopeUnresolvedException("invalid scope: " + e.getMessage());
             }
         }
-        // No explicit scope: default to the most recently active project (DD-003).
-        Optional<Scope> recent = reads.mostRecentActivityScope();
+        // No explicit scope: default to the most recently active project (DD-003), isolated per the
+        // auto_scope mode. PER_ACTOR restricts to the authenticated caller's own activity; SINGLE_SLOT
+        // is the global most-recent. SESSION_AWARE is rejected at startup (AgentMemoryConfig); this
+        // exhaustive switch is the defense-in-depth guard so it can never silently fall back to global.
+        String actor = switch (autoScope) {
+            case PER_ACTOR -> actors.currentActor();
+            case SINGLE_SLOT -> null;
+            case SESSION_AWARE -> throw new ScopeUnresolvedException(
+                    "auto_scope 'session_aware' is not yet supported; configure 'single_slot' or "
+                            + "'per_actor'");
+        };
+        Optional<Scope> recent = reads.mostRecentActivityScope(actor);
         return recent.orElseThrow(() -> new ScopeUnresolvedException(
                 "no workspace/project given and no recent hook activity to default from; pass "
                         + "'workspace' and 'project' explicitly"));

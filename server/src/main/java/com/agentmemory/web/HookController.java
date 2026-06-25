@@ -1,5 +1,6 @@
 package com.agentmemory.web;
 
+import com.agentmemory.core.ActorResolver;
 import com.agentmemory.hooks.HookPayload;
 import com.agentmemory.hooks.IngestService;
 import com.agentmemory.hooks.IngestStatus;
@@ -51,14 +52,22 @@ public class HookController {
 
     private final ObjectProvider<IngestService> ingest;
     private final ObjectMapper mapper;
+    private final ActorResolver actors;
 
     /**
      * @param ingest the ingest pipeline (present only when the store layer is wired).
      * @param mapper the JSON mapper, used to parse batch items one at a time.
+     * @param actors resolves the authenticated user to attribute captures to (issue #39). Injected via
+     *     an {@link ObjectProvider} so a context without the security auto-config (a DB-less/web slice)
+     *     still constructs the controller; it then falls back to {@link ActorResolver#NONE} (no actor).
      */
-    public HookController(ObjectProvider<IngestService> ingest, ObjectMapper mapper) {
+    public HookController(
+            ObjectProvider<IngestService> ingest,
+            ObjectMapper mapper,
+            ObjectProvider<ActorResolver> actors) {
         this.ingest = ingest;
         this.mapper = mapper;
+        this.actors = actors.getIfAvailable(() -> ActorResolver.NONE);
     }
 
     /**
@@ -73,7 +82,8 @@ public class HookController {
         if (svc == null) {
             return unavailable();
         }
-        IngestStatus status = svc.ingest(payload);
+        // Resolve the actor here, on the request thread — the async write worker has no security context.
+        IngestStatus status = svc.ingest(payload, actors.currentActor());
         return ResponseEntity.status(httpStatusFor(status)).body(Map.of("status", label(status)));
     }
 
@@ -94,11 +104,13 @@ public class HookController {
         int invalid = 0;
         List<Map<String, Object>> results = new ArrayList<>(items.size());
 
+        // One drain is one authenticated caller: resolve the actor once, on the request thread.
+        String actor = actors.currentActor();
         for (int i = 0; i < items.size(); i++) {
             IngestStatus status;
             try {
                 HookPayload payload = mapper.treeToValue(items.get(i), HookPayload.class);
-                status = svc.ingest(payload);
+                status = svc.ingest(payload, actor);
             } catch (RuntimeException e) {
                 // A bad item must not abort the batch (prior-art stall bug): record and continue.
                 log.debug("batch item {} rejected: {}", i, e.toString());

@@ -1,7 +1,9 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.consolidate.Consolidator;
 import com.agentmemory.consolidate.MemoryExplore;
+import com.agentmemory.core.ActorResolver;
 import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
@@ -58,10 +60,18 @@ public class McpConfiguration {
         return new McpReadRepository(jdbcTemplate);
     }
 
+    /**
+     * The MCP scope resolver (DD-003), configured with the {@code auto_scope} isolation mode (#39). In
+     * {@link com.agentmemory.config.AutoScope#PER_ACTOR PER_ACTOR} mode it reads the authenticated
+     * caller from the {@link ActorResolver} (resolved via an {@link ObjectProvider} so a context
+     * without the security auto-config still wires — it then never attributes, i.e. global default).
+     */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public ScopeResolver mcpScopeResolver(McpReadRepository reads) {
-        return new ScopeResolver(reads);
+    public ScopeResolver mcpScopeResolver(
+            McpReadRepository reads, AgentMemoryConfig config, ObjectProvider<ActorResolver> actors) {
+        return new ScopeResolver(
+                reads, config.scope().auto(), actors.getIfAvailable(() -> ActorResolver.NONE));
     }
 
     @Bean
@@ -240,7 +250,10 @@ public class McpConfiguration {
                                 + "(soft-delete then purge; pass dry_run=true to preview). Handoffs: "
                                 + "memory_handoff_accept picks up where the previous agent left off "
                                 + "(single-use), memory_handoff_begin opens one explicitly, "
-                                + "memory_handoff_cancel expires a mistaken one. Scope defaults to the "
+                                + "memory_handoff_cancel expires a mistaken one. Setup: "
+                                + "memory_install_self_routing returns a snippet to paste into "
+                                + "CLAUDE.md/AGENTS.md so an agent routes to these tools automatically. "
+                                + "Scope defaults to the "
                                 + "most recently active project; pass workspace+project to override.")
                 .tools(specs)
                 .build();

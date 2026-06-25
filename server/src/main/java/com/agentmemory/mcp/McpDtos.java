@@ -140,4 +140,11 @@ final class McpDtos {
             List<String> rules,
             List<SlotView> slots,
             List<RecentPage> recent) {}
+
+    /**
+     * {@code memory_install_self_routing} result: the canonical routing snippet to paste into the
+     * agent's project instructions, plus the marker fences (so an installer can replace it in place)
+     * and the target-file hint.
+     */
+    record SelfRoutingResult(String snippet, String beginMarker, String endMarker, String target) {}
 }
