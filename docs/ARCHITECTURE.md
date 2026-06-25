@@ -166,7 +166,7 @@ next session-start ─▶ Go hook fetches + injects handoff ─▶ accept marks 
 | `observations_fts` | `tsvector` over raw observations (bounded fallback). |
 | `links` | Wikilinks / cross-refs; `to_page_id` nullable (forward/deferred links); cross-project scope. |
 | `handoffs` | Typed handoff records (open / accepted / expired). |
-| `page_embeddings` | `pgvector` column with `(provider, model, dim)` denormalized. |
+| `page_embeddings` | `pgvector` column with `(provider, model, dim)` denormalized. **Default dim contract = `1024`** (the default embedder, Voyage `voyage-3`; see §2.4 and `com.agentmemory.llm.VoyageEmbedder.DEFAULT_DIMENSIONS`). The `pgvector` column in #4 sizes to this; a provider returning a different width fails the `EmbeddingResult`/`Embedder.dimensions()` check rather than being stored. |
 | `audit_log` | Every mutation, addressable by `at DESC`. |
 | `pending_writes` | Self-improvement proposals awaiting/approved through the gate. |
 
