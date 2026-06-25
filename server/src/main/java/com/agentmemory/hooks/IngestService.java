@@ -54,6 +54,15 @@ public final class IngestService implements AutoCloseable {
     private final AtomicLong inFlight = new AtomicLong();
 
     /**
+     * Optional post-write hook (issue #22): invoked on the single worker thread after each observation
+     * is durably written, off the HTTP hot path and outside the write transaction. The handoff trigger
+     * uses it to synthesize a handoff when a {@code session-end} lands. {@code volatile} because it is
+     * set from another thread after construction; a throwing listener is caught so it never stalls the
+     * worker.
+     */
+    private volatile java.util.function.Consumer<com.agentmemory.core.Observation> postWriteListener;
+
+    /**
      * Spring entry point.
      *
      * @param config    resolved server config; its {@code ingest()} block tunes the queue.
@@ -136,7 +145,8 @@ public final class IngestService implements AutoCloseable {
 
     private void runWrite(Sanitized<NewObservation> sanitized) {
         try {
-            writer.append(sanitized);
+            com.agentmemory.core.Observation persisted = writer.append(sanitized);
+            notifyPostWrite(persisted);
         } catch (RuntimeException e) {
             // A write failure must not kill the single worker thread (that would stall all ingest).
             // Log and drop; the client's spool still holds the event and a later drain retries it.
@@ -145,6 +155,33 @@ public final class IngestService implements AutoCloseable {
         } finally {
             inFlight.decrementAndGet();
         }
+    }
+
+    /** Fire the optional post-write listener; a listener failure is logged, never propagated. */
+    private void notifyPostWrite(com.agentmemory.core.Observation persisted) {
+        java.util.function.Consumer<com.agentmemory.core.Observation> listener = this.postWriteListener;
+        if (listener == null || persisted == null) {
+            return;
+        }
+        try {
+            listener.accept(persisted);
+        } catch (RuntimeException e) {
+            // The capture already succeeded and is durable; a downstream reaction (e.g. handoff
+            // synthesis) failing must not affect ingest. Log and move on.
+            log.warn("post-write listener failed for observation {}: {}",
+                    persisted.id().value(), e.toString());
+        }
+    }
+
+    /**
+     * Register the optional post-write listener (issue #22). Invoked on the single worker thread after
+     * each successful write, off the HTTP path and outside the write transaction. At most one listener
+     * is held; a {@code null} clears it.
+     *
+     * @param listener the post-write reaction, or {@code null} to clear.
+     */
+    public void setPostWriteListener(java.util.function.Consumer<com.agentmemory.core.Observation> listener) {
+        this.postWriteListener = listener;
     }
 
     /**

@@ -137,9 +137,88 @@ class McpEndpointTest {
         List<Tool> tools = client.listTools().tools();
         assertThat(tools).extracting(Tool::name).contains(
                 "memory_query", "memory_recent", "memory_read_page", "memory_status", "memory_briefing");
-        // every advertised tool is flagged read-only
-        assertThat(tools).filteredOn(t -> t.name().startsWith("memory_"))
+        // the read tools are flagged read-only (the handoff tools are not — asserted separately)
+        assertThat(tools).filteredOn(t -> t.name().startsWith("memory_")
+                        && !t.name().startsWith("memory_handoff_"))
                 .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isTrue());
+    }
+
+    // --- handoff tools (issue #22) -----------------------------------------------------------------
+
+    /** Seed an OPEN handoff row directly, returning its id (so accept/cancel can be tested over MCP). */
+    private UUID seedOpenHandoff(String ws, String proj, String summary) {
+        UUID sessionId = jdbc().queryForObject(
+                "SELECT id FROM sessions WHERE workspace = ? AND project = ? LIMIT 1",
+                UUID.class, ws, proj);
+        UUID wsId = jdbc().queryForObject("SELECT id FROM workspaces WHERE slug = ?", UUID.class, ws);
+        UUID projId = jdbc().queryForObject(
+                "SELECT id FROM projects WHERE workspace = ? AND slug = ?", UUID.class, ws, proj);
+        UUID id = UUID.randomUUID();
+        jdbc().update(
+                "INSERT INTO handoffs (id, workspace_id, project_id, workspace, project, from_session, "
+                        + "status, summary, open_questions, next_steps, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 'open', ?, '{}', '{}', ?)",
+                id, wsId, projId, ws, proj, sessionId, summary, java.sql.Timestamp.from(Instant.now()));
+        return id;
+    }
+
+    @Test
+    void listsTheThreeHandoffToolsAsMutating() {
+        List<Tool> tools = client.listTools().tools();
+        assertThat(tools).extracting(Tool::name).contains(
+                "memory_handoff_begin", "memory_handoff_accept", "memory_handoff_cancel");
+        // handoff tools mutate the lifecycle — not read-only.
+        assertThat(tools).filteredOn(t -> t.name().startsWith("memory_handoff_"))
+                .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isFalse());
+    }
+
+    @Test
+    void handoffAcceptReturnsTheOpenHandoffOnceThenNone() {
+        String[] s = seedProject("t", "b", "x");
+        UUID handoffId = seedOpenHandoff(s[0], s[1], "where I left off");
+
+        // First accept consumes it: present, the seeded body, marked accepted.
+        JsonNode first = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(first.get("present").asBoolean()).isTrue();
+        assertThat(first.get("id").asString()).isEqualTo(handoffId.toString());
+        assertThat(first.get("summary").asString()).isEqualTo("where I left off");
+        assertThat(first.get("status").asString()).isEqualTo("accepted");
+
+        // Second accept finds nothing — single-use — but is still a well-formed result, not an error.
+        JsonNode second = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(second.get("present").asBoolean()).isFalse();
+        assertThat(second.get("id").isNull()).isTrue();
+    }
+
+    @Test
+    void handoffCancelExpiresTheOpenHandoff() {
+        String[] s = seedProject("t", "b", "x");
+        UUID handoffId = seedOpenHandoff(s[0], s[1], "opened by mistake");
+
+        JsonNode cancelled = json(call("memory_handoff_cancel", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(cancelled.get("present").asBoolean()).isTrue();
+        assertThat(cancelled.get("id").asString()).isEqualTo(handoffId.toString());
+        assertThat(cancelled.get("status").asString()).isEqualTo("expired");
+
+        // Now nothing is open: accept finds none.
+        JsonNode accept = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(accept.get("present").asBoolean()).isFalse();
+    }
+
+    @Test
+    void handoffAcceptOnEmptyProjectIsWellFormedNotAnError() {
+        String[] s = seedProject("t", "b", "x");
+        JsonNode r = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(r.get("present").asBoolean()).isFalse();
+        assertThat(r.get("scope").get("project").asString()).isEqualTo("proj");
+    }
+
+    @Test
+    void handoffBeginRequiresASessionId() {
+        String[] s = seedProject("t", "b", "x");
+        CallToolResult result = call("memory_handoff_begin", Map.of("workspace", s[0], "project", s[1]));
+        // No sessionId → a clear tool error (the schema marks it required; the handler guards too).
+        assertThat(result.isError()).isTrue();
     }
 
     // --- memory_query ------------------------------------------------------------------------------

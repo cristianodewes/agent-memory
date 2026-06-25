@@ -59,6 +59,19 @@ public class StoreConfiguration {
     }
 
     /**
+     * The {@code handoffs} repository (issue #22): single-use, one-open-per-project typed handoffs.
+     * Gated on a {@code DataSource} exactly like {@link #pageRepository}.
+     *
+     * @param jdbcTemplate the auto-configured JDBC template.
+     * @return the handoff store.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public HandoffRepository handoffRepository(JdbcTemplate jdbcTemplate) {
+        return new JdbcHandoffRepository(jdbcTemplate);
+    }
+
+    /**
      * The single observation writer (issue #8, invariant #2). Gated on a {@code DataSource} exactly
      * like {@link #pageRepository}; consumes the auto-configured {@link JdbcTemplate} and
      * {@link PlatformTransactionManager} rather than minting its own, so there is one of each in the
