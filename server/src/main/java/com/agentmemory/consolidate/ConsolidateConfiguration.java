@@ -1,5 +1,6 @@
 package com.agentmemory.consolidate;
 
+import com.agentmemory.hooks.ObservationListener;
 import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.WikiWriter;
@@ -50,5 +51,20 @@ public class ConsolidateConfiguration {
     @ConditionalOnBean(SessionSynthesizer.class)
     public SessionConsolidationTrigger sessionConsolidationTrigger(SessionSynthesizer synthesizer) {
         return new SessionConsolidationTrigger(synthesizer);
+    }
+
+    /**
+     * The adapter that actually wires the trigger into capture: published as an
+     * {@link ObservationListener}, which the ingest pipeline (#8) invokes after every write. Without
+     * this bean the trigger is a seam nothing calls and session-end synthesis never runs. Gated on the
+     * trigger (declared above), so it exists exactly when synthesis is fully wired (DataSource + LLM).
+     *
+     * @param trigger the consolidation trigger to forward observations to.
+     * @return the post-write listener bean the {@code IngestModule} picks up via {@code ObjectProvider}.
+     */
+    @Bean
+    @ConditionalOnBean(SessionConsolidationTrigger.class)
+    public ObservationListener consolidationObservationListener(SessionConsolidationTrigger trigger) {
+        return new ConsolidationObservationListener(trigger);
     }
 }
