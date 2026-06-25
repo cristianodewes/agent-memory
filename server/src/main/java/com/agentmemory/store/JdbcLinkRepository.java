@@ -3,7 +3,9 @@ package com.agentmemory.store;
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.Link;
 import com.agentmemory.core.PageId;
+import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.Uuid7;
+import com.agentmemory.core.WorkspaceId;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.annotation.Transactional;
@@ -140,5 +142,31 @@ public class JdbcLinkRepository implements LinkRepository {
                 Long.class,
                 source.workspace().value(), source.project().value(), source.page().value());
         return n == null ? 0L : n;
+    }
+
+    @Override
+    @Transactional
+    public int repointProject(
+            WorkspaceId oldWs, ProjectId oldProj, WorkspaceId newWs, ProjectId newProj) {
+        if (oldWs == null || oldProj == null || newWs == null || newProj == null) {
+            throw new IllegalArgumentException("old/new workspace and project must not be null");
+        }
+        String ows = oldWs.value();
+        String oproj = oldProj.value();
+        String nws = newWs.value();
+        String nproj = newProj.value();
+
+        // Rewrite links sourced from the project being moved/renamed.
+        int sources = jdbc.update(
+                "UPDATE links SET source_workspace = ?, source_project = ? "
+                        + "WHERE source_workspace = ? AND source_project = ?",
+                nws, nproj, ows, oproj);
+        // Rewrite cross-project links that TARGET the project being moved/renamed (slugs travel as a
+        // group, V5 links_target_identity_complete; only the two we change here, target_path stays).
+        int targets = jdbc.update(
+                "UPDATE links SET target_workspace = ?, target_project = ? "
+                        + "WHERE target_workspace = ? AND target_project = ?",
+                nws, nproj, ows, oproj);
+        return sources + targets;
     }
 }

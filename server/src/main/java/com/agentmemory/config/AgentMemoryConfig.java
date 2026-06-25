@@ -34,6 +34,7 @@ public final class AgentMemoryConfig {
     private final AgentMemoryProperties.Auth auth;
     private final AgentMemoryProperties.Sanitization sanitization;
     private final AgentMemoryProperties.Ingest ingest;
+    private final AgentMemoryProperties.Decay decay;
     private final Path dataDir;
 
     private AgentMemoryConfig(AgentMemoryProperties props, Path dataDir) {
@@ -44,6 +45,7 @@ public final class AgentMemoryConfig {
         this.auth = props.auth();
         this.sanitization = props.sanitization();
         this.ingest = props.ingest();
+        this.decay = props.decay();
         this.dataDir = dataDir;
     }
 
@@ -180,6 +182,11 @@ public final class AgentMemoryConfig {
 
     public AgentMemoryProperties.Ingest ingest() {
         return ingest;
+    }
+
+    /** @return the layered-memory decay/retention tuning (λ, σ, μ + cold threshold) — #24. */
+    public AgentMemoryProperties.Decay decay() {
+        return decay;
     }
 
     @Override

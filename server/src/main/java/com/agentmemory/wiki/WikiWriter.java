@@ -73,6 +73,37 @@ public final class WikiWriter {
     }
 
     /**
+     * Delete a page's markdown file from the wiki and commit the removal (issue #20
+     * {@code memory_delete_page}). The file is removed from disk and the deletion staged + committed,
+     * so the wiki git history (the source of truth, DD-002) records the page being removed and a later
+     * reindex (#14) will not resurrect it. Any pending self-write expectation for the path is cleared
+     * via {@link SelfWriteTracker#forget(Path)}; the watcher already treats a vanished file as a
+     * drop-from-tracking (it reconciles by content hash on existing files), so the removal does not
+     * loop back into the index.
+     *
+     * <p>Idempotent: if the file is already absent (e.g. a duplicate delete), it is a no-op that
+     * stages/commits nothing and returns empty — deleting a missing page is a success.
+     *
+     * @param identity      the page-scoped identity whose file to remove.
+     * @param commitMessage the git commit message for the removal.
+     * @return the commit created, or empty when there was nothing on disk to remove.
+     * @throws IOException if removing the file fails.
+     */
+    public Optional<RevCommit> deleteAndCommit(Identity identity, String commitMessage)
+            throws IOException {
+        Path file = paths.resolve(identity);
+        selfWrites.forget(file);
+        if (!java.nio.file.Files.exists(file)) {
+            return Optional.empty(); // nothing on disk: clean no-op (idempotent delete)
+        }
+        java.nio.file.Files.delete(file);
+        Optional<RevCommit> commit = git.stageAndCommit(commitMessage, List.of(file));
+        log.debug("wiki delete {} -> {}", identity.page().value(),
+                commit.map(RevCommit::getName).orElse("(no change)"));
+        return commit;
+    }
+
+    /**
      * Build a {@link PageWriteCallback} that persists the given page to the wiki within the store's
      * write transaction. The body is the page's markdown; the frontmatter is derived from the page's
      * identity, title and timestamps (kind from the path). Intended to be passed to

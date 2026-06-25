@@ -26,6 +26,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param auth         server auth stub — enforcement in #38.
  * @param sanitization privacy-strip tuning (size cap + custom patterns) — boundary in #9.
  * @param ingest       /hook ingest backpressure tuning (bounded queue + worker) — #8.
+ * @param decay        layered-memory decay/retention tuning (λ, σ, μ + cold threshold) — #24.
  */
 @ConfigurationProperties(prefix = "agent-memory")
 public record AgentMemoryProperties(
@@ -36,7 +37,8 @@ public record AgentMemoryProperties(
         @DefaultValue Embeddings embeddings,
         @DefaultValue Auth auth,
         @DefaultValue Sanitization sanitization,
-        @DefaultValue Ingest ingest) {
+        @DefaultValue Ingest ingest,
+        @DefaultValue Decay decay) {
 
     /**
      * HTTP server surface.
@@ -195,6 +197,53 @@ public record AgentMemoryProperties(
             if (offerTimeoutMillis < 0) {
                 throw new IllegalArgumentException(
                         "agent-memory.ingest.offer-timeout-millis must be >= 0, was " + offerTimeoutMillis);
+            }
+        }
+    }
+
+    /**
+     * Layered-memory decay / retention tuning (issue #24; ARCHITECTURE §3.3). These are the
+     * <strong>single source</strong> of the constants in the retention formula
+     * <pre>  score = salience·exp(−λ·Δt_days) + σ·log(1+access_count)·exp(−μ·days_since_access)</pre>
+     * shared by recall ranking (#15) and the forget sweep (#25). Per-layer regimes
+     * ({@link com.agentmemory.core.MemoryLayer}) decide <em>which</em> terms apply; these decide how
+     * steeply they fall. All rates are per-day and must be {@code >= 0} (0 disables that term's
+     * decay); {@code coldThreshold} is the retention score at or below which a page is a sweep
+     * candidate (#25 owns the sweep action itself — this is only the threshold).
+     *
+     * @param lambda          age-decay rate λ per day for the salience term ({@code exp(−λ·Δt)});
+     *     defaults to {@code 0.02} (≈35-day half-life). Applies only to age-decaying layers.
+     * @param sigma           weight σ of the access-reinforcement term; defaults to {@code 1.0}.
+     * @param mu              decay rate μ per day on time since last access ({@code exp(−μ·days)});
+     *     defaults to {@code 0.01} (≈70-day half-life of a reinforcement bump).
+     * @param defaultSalience baseline salience for a page with no explicit salience signal; defaults
+     *     to {@code 1.0}. Must be {@code > 0}.
+     * @param coldThreshold   retention score at/below which a latest page is "cold" (a sweep
+     *     candidate, #25). Defaults to {@code 0.05}. Must be {@code >= 0}.
+     */
+    public record Decay(
+            @DefaultValue("0.02") double lambda,
+            @DefaultValue("1.0") double sigma,
+            @DefaultValue("0.01") double mu,
+            @DefaultValue("1.0") double defaultSalience,
+            @DefaultValue("0.05") double coldThreshold) {
+
+        public Decay {
+            requireNonNegative("lambda", lambda);
+            requireNonNegative("sigma", sigma);
+            requireNonNegative("mu", mu);
+            requireNonNegative("cold-threshold", coldThreshold);
+            if (defaultSalience <= 0 || !Double.isFinite(defaultSalience)) {
+                throw new IllegalArgumentException(
+                        "agent-memory.decay.default-salience must be a finite value > 0, was "
+                                + defaultSalience);
+            }
+        }
+
+        private static void requireNonNegative(String key, double value) {
+            if (!(value >= 0) || !Double.isFinite(value)) {
+                throw new IllegalArgumentException(
+                        "agent-memory.decay." + key + " must be a finite value >= 0, was " + value);
             }
         }
     }

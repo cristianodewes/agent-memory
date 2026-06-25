@@ -1,6 +1,7 @@
 package com.agentmemory.store;
 
 import com.agentmemory.core.Identity;
+import com.agentmemory.core.MemoryLayer;
 import com.agentmemory.core.Page;
 import com.agentmemory.core.PageId;
 import com.agentmemory.core.PagePath;
@@ -95,16 +96,21 @@ public class JdbcPageRepository implements PageRepository {
                     supersedes);
         }
 
+        // Classify the page into its retention layer from the path (#24). Deterministic, no LLM —
+        // the layer selects the decay regime the score (#15 recall) and sweep (#25) apply.
+        MemoryLayer layer = LayerClassifier.classify(identity.page());
+
         UUID newId = Uuid7.randomUuid();
         PageRecord persisted = jdbc.queryForObject(
                 "INSERT INTO pages "
                         + "(id, workspace_id, project_id, workspace, project, path, title, body, "
-                        + " is_latest, supersedes, access_count, last_accessed_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, ?, 0, NULL) "
+                        + " is_latest, supersedes, layer, access_count, last_accessed_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, ?, ?, 0, NULL) "
                         + "RETURNING id, workspace, project, path, title, body, is_latest, "
-                        + "          supersedes, access_count, last_accessed_at, created_at, updated_at",
+                        + "          supersedes, layer, access_count, last_accessed_at, created_at, updated_at",
                 PAGE_RECORD_MAPPER,
-                newId, workspaceId, projectId, workspace, project, path, title, body, supersedes);
+                newId, workspaceId, projectId, workspace, project, path, title, body,
+                supersedes, layer.wire());
 
         if (callback != null) {
             try {
@@ -165,6 +171,49 @@ public class JdbcPageRepository implements PageRepository {
         }
     }
 
+    // --- decay reinforcement (#24) -------------------------------------------------------------
+
+    @Override
+    @Transactional
+    public Optional<PageRecord> reinforce(PageId id) {
+        if (id == null) {
+            throw new IllegalArgumentException("page id must not be null");
+        }
+        // Atomically bump the access counter and stamp the access time, returning the post-bump row
+        // so a recall hit reflects its own reinforcement immediately. now() is the transaction start
+        // time (statement-consistent), which is the access instant we want. No-op (empty) when the
+        // id does not exist — the caller (recall) simply skips a hit it cannot reinforce.
+        try {
+            PageRecord updated = jdbc.queryForObject(
+                    "UPDATE pages SET access_count = access_count + 1, last_accessed_at = now() "
+                            + "WHERE id = ? "
+                            + "RETURNING id, workspace, project, path, title, body, is_latest, "
+                            + "          supersedes, layer, access_count, last_accessed_at, "
+                            + "          created_at, updated_at",
+                    PAGE_RECORD_MAPPER,
+                    id.value());
+            return Optional.ofNullable(updated);
+        } catch (EmptyResultDataAccessException e) {
+            return Optional.empty();
+        }
+    }
+
+    @Override
+    @Transactional
+    public int dropWorkingFromLatest(WorkspaceId workspace, ProjectId project) {
+        if (workspace == null || project == null) {
+            throw new IllegalArgumentException("workspace and project must not be null");
+        }
+        // Working-layer pages are session scratch: at session end they are dropped from "latest" so
+        // they stop surfacing in recall/listings, but the rows are NOT deleted — the knowledge still
+        // exists as raw observations and as superseded history (#24 acceptance). Flipping is_latest
+        // off is exactly the supersede mechanic, minus a replacement row.
+        return jdbc.update(
+                "UPDATE pages SET is_latest = false, updated_at = now() "
+                        + "WHERE workspace = ? AND project = ? AND is_latest AND layer = ?",
+                workspace.value(), project.value(), MemoryLayer.WORKING.wire());
+    }
+
     // --- workspace/project get-or-create -------------------------------------------------------
 
     /**
@@ -194,7 +243,7 @@ public class JdbcPageRepository implements PageRepository {
 
     private static final String SELECT_COLUMNS =
             "SELECT id, workspace, project, path, title, body, is_latest, supersedes, "
-                    + "       access_count, last_accessed_at, created_at, updated_at "
+                    + "       layer, access_count, last_accessed_at, created_at, updated_at "
                     + "FROM pages ";
 
     private static final RowMapper<PageRecord> PAGE_RECORD_MAPPER = (rs, rowNum) -> {
@@ -214,6 +263,7 @@ public class JdbcPageRepository implements PageRepository {
         Timestamp lastAccessed = rs.getTimestamp("last_accessed_at");
         return new PageRecord(
                 page,
+                MemoryLayer.fromWire(rs.getString("layer")),
                 rs.getLong("access_count"),
                 lastAccessed == null ? null : lastAccessed.toInstant());
     };
