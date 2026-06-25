@@ -24,7 +24,8 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
                 new AgentMemoryProperties.Embeddings(ProviderAuth.NONE),
-                new AgentMemoryProperties.Auth(false, ""));
+                new AgentMemoryProperties.Auth(false, ""),
+                new AgentMemoryProperties.Sanitization(65536, java.util.List.of()));
     }
 
     // --- canonicalization ----------------------------------------------------------------------
