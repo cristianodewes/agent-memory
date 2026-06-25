@@ -12,6 +12,7 @@ import (
 	"github.com/cristianodewes/agent-memory/client/internal/config"
 	"github.com/cristianodewes/agent-memory/client/internal/core"
 	"github.com/cristianodewes/agent-memory/client/internal/drain"
+	"github.com/cristianodewes/agent-memory/client/internal/handoff"
 	"github.com/cristianodewes/agent-memory/client/internal/hook"
 	"github.com/cristianodewes/agent-memory/client/internal/identity"
 	"github.com/cristianodewes/agent-memory/client/internal/spool"
@@ -88,9 +89,9 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 	// Capture is done and durable. From here on, nothing may fail the command.
 	switch p.Kind {
 	case core.KindSessionStart:
-		runBoundaryDrain(cmd, cfg, sp, true)
+		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, true)
 	case core.KindSessionEnd:
-		runBoundaryDrain(cmd, cfg, sp, false)
+		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, false)
 	default:
 		// Regular event: no network on the hot path.
 	}
@@ -98,9 +99,15 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 }
 
 // runBoundaryDrain ships the spool at a session boundary. start=true runs the session-start shape (a
-// backlog drain then the handoff-fetch seam, #23); start=false runs the session-end main drain. All
+// backlog drain then the handoff fetch+inject, #23); start=false runs the session-end main drain. All
 // errors are logged to stderr and swallowed — the capture already succeeded and the spool is intact.
-func runBoundaryDrain(cmd *cobra.Command, cfg config.Config, sp *spool.Spool, start bool) {
+//
+// On session-start, after the backlog drain, it accepts the project's open handoff and, when present,
+// prints it to STDOUT as Claude Code SessionStart additional-context (so the next agent sees "where
+// you left off" before the first prompt). No open handoff, or any fetch error, prints nothing — a
+// clean no-op that never breaks session start.
+func runBoundaryDrain(
+	cmd *cobra.Command, cfg config.Config, sp *spool.Spool, workspace, project string, start bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), boundaryDrainTimeout)
 	defer cancel()
 
@@ -110,10 +117,16 @@ func runBoundaryDrain(cmd *cobra.Command, cfg config.Config, sp *spool.Spool, st
 	var res drain.Result
 	var drainErr error
 	if start {
+		fetcher := handoff.NewFetcher(client, workspace, project)
 		var handoffErr error
-		res, drainErr, handoffErr = d.OnSessionStart(ctx, drain.NoHandoff)
+		res, drainErr, handoffErr = d.OnSessionStart(ctx, fetcher)
 		if handoffErr != nil {
+			// Advisory: a missing/unwired server must not break session start (#23: server-down
+			// resilience). Log and continue with no injection.
 			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: handoff fetch:", handoffErr)
+		} else if out, ok := hook.SessionStartAdditionalContext(fetcher.Rendered()); ok {
+			// Emit the injected context on stdout for Claude Code to add to the session.
+			fmt.Fprintln(cmd.OutOrStdout(), string(out))
 		}
 	} else {
 		res, drainErr = d.OnSessionEnd(ctx)
