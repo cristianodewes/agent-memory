@@ -183,7 +183,10 @@ public class McpConfiguration {
                                 + "then purge; pass dry_run=true to preview). Handoffs: "
                                 + "memory_handoff_accept picks up where the previous agent left off "
                                 + "(single-use), memory_handoff_begin opens one explicitly, "
-                                + "memory_handoff_cancel expires a mistaken one. Scope defaults to the "
+                                + "memory_handoff_cancel expires a mistaken one. Setup: "
+                                + "memory_install_self_routing returns a snippet to paste into "
+                                + "CLAUDE.md/AGENTS.md so an agent routes to these tools automatically. "
+                                + "Scope defaults to the "
                                 + "most recently active project; pass workspace+project to override.")
                 .tools(specs)
                 .build();

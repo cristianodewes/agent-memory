@@ -153,6 +153,39 @@ class McpEndpointTest {
                 .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isTrue());
     }
 
+    // --- memory_install_self_routing (issue #40) ---------------------------------------------------
+
+    @Test
+    void installSelfRoutingIsRegisteredAsAReadOnlyTool() {
+        List<Tool> tools = client.listTools().tools();
+        Tool tool = tools.stream()
+                .filter(t -> t.name().equals("memory_install_self_routing"))
+                .findFirst()
+                .orElseThrow(() -> new AssertionError("memory_install_self_routing not registered"));
+        assertThat(tool.annotations().readOnlyHint()).isTrue();
+        // It takes no scope: that it works on a brand-new project with nothing active is proven by the
+        // call test below succeeding with empty args (no most-recent-project to resolve).
+    }
+
+    @Test
+    void installSelfRoutingReturnsTheFencedSnippetWithMarkersAndTarget() {
+        JsonNode r = json(call("memory_install_self_routing", Map.of()));
+        String begin = "<!-- BEGIN agent-memory:self-routing -->";
+        String end = "<!-- END agent-memory:self-routing -->";
+        assertThat(r.path("beginMarker").stringValue()).isEqualTo(begin);
+        assertThat(r.path("endMarker").stringValue()).isEqualTo(end);
+        assertThat(r.path("target").stringValue()).contains("CLAUDE.md").contains("AGENTS.md");
+        String snippet = r.path("snippet").stringValue();
+        // The block is fenced by the stable markers (so an installer can replace it in place) and the
+        // body routes the agent to the core recall/handoff/write tools.
+        assertThat(snippet).startsWith(begin).endsWith(end + "\n");
+        assertThat(snippet)
+                .contains("memory_query")
+                .contains("memory_briefing")
+                .contains("memory_handoff_accept")
+                .contains("memory_write_page");
+    }
+
     // --- handoff tools (issue #22) -----------------------------------------------------------------
 
     /** Seed an OPEN handoff row directly, returning its id (so accept/cancel can be tested over MCP). */
