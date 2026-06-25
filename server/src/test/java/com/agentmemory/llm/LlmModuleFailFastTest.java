@@ -42,7 +42,7 @@ class LlmModuleFailFastTest {
                 new AgentMemoryProperties.Auth(false, "", java.util.List.of()),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
-                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
+                new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
         return AgentMemoryConfig.resolve(props);
     }
 
