@@ -136,6 +136,19 @@ gives every subsequent headless capture a verified identity without putting a lo
 the environment. The server is the sole authority on token validity; the client only obtains, stores
 and presents it.
 
+*Security model (the access decision).* **Audience is the gate**: with an issuer set, `audience` is
+config-required (startup fails without it) and the token's `aud` must contain it exactly — so only a
+token minted *for this server* is accepted, never just "any token the IdP issued". The accepted JWS
+algorithms are **pinned to the asymmetric set** (RSA / ECDSA / RSA-PSS), rejecting `alg:none` and any
+HMAC and so closing the RS256→HS256 key-confusion attack. OIDC requires `auth.enabled=true` (an issuer
+configured while auth is off fails fast — no half-on identity). **Revocation**: an OIDC subject has no
+row in `users`, hence no local kill-switch — trust derives from the issuer + (tight) audience, and
+revocation relies on the IdP plus short token TTLs; this is acceptable precisely *because* the audience
+is exact and required. A per-subject allow-list (`agent-memory.auth.oidc.allowed-subjects`) is a named
+follow-up if a local kill-switch is later wanted. On the client, an **expired** stored credential
+yields no bearer and, on the events that reach the server, prints a clear "run `auth login
+oidc-device`" hint rather than looping silently on 401s (`auth status` shows the same).
+
 ## DD-008 — Monorepo
 
 **Decision.** `client/` (Go) and `server/` (Spring) live in one repository with shared docs and

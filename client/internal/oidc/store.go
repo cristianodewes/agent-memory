@@ -121,18 +121,31 @@ func Delete(dataDir string) error {
 	return nil
 }
 
-// AccessToken returns a stored, unexpired OIDC access token for dataDir, or "" when there is none
-// (not logged in, unreadable, or expired). This is the capture path's fallback bearer: it does a
-// single small file read and never errors out (a broken credential simply yields no token, leaving the
-// request unauthenticated rather than failing the hook). The env/marker token always takes precedence
-// over this — see the hook command.
-func AccessToken(dataDir string) string {
+// AccessTokenStatus returns a stored, unexpired OIDC access token for dataDir and a flag telling the
+// caller why a token is absent so it can guide the user:
+//
+//   - token != ""             → a valid credential; attach it.
+//   - token == "" && !expired → no credential at all (never logged in / unreadable); stay silent.
+//   - token == "" && expired  → a credential exists but is past its expiry; the caller should print a
+//     clear "re-login" hint rather than silently sending no token and looping on 401s.
+//
+// It does a single small file read and never errors out — a broken credential simply yields no token,
+// leaving the request unauthenticated rather than failing the hook.
+func AccessTokenStatus(dataDir string) (token string, expired bool) {
 	creds, ok, err := Load(dataDir)
 	if err != nil || !ok {
-		return ""
+		return "", false
 	}
-	if !creds.Valid(time.Now()) {
-		return ""
+	if creds.Valid(time.Now()) {
+		return creds.AccessToken, false
 	}
-	return creds.AccessToken
+	return "", true // a credential is present but expired — re-login needed
+}
+
+// AccessToken returns a stored, unexpired OIDC access token for dataDir, or "" when there is none
+// (not logged in, unreadable, or expired). This is the capture path's fallback bearer; the env/marker
+// token always takes precedence over it (see the hook command).
+func AccessToken(dataDir string) string {
+	token, _ := AccessTokenStatus(dataDir)
+	return token
 }

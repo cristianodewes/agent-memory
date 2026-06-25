@@ -6,6 +6,7 @@ import com.agentmemory.hooks.IngestService;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
+import com.nimbusds.jose.crypto.MACSigner;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
@@ -16,6 +17,7 @@ import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Date;
@@ -189,6 +191,25 @@ class OidcAuthIntegrationTest {
         assertThat(http().get("/api/v1/workspaces").status()).isEqualTo(401);
     }
 
+    @Test
+    void tokenWithoutAnAudienceIsRejected() {
+        // Audience is the access gate (a token must be minted FOR this server). A token carrying no
+        // `aud` at all must not slip through — it is rejected exactly like a wrong audience.
+        String jwt = mintWith(SIGNING_KEY, "grace@oidc.example", null, ISSUER, Instant.now().plusSeconds(300));
+        assertThat(http().get("/api/v1/workspaces", "Authorization", AuthHttp.bearer(jwt)).status())
+                .isEqualTo(401);
+    }
+
+    @Test
+    void hmacSignedTokenIsRejected() {
+        // RS256->HS256 key-confusion defense: a token signed with HMAC (regardless of the secret) must
+        // be rejected because the decoder pins the asymmetric JWS algorithms only. alg:none is likewise
+        // excluded (it cannot even form three non-empty segments, so it never reaches the decoder).
+        String forged = mintHmac("heidi@oidc.example", AUDIENCE, ISSUER, Instant.now().plusSeconds(300));
+        assertThat(http().get("/api/v1/workspaces", "Authorization", AuthHttp.bearer(forged)).status())
+                .isEqualTo(401);
+    }
+
     // --- mock IdP helpers --------------------------------------------------------------------------
 
     /** Mint a JWT signed by the mock IdP's published key. */
@@ -215,6 +236,26 @@ class OidcAuthIntegrationTest {
             return jwt.serialize();
         } catch (Exception e) {
             throw new IllegalStateException("failed to mint test JWT", e);
+        }
+    }
+
+    /** Mint an HS256 (HMAC) token — the secret is irrelevant; the server rejects HS* by algorithm. */
+    private static String mintHmac(String subject, String audience, String issuer, Instant expiry) {
+        try {
+            byte[] secret = new byte[32]; // 256-bit secret to satisfy the HS256 signer's minimum
+            new SecureRandom().nextBytes(secret);
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .issuer(issuer)
+                    .audience(audience)
+                    .subject(subject)
+                    .issueTime(Date.from(Instant.now().minusSeconds(5)))
+                    .expirationTime(Date.from(expiry))
+                    .build();
+            SignedJWT jwt = new SignedJWT(new JWSHeader(JWSAlgorithm.HS256), claims);
+            jwt.sign(new MACSigner(secret));
+            return jwt.serialize();
+        } catch (Exception e) {
+            throw new IllegalStateException("failed to mint HMAC test JWT", e);
         }
     }
 

@@ -120,3 +120,21 @@ func TestAccessTokenFallback(t *testing.T) {
 		t.Fatalf("expected empty token for an expired credential, got %q", got)
 	}
 }
+
+func TestAccessTokenStatusDistinguishesExpiredFromAbsent(t *testing.T) {
+	dir := t.TempDir()
+	// No credential at all → not expired (stay silent, the user simply isn't logged in).
+	if tok, expired := AccessTokenStatus(dir); tok != "" || expired {
+		t.Fatalf("no credential: got (%q, %v), want (\"\", false)", tok, expired)
+	}
+	// A valid credential → the token, not expired.
+	_ = Save(dir, Credentials{AccessToken: "live", ExpiresAt: time.Now().Add(time.Hour)})
+	if tok, expired := AccessTokenStatus(dir); tok != "live" || expired {
+		t.Fatalf("valid credential: got (%q, %v), want (\"live\", false)", tok, expired)
+	}
+	// An expired credential → no token but expired=true, so the caller can prompt a re-login.
+	_ = Save(dir, Credentials{AccessToken: "dead", ExpiresAt: time.Now().Add(-time.Hour)})
+	if tok, expired := AccessTokenStatus(dir); tok != "" || !expired {
+		t.Fatalf("expired credential: got (%q, %v), want (\"\", true)", tok, expired)
+	}
+}

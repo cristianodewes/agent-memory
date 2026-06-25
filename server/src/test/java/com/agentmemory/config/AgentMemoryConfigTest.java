@@ -171,6 +171,51 @@ class AgentMemoryConfigTest {
         }).doesNotThrowAnyException();
     }
 
+    // --- OIDC fail-fast (#39 PR2) --------------------------------------------------------------
+
+    private static AgentMemoryProperties.Auth oidcAuth(boolean authEnabled, String issuer, String audience) {
+        return new AgentMemoryProperties.Auth(authEnabled, authEnabled ? "root" : "", java.util.List.of(),
+                "", new AgentMemoryProperties.Auth.Oidc(issuer, audience, "", "sub"));
+    }
+
+    @Test
+    void failsFastWhenOidcIssuerSetButAuthDisabled() {
+        // OIDC only guards routes the auth filter is installed for; an issuer configured while auth is
+        // off is a half-on identity that never actually runs -> refuse to start (refinement #4).
+        assertThatThrownBy(() ->
+                AgentMemoryConfig.validateOidc(oidcAuth(false, "https://idp.example.com", "agent-memory")))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("agent-memory.auth.enabled is false");
+    }
+
+    @Test
+    void failsFastWhenOidcIssuerSetWithoutAudience() {
+        // Audience is the access gate: without it, any token the IdP issues would authenticate here.
+        assertThatThrownBy(() ->
+                AgentMemoryConfig.validateOidc(oidcAuth(true, "https://idp.example.com", "  ")))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("audience");
+    }
+
+    @Test
+    void failsFastWhenOidcIssuerIsNotAnAbsoluteUrl() {
+        assertThatThrownBy(() ->
+                AgentMemoryConfig.validateOidc(oidcAuth(true, "idp.example.com", "agent-memory")))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("absolute http(s) URL");
+    }
+
+    @Test
+    void oidcValidationPassesWhenDisabledOrWellFormed() {
+        assertThatCode(() -> {
+            // Disabled (no issuer): nothing to validate, even with auth off.
+            AgentMemoryConfig.validateOidc(new AgentMemoryProperties.Auth(
+                    false, "", java.util.List.of(), "", AgentMemoryProperties.Auth.Oidc.DISABLED));
+            // Auth enabled + well-formed issuer + audience.
+            AgentMemoryConfig.validateOidc(oidcAuth(true, "https://idp.example.com", "agent-memory"));
+        }).doesNotThrowAnyException();
+    }
+
     // --- decay tuning (#24) --------------------------------------------------------------------
 
     @Test

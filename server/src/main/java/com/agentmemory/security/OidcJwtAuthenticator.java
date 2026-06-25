@@ -6,9 +6,9 @@ import org.springframework.security.oauth2.core.DelegatingOAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2Error;
 import org.springframework.security.oauth2.core.OAuth2TokenValidator;
 import org.springframework.security.oauth2.core.OAuth2TokenValidatorResult;
+import org.springframework.security.oauth2.jose.jws.SignatureAlgorithm;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.security.oauth2.jwt.JwtDecoder;
-import org.springframework.security.oauth2.jwt.JwtDecoders;
 import org.springframework.security.oauth2.jwt.JwtException;
 import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
@@ -26,7 +26,12 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
  *   <li><strong>Issuer + expiry</strong> — {@link JwtValidators#createDefaultWithIssuer(String)} checks
  *       the {@code iss} claim equals the configured issuer plus the standard timestamp validity.</li>
  *   <li><strong>Audience</strong> — the token's {@code aud} must contain the configured audience, so a
- *       token minted for another application cannot authenticate here.</li>
+ *       token minted for another application cannot authenticate here. The audience is the access gate
+ *       and is config-required ({@code AgentMemoryConfig.validateOidc}).</li>
+ *   <li><strong>Algorithm</strong> — the accepted JWS algorithms are pinned to the asymmetric set
+ *       (RSA / ECDSA / RSA-PSS), so {@code alg:none} and any HMAC (HS256…) are rejected outright. This
+ *       closes the classic RS256→HS256 key-confusion attack (the public verification key abused as an
+ *       HMAC secret).</li>
  * </ul>
  *
  * <p>On success the {@code principalClaim} (default {@code sub}) is returned as the authenticated user
@@ -34,6 +39,14 @@ import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
  * validation failure returns {@link Optional#empty()} (the filter then leaves the request anonymous and
  * the entry point issues a 401). The JWKS network fetch is lazy (first validation) and cached, so a
  * configured-but-unreachable IdP does not block startup.
+ *
+ * <h2>Revocation</h2>
+ * An OIDC subject is <em>not</em> provisioned in the {@code users} table, so there is no local
+ * kill-switch for an individual subject: trust derives from the issuer + audience, and revocation
+ * relies on the IdP (and short token TTLs). This is a deliberate trade-off, safe because the required,
+ * exact audience means only a token minted <em>for this server</em> is ever accepted. A per-subject
+ * allow-list ({@code agent-memory.auth.oidc.allowed-subjects}) is a named follow-up if a local
+ * kill-switch is later wanted.
  */
 public final class OidcJwtAuthenticator implements TokenAuthenticationFilter.OidcAuthenticator {
 
@@ -52,9 +65,29 @@ public final class OidcJwtAuthenticator implements TokenAuthenticationFilter.Oid
     }
 
     private static JwtDecoder buildDecoder(AgentMemoryProperties.Auth.Oidc cfg) {
-        NimbusJwtDecoder decoder = (cfg.jwksUri() == null || cfg.jwksUri().isBlank())
-                ? (NimbusJwtDecoder) JwtDecoders.fromIssuerLocation(cfg.issuer())
-                : NimbusJwtDecoder.withJwkSetUri(cfg.jwksUri()).build();
+        // Build from an explicit JWKS uri when given, else discover it lazily from the issuer's
+        // well-known document. withIssuerLocation defers the metadata/JWKS fetch to first decode (not
+        // startup), so a briefly-unreachable IdP does not block boot; both factories yield the same
+        // builder type.
+        NimbusJwtDecoder.JwkSetUriJwtDecoderBuilder builder =
+                (cfg.jwksUri() == null || cfg.jwksUri().isBlank())
+                        ? NimbusJwtDecoder.withIssuerLocation(cfg.issuer())
+                        : NimbusJwtDecoder.withJwkSetUri(cfg.jwksUri());
+        // Pin the accepted JWS algorithms to the asymmetric set: reject alg:none and any HMAC (HS*),
+        // closing the RS256->HS256 key-confusion attack. (#39 PR2 review refinement.)
+        NimbusJwtDecoder decoder = builder
+                .jwsAlgorithms(algs -> {
+                    algs.add(SignatureAlgorithm.RS256);
+                    algs.add(SignatureAlgorithm.RS384);
+                    algs.add(SignatureAlgorithm.RS512);
+                    algs.add(SignatureAlgorithm.PS256);
+                    algs.add(SignatureAlgorithm.PS384);
+                    algs.add(SignatureAlgorithm.PS512);
+                    algs.add(SignatureAlgorithm.ES256);
+                    algs.add(SignatureAlgorithm.ES384);
+                    algs.add(SignatureAlgorithm.ES512);
+                })
+                .build();
         OAuth2TokenValidator<Jwt> validator = new DelegatingOAuth2TokenValidator<>(
                 JwtValidators.createDefaultWithIssuer(cfg.issuer()),
                 new AudienceValidator(cfg.audience()));
