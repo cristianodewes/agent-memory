@@ -1,12 +1,22 @@
 package com.agentmemory.security;
 
 import com.agentmemory.config.AgentMemoryConfig;
+import com.agentmemory.core.ActorResolver;
+import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
+import java.time.Clock;
+import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
+import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.config.Customizer;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -18,31 +28,34 @@ import org.springframework.security.web.authentication.www.BasicAuthenticationFi
 
 /**
  * Centralizes auth (issue #38 / DD-007) as one Spring Security chain so the loopback fast-path stays
- * uncluttered and the exposed path is deliberate.
+ * uncluttered and the exposed path is deliberate. Issue #39 adds multi-user mode on top.
  *
- * <h2>Two modes, by {@code agent-memory.auth.enabled}</h2>
+ * <h2>Modes</h2>
  * <ul>
- *   <li><strong>Disabled (default)</strong> — loopback-only, no credentials: every route is permitted.
- *       The single-user laptop needs no ceremony. The {@link AllowedHostsFilter} is still installed but
- *       is inert on a loopback bind.</li>
- *   <li><strong>Enabled</strong> — a shared bearer token guards the API/MCP/hook/handoff/admin routes
- *       and {@code /web}; {@code /web} additionally accepts the token as an HTTP Basic password (so a
- *       browser can log in). Only {@code /healthz} and the actuator health endpoint stay open (for
- *       liveness probes). A non-GET browser (Basic-authenticated) request must be same-origin
- *       ({@link BrowserWriteGuardFilter}).</li>
+ *   <li><strong>Disabled (default)</strong> — loopback-only, no credentials: every route permitted.
+ *       The {@link AllowedHostsFilter} is installed but inert on a loopback bind.</li>
+ *   <li><strong>Enabled, single-user</strong> — the shared root token guards everything except
+ *       {@code /healthz} + {@code /actuator/health}; {@code /web} also accepts the token as an HTTP
+ *       Basic password. A non-GET browser request must be same-origin ({@link BrowserWriteGuardFilter}).</li>
+ *   <li><strong>Enabled, multi-user (issue #39)</strong> — when {@code agent-memory.auth.token-pepper}
+ *       is set, per-user tokens ({@link UserService}) authenticate as their own identity for normal
+ *       routes, while the {@link #ADMIN_PATHS admin routes} require the <em>root</em> token
+ *       ({@link TokenAuthenticationFilter#ROLE_ROOT}). The authenticated principal is the actor recorded
+ *       in the audit log.</li>
  * </ul>
  *
- * <p>The chain is always stateless (no HTTP session, no Spring CSRF token store): credentials are
- * presented per request, so there is no session-riding to protect with a CSRF token — the browser
- * write guard handles the cross-origin concern instead. The {@link AllowedHostsFilter} runs first
- * (reject a rebinding probe before anything else), then — when enabled — the token filter (authenticate)
- * and the browser-write guard (authorize the method).
+ * <p>The chain is always stateless (credentials presented per request; no session, no Spring CSRF token
+ * — the browser-write guard handles cross-origin instead). Filter order: {@link AllowedHostsFilter}
+ * first (reject a rebinding probe), then — when enabled — the token filter (authenticate) and the
+ * browser-write guard (authorize the method). The admin gate ({@code ROLE_ROOT}) is applied whenever
+ * auth is enabled; in single-user mode the lone root token satisfies it, so behavior is unchanged.
  *
- * <p>Registered as an {@link AutoConfiguration} listed in {@code AutoConfiguration.imports} so it loads
- * without component scanning, like the other modules; it depends only on the resolved
- * {@link AgentMemoryConfig} (no DataSource), so auth is enforced even before any project exists.
+ * <p>Registered as an {@link AutoConfiguration} (after the JDBC auto-config so the per-user beans see a
+ * {@link JdbcTemplate}); the filter chain itself needs no {@link DataSource}, so auth is enforced even
+ * before any project exists. The per-user beans are gated on a {@link DataSource} <em>and</em> a
+ * non-blank token pepper (multi-user mode), so single-user and DB-less contexts skip them.
  */
-@AutoConfiguration
+@AutoConfiguration(after = JdbcTemplateAutoConfiguration.class)
 public class SecurityConfiguration {
 
     private static final Logger log = LoggerFactory.getLogger(SecurityConfiguration.class);
@@ -50,11 +63,25 @@ public class SecurityConfiguration {
     /** Routes always open even when auth is enabled: liveness/health probes. */
     static final String[] PUBLIC_PATHS = {"/healthz", "/actuator/health", "/actuator/health/**"};
 
+    /**
+     * Mutating / sensitive "admin" routes that require the root token (issue #39). The issue's nominal
+     * {@code /admin/*} maps to the real top-level operational routes: project lifecycle, reset, reindex,
+     * the time-travel mutations, user management, and the llm probe. Reads ({@code /api/v1},
+     * {@code /mcp}, {@code /web}, {@code /checkpoints}) and normal capture ({@code /hook},
+     * {@code /handoff}) are not admin and stay available to any authenticated user.
+     */
+    static final String[] ADMIN_PATHS = {
+        "/projects/**", "/reset", "/reindex",
+        "/restore-page", "/backup", "/restore", "/bootstrap",
+        "/users/**", "/llm-test"
+    };
+
     /** The {@code /web} browser UI — protected, but also offered an HTTP Basic challenge. */
     static final String WEB_PATTERN = "/web/**";
 
     @Bean
-    public SecurityFilterChain securityFilterChain(HttpSecurity http, AgentMemoryConfig config)
+    public SecurityFilterChain securityFilterChain(
+            HttpSecurity http, AgentMemoryConfig config, ObjectProvider<UserService> userService)
             throws Exception {
         var auth = config.auth();
         String bindAddress = config.server().address();
@@ -78,22 +105,78 @@ public class SecurityConfiguration {
             return http.build();
         }
 
-        log.info("auth enabled: bearer token required (Basic accepted on {}); public={}, allowedHosts={}",
-                WEB_PATTERN, java.util.Arrays.toString(PUBLIC_PATHS), auth.allowedHosts());
+        // Multi-user (issue #39): when a pepper is configured and the user store is available, resolve
+        // non-root tokens to per-user identities. Otherwise only the root token authenticates.
+        TokenAuthenticationFilter.UserResolver resolver = null;
+        if (auth.multiUser()) {
+            UserService svc = userService.getIfAvailable();
+            if (svc != null) {
+                resolver = svc::resolveToken;
+            } else {
+                log.warn("token pepper set (multi-user) but no user store (no datasource?); "
+                        + "only the root token will authenticate");
+            }
+        }
+        log.info("auth enabled ({} mode): root token required on admin {}, bearer/Basic elsewhere; "
+                        + "public={}, allowedHosts={}",
+                auth.multiUser() ? "multi-user" : "single-user",
+                java.util.Arrays.toString(ADMIN_PATHS),
+                java.util.Arrays.toString(PUBLIC_PATHS), auth.allowedHosts());
 
-        // Authenticate the shared token (Bearer or Basic), then gate cross-origin browser writes.
+        // Authenticate the token (root, or per-user in multi-user mode), then gate cross-origin writes.
         http.addFilterBefore(
-                new TokenAuthenticationFilter(auth.token()),
+                new TokenAuthenticationFilter(auth.token(), resolver),
                 UsernamePasswordAuthenticationFilter.class);
         http.addFilterAfter(new BrowserWriteGuardFilter(), BasicAuthenticationFilter.class);
 
         http.authorizeHttpRequests(reg -> reg
+                // Permit the servlet ERROR dispatch: an authorization 403 (or 401) is delivered via
+                // sendError, which re-dispatches to /error; without this that re-dispatch re-enters the
+                // chain as an anonymous GET and a forbidden (403) gets masked into a 401. Permitting the
+                // ERROR dispatch lets the real status survive.
+                .dispatcherTypeMatchers(DispatcherType.ERROR).permitAll()
                 .requestMatchers(PUBLIC_PATHS).permitAll()
+                .requestMatchers(ADMIN_PATHS).hasRole("ROOT")
                 .anyRequest().hasRole("AGENT_MEMORY"));
 
         // 401 with a Basic challenge for /web (so a browser pops a login), a plain 401 elsewhere.
         http.exceptionHandling(ex -> ex.authenticationEntryPoint(entryPoint()));
         return http.build();
+    }
+
+    /**
+     * The current-actor resolver (issue #39) used to attribute audit/observation rows to the
+     * authenticated user. Reads the request thread's {@link org.springframework.security.core.context.SecurityContextHolder};
+     * in single-user mode the principal is {@code "root"}, in multi-user mode the per-user slug, and
+     * {@code null} when nothing authenticated. Always registered (even when auth is disabled — it then
+     * simply resolves to {@code null}), so the audit writer and {@code /hook} controller can depend on
+     * it unconditionally. {@link ConditionalOnMissingBean} lets a test substitute a fixed actor.
+     */
+    @Bean
+    @ConditionalOnMissingBean(ActorResolver.class)
+    public ActorResolver actorResolver() {
+        return new SecurityContextActorResolver();
+    }
+
+    // --- per-user beans (multi-user mode only) -----------------------------------------------------
+
+    /**
+     * The {@code users} store, present only in multi-user mode (a non-blank token pepper) and when a
+     * {@link DataSource} exists. Gating on the pepper keeps single-user / DB-less contexts free of the
+     * user machinery entirely.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnExpression("'${agent-memory.auth.token-pepper:}'.length() > 0")
+    public UserRepository userRepository(JdbcTemplate jdbcTemplate) {
+        return new UserRepository(jdbcTemplate);
+    }
+
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnExpression("'${agent-memory.auth.token-pepper:}'.length() > 0")
+    public UserService userService(UserRepository userRepository, AgentMemoryConfig config, Clock clock) {
+        return new UserService(userRepository, config.auth().tokenPepper(), clock);
     }
 
     /**

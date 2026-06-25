@@ -39,6 +39,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newBackupCmd())
 	root.AddCommand(newRestoreCmd())
 	root.AddCommand(newBootstrapCmd())
+	root.AddCommand(newUserCmd())
 	return root
 }
 

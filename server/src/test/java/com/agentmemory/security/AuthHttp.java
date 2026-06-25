@@ -72,4 +72,27 @@ final class AuthHttp {
     Resp get(String path, String... headers) {
         return send("GET", path, headers);
     }
+
+    /**
+     * POST a raw JSON body with optional header pairs (e.g. an {@code Authorization}). Sets
+     * {@code Content-Type: application/json}.
+     */
+    Resp postJson(String path, String jsonBody, String... headers) {
+        try {
+            HttpRequest.Builder b = HttpRequest.newBuilder(URI.create(base + path))
+                    .timeout(Duration.ofSeconds(15))
+                    .header("Content-Type", "application/json")
+                    .POST(HttpRequest.BodyPublishers.ofString(jsonBody, StandardCharsets.UTF_8));
+            for (int i = 0; i + 1 < headers.length; i += 2) {
+                b.header(headers[i], headers[i + 1]);
+            }
+            HttpResponse<String> r = client.send(b.build(), HttpResponse.BodyHandlers.ofString());
+            return new Resp(r.statusCode(), r.body(), r.headers());
+        } catch (java.io.IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new RuntimeException("POST " + path + " failed", e);
+        }
+    }
 }

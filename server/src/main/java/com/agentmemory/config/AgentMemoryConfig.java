@@ -35,6 +35,7 @@ public final class AgentMemoryConfig {
     private final AgentMemoryProperties.Sanitization sanitization;
     private final AgentMemoryProperties.Ingest ingest;
     private final AgentMemoryProperties.Decay decay;
+    private final AgentMemoryProperties.Scope scope;
     private final Path dataDir;
 
     private AgentMemoryConfig(AgentMemoryProperties props, Path dataDir) {
@@ -46,6 +47,7 @@ public final class AgentMemoryConfig {
         this.sanitization = props.sanitization();
         this.ingest = props.ingest();
         this.decay = props.decay();
+        this.scope = props.scope();
         this.dataDir = dataDir;
     }
 
@@ -61,7 +63,24 @@ public final class AgentMemoryConfig {
         ensureWritableDirectory(resolved);
         ensureLayout(resolved);
         validateAuth(props.auth());
+        validateScope(props.scope());
         return new AgentMemoryConfig(props, resolved);
+    }
+
+    /**
+     * Fail fast on an unsupported {@code auto_scope} mode (issue #39). {@link AutoScope#SESSION_AWARE}
+     * is declared but not yet wired (the MCP tool boundary carries no capture-session id to isolate
+     * by), so selecting it must abort startup with a clear error — never silently fall back to
+     * {@link AutoScope#SINGLE_SLOT}, which on a shared server would leak activity across sessions.
+     */
+    static void validateScope(AgentMemoryProperties.Scope scope) {
+        if (scope.auto() == AutoScope.SESSION_AWARE) {
+            throw new ConfigException(
+                    "agent-memory.scope.auto=session_aware is not yet supported (it needs a "
+                            + "capture-session identity the MCP tool boundary does not yet carry). Use "
+                            + "'single_slot' (global, the default) or 'per_actor' (isolate the default "
+                            + "scope to the authenticated user). session_aware is tracked as a follow-up.");
+        }
     }
 
     /**
@@ -203,6 +222,11 @@ public final class AgentMemoryConfig {
     /** @return the layered-memory decay/retention tuning (λ, σ, μ + cold threshold) — #24. */
     public AgentMemoryProperties.Decay decay() {
         return decay;
+    }
+
+    /** @return the multi-user scope-isolation tuning (the {@code auto_scope} mode) — #39. */
+    public AgentMemoryProperties.Scope scope() {
+        return scope;
     }
 
     @Override
