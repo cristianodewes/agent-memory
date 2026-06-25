@@ -6,6 +6,7 @@ import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.WorkspaceId;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.wiki.MarkdownDocument;
+import com.agentmemory.wiki.SessionLog;
 import com.agentmemory.wiki.WikiFormatException;
 import com.agentmemory.wiki.WikiGit;
 import com.agentmemory.wiki.WikiPaths;
@@ -46,8 +47,11 @@ public class DefaultReindexService implements ReindexService {
 
     private static final Logger log = LoggerFactory.getLogger(DefaultReindexService.class);
 
-    /** Files that live under {@code wiki/} but are not compiled pages (raw capture, #11/#19). */
-    private static final String SESSION_LOG = "log.md";
+    /**
+     * The session-event ledger ({@code log.md}, #11) lives under {@code wiki/} but is raw capture, not
+     * a compiled page — referenced from {@link SessionLog#LOG_FILE_NAME} so the two never drift.
+     */
+    private static final String SESSION_LOG = SessionLog.LOG_FILE_NAME;
 
     private final WikiPaths wikiPaths;
     private final WikiGit wikiGit;

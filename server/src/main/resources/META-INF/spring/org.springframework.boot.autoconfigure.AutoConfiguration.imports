@@ -3,3 +3,4 @@ com.agentmemory.wiki.WikiConfiguration
 com.agentmemory.hooks.IngestModule
 com.agentmemory.recall.RecallConfiguration
 com.agentmemory.reindex.ReindexConfiguration
+com.agentmemory.mcp.McpConfiguration
