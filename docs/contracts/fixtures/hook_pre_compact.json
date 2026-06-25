@@ -1,0 +1,10 @@
+{
+  "event": "PreCompact",
+  "kind": "pre-compact",
+  "sessionId": "0190b3e2-1d00-7a00-8000-000000000002",
+  "workspace": "acme",
+  "project": "agent-memory",
+  "agent": "claude-code",
+  "title": "context compaction",
+  "timestamp": "2026-06-25T12:30:00Z"
+}
