@@ -38,6 +38,19 @@ public class StoreConfiguration {
     }
 
     /**
+     * The {@code links} repository (issue #14). First writer of the wikilink graph the recall graph
+     * arm reads; gated on a {@code DataSource} exactly like {@link #pageRepository}.
+     *
+     * @param jdbcTemplate the auto-configured JDBC template.
+     * @return the links writer/maintenance repository.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public LinkRepository linkRepository(JdbcTemplate jdbcTemplate) {
+        return new JdbcLinkRepository(jdbcTemplate);
+    }
+
+    /**
      * The single observation writer (issue #8, invariant #2). Gated on a {@code DataSource} exactly
      * like {@link #pageRepository}; consumes the auto-configured {@link JdbcTemplate} and
      * {@link PlatformTransactionManager} rather than minting its own, so there is one of each in the

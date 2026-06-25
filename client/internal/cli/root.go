@@ -28,6 +28,7 @@ func newRootCmd() *cobra.Command {
 			fmt.Println(Version)
 		},
 	})
+	root.AddCommand(newReindexCmd())
 	return root
 }
 
