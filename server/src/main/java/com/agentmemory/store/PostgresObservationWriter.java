@@ -234,8 +234,8 @@ public final class PostgresObservationWriter implements ObservationWriter {
         List<UUID> ids = jdbc.query(
                 "INSERT INTO observations "
                         + "(id, session_id, workspace_id, project_id, workspace, project, "
-                        + " kind, source_event, extension, client_event_id, payload, created_at) "
-                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                        + " kind, source_event, extension, client_event_id, payload, actor, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                         + "ON CONFLICT (session_id, client_event_id) WHERE client_event_id IS NOT NULL "
                         + "DO NOTHING "
                         + "RETURNING id",
@@ -251,6 +251,7 @@ public final class PostgresObservationWriter implements ObservationWriter {
                 obs.extension(),
                 obs.clientEventId(),
                 obs.payload(),
+                obs.actor(), // issue #39: the authenticated user, or null (single-user/loopback)
                 java.sql.Timestamp.from(obs.createdAt()));
         return !ids.isEmpty();
     }
@@ -261,9 +262,10 @@ public final class PostgresObservationWriter implements ObservationWriter {
         String detail = "{\"kind\":" + jsonString(obs.kind().wire())
                 + ",\"sourceEvent\":" + jsonString(obs.sourceEvent()) + "}";
         jdbc.update(
-                "INSERT INTO audit_log (id, workspace, project, action, entity_type, entity_id, detail) "
-                        + "VALUES (?, ?, ?, 'observation.append', 'observation', ?, CAST(? AS jsonb))",
-                Uuid7.randomUuid(), workspace, project, observationId, detail);
+                "INSERT INTO audit_log "
+                        + "(id, workspace, project, action, entity_type, entity_id, actor, detail) "
+                        + "VALUES (?, ?, ?, 'observation.append', 'observation', ?, ?, CAST(? AS jsonb))",
+                Uuid7.randomUuid(), workspace, project, observationId, obs.actor(), detail);
     }
 
     /**

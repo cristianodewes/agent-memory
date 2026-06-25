@@ -37,6 +37,11 @@ import java.time.Instant;
  *     {@code null} (no dedupe).
  * @param payload       the raw, <strong>unsanitized</strong> captured text; never null (may be empty).
  * @param createdAt     when the event occurred (UTC instant); never null.
+ * @param actor         the authenticated user who produced this event on a shared server (issue #39),
+ *     captured at the {@code /hook} boundary and threaded through to the {@code observations.actor}
+ *     column; {@code null} in single-user/loopback mode (an unattributed capture). Not part of the
+ *     wire {@link HookPayload} — it is server-resolved from the request's credentials, never trusted
+ *     from the client.
  */
 public record NewObservation(
         SessionId sessionId,
@@ -46,7 +51,24 @@ public record NewObservation(
         String extension,
         String clientEventId,
         String payload,
-        Instant createdAt) {
+        Instant createdAt,
+        String actor) {
+
+    /**
+     * Convenience constructor for an <em>unattributed</em> event ({@code actor == null}) — the
+     * single-user/loopback case and the bulk of tests, which do not exercise multi-user attribution.
+     */
+    public NewObservation(
+            SessionId sessionId,
+            Identity identity,
+            ObservationKind kind,
+            String sourceEvent,
+            String extension,
+            String clientEventId,
+            String payload,
+            Instant createdAt) {
+        this(sessionId, identity, kind, sourceEvent, extension, clientEventId, payload, createdAt, null);
+    }
 
     public NewObservation {
         if (sessionId == null) {
@@ -78,6 +100,7 @@ public record NewObservation(
      */
     NewObservation withPayload(String scrubbed) {
         return new NewObservation(
-                sessionId, identity, kind, sourceEvent, extension, clientEventId, scrubbed, createdAt);
+                sessionId, identity, kind, sourceEvent, extension, clientEventId, scrubbed, createdAt,
+                actor);
     }
 }

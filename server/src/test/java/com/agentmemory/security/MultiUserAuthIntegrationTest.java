@@ -2,11 +2,17 @@ package com.agentmemory.security;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.hooks.IngestService;
 import java.nio.file.Path;
+import java.time.Duration;
+import java.util.UUID;
+import javax.sql.DataSource;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.junit.jupiter.Container;
@@ -56,9 +62,35 @@ class MultiUserAuthIntegrationTest {
     }
 
     @LocalServerPort int port;
+    @Autowired DataSource dataSource;
+    @Autowired IngestService ingest;
 
     private AuthHttp http() {
         return new AuthHttp(port);
+    }
+
+    private JdbcTemplate jdbc() {
+        return new JdbcTemplate(dataSource);
+    }
+
+    /**
+     * POST a minimal valid {@code /hook} event as {@code token} and return its {@code clientEventId}
+     * (the lookup key). Blocks until the async writer has drained, so the row is queryable on return.
+     */
+    private String postHookAs(String token, String project) {
+        String clientEventId = "evt-" + UUID.randomUUID();
+        String body = "{"
+                + "\"event\":\"UserPromptSubmit\","
+                + "\"sessionId\":\"" + UUID.randomUUID() + "\","
+                + "\"workspace\":\"acme\","
+                + "\"project\":\"" + project + "\","
+                + "\"clientEventId\":\"" + clientEventId + "\","
+                + "\"body\":\"who am i\","
+                + "\"timestamp\":\"2026-06-25T12:00:00Z\"}";
+        AuthHttp.Resp r = http().postJson("/hook", body, "Authorization", AuthHttp.bearer(token));
+        assertThat(r.status()).as("POST /hook: %s", r.body()).isEqualTo(202);
+        assertThat(ingest.awaitIdle(Duration.ofSeconds(10))).as("ingest drained").isTrue();
+        return clientEventId;
     }
 
     /** Create a user with the root token and return its freshly issued token. */
@@ -176,5 +208,36 @@ class MultiUserAuthIntegrationTest {
         AuthHttp.Resp r = http().postJson("/users/add", "{\"username\":\"mallory\"}",
                 "Authorization", AuthHttp.bearer(userToken));
         assertThat(r.status()).isEqualTo(403);
+    }
+
+    // --- attribution: the authenticated user is recorded on the rows they produce -------------------
+
+    @Test
+    void perUserHookIsAttributedToThatUserInObservationAndAudit() {
+        String userToken = addUser("grace");
+        String clientEventId = postHookAs(userToken, "attribution-user");
+
+        // The observation row carries the per-user actor (issue #39 acceptance: identities recorded).
+        String observationActor = jdbc().queryForObject(
+                "SELECT actor FROM observations WHERE client_event_id = ?", String.class, clientEventId);
+        assertThat(observationActor).isEqualTo("grace");
+
+        // The mutation's audit_log row is attributed to the same user.
+        Integer auditedForGrace = jdbc().queryForObject(
+                "SELECT count(*) FROM audit_log "
+                        + "WHERE action = 'observation.append' AND project = 'attribution-user' "
+                        + "  AND actor = 'grace'",
+                Integer.class);
+        assertThat(auditedForGrace).isGreaterThanOrEqualTo(1);
+    }
+
+    @Test
+    void rootHookIsAttributedToRoot() {
+        // The shared root token authenticates as the principal "root"; its captures are filed under it.
+        String clientEventId = postHookAs(ROOT, "attribution-root");
+
+        String observationActor = jdbc().queryForObject(
+                "SELECT actor FROM observations WHERE client_event_id = ?", String.class, clientEventId);
+        assertThat(observationActor).isEqualTo("root");
     }
 }

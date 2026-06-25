@@ -1,6 +1,7 @@
 package com.agentmemory.security;
 
 import com.agentmemory.config.AgentMemoryConfig;
+import com.agentmemory.core.ActorResolver;
 import jakarta.servlet.DispatcherType;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
@@ -11,6 +12,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
 import org.springframework.context.annotation.Bean;
@@ -140,6 +142,20 @@ public class SecurityConfiguration {
         // 401 with a Basic challenge for /web (so a browser pops a login), a plain 401 elsewhere.
         http.exceptionHandling(ex -> ex.authenticationEntryPoint(entryPoint()));
         return http.build();
+    }
+
+    /**
+     * The current-actor resolver (issue #39) used to attribute audit/observation rows to the
+     * authenticated user. Reads the request thread's {@link org.springframework.security.core.context.SecurityContextHolder};
+     * in single-user mode the principal is {@code "root"}, in multi-user mode the per-user slug, and
+     * {@code null} when nothing authenticated. Always registered (even when auth is disabled — it then
+     * simply resolves to {@code null}), so the audit writer and {@code /hook} controller can depend on
+     * it unconditionally. {@link ConditionalOnMissingBean} lets a test substitute a fixed actor.
+     */
+    @Bean
+    @ConditionalOnMissingBean(ActorResolver.class)
+    public ActorResolver actorResolver() {
+        return new SecurityContextActorResolver();
     }
 
     // --- per-user beans (multi-user mode only) -----------------------------------------------------

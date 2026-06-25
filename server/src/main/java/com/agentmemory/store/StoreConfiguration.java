@@ -2,6 +2,7 @@ package com.agentmemory.store;
 
 import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.config.AgentMemoryProperties;
+import com.agentmemory.core.ActorResolver;
 import java.time.Clock;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
@@ -50,13 +51,18 @@ public class StoreConfiguration {
      * before/after identity (lifecycle ops, and reusable by other writers); gated on a
      * {@code DataSource} like the others.
      *
+     * <p>The {@link ActorResolver} (issue #39) stamps each row with the authenticated user. Resolved
+     * through an {@link ObjectProvider} so this bean still wires when the security auto-config is
+     * absent (a DB-only context with no auth), falling back to {@link ActorResolver#NONE} (no actor).
+     *
      * @param jdbcTemplate the auto-configured JDBC template.
+     * @param actors       provider for the current-actor resolver (may resolve to none).
      * @return the audit-log writer.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public AuditWriter auditWriter(JdbcTemplate jdbcTemplate) {
-        return new JdbcAuditWriter(jdbcTemplate);
+    public AuditWriter auditWriter(JdbcTemplate jdbcTemplate, ObjectProvider<ActorResolver> actors) {
+        return new JdbcAuditWriter(jdbcTemplate, actors.getIfAvailable(() -> ActorResolver.NONE));
     }
 
     /**
