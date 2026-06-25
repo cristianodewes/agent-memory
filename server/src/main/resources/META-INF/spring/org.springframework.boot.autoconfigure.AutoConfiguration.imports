@@ -10,3 +10,4 @@ com.agentmemory.consolidate.ConsolidateConfiguration
 com.agentmemory.handoff.HandoffConfiguration
 com.agentmemory.links.LinksConfiguration
 com.agentmemory.timetravel.TimeTravelConfiguration
+com.agentmemory.security.SecurityConfiguration

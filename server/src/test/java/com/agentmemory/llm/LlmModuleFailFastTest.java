@@ -39,7 +39,7 @@ class LlmModuleFailFastTest {
                 new AgentMemoryProperties.Llm(new ProviderAuth(llm, null, null, null)),
                 new AgentMemoryProperties.Embeddings(
                         embeddings == null ? ProviderAuth.NONE : new ProviderAuth(embeddings, null, null, null)),
-                new AgentMemoryProperties.Auth(false, ""),
+                new AgentMemoryProperties.Auth(false, "", java.util.List.of()),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
                 new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05));
