@@ -58,6 +58,16 @@ public class WikiConfiguration {
     }
 
     /**
+     * Reads memory slots ({@code _slots/} pages) from the wiki files for the briefing's dedicated
+     * slots section (issue #26). Sources {@code slot_kind} from frontmatter (the authoritative form),
+     * so slots stay ordinary pages with no schema change.
+     */
+    @Bean
+    public SlotsReader slotsReader(WikiPaths wikiPaths) {
+        return new SlotsReader(wikiPaths);
+    }
+
+    /**
      * The session ledger + immutable raw archive (issue #11). Exposed as an
      * {@link com.agentmemory.store.ObservationSideEffect} so the {@code store} single writer picks it
      * up (via an {@code ObjectProvider}) and runs the {@code log.md}/{@code raw/} writes inside the

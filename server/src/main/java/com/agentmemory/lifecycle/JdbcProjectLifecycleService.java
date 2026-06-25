@@ -3,8 +3,8 @@ package com.agentmemory.lifecycle;
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.WorkspaceId;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.store.AuditWriter;
-import com.agentmemory.store.LinkRepository;
 import com.agentmemory.wiki.WikiPaths;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -23,8 +23,9 @@ import org.springframework.transaction.annotation.Transactional;
  * transaction that rewrites/deletes the Postgres rows, then performs the wiki subtree move/delete; the
  * filesystem step is sequenced <em>inside</em> the transaction so a failure throws and rolls the DB
  * back, keeping the index and the wiki source of truth consistent (the same couple-fs-to-tx discipline
- * #12/#13 use). Cross-project {@code links} are re-pointed via {@link LinkRepository}, and an
- * {@code audit_log} row with before/after identity is written via {@link AuditWriter}.
+ * #12/#13 use). Cross-project {@code links} are re-pointed via the #27 {@link WikiLinkService} (the
+ * single authority for the {@code links} table), and an {@code audit_log} row with before/after
+ * identity is written via {@link AuditWriter}.
  *
  * <p>Identity is the typed 3-tuple, so a rename is a slug update across the denormalized columns and a
  * purge is row deletes + an {@code rm -rf} of one subtree — sibling projects, which live under
@@ -39,13 +40,13 @@ public class JdbcProjectLifecycleService implements ProjectLifecycleService {
             List.of("pages", "sessions", "observations", "audit_log");
 
     private final JdbcTemplate jdbc;
-    private final LinkRepository links;
+    private final WikiLinkService links;
     private final AuditWriter audit;
     private final WikiPaths wikiPaths;
     private final WikiDirOps wikiDirOps;
 
     public JdbcProjectLifecycleService(
-            JdbcTemplate jdbc, LinkRepository links, AuditWriter audit,
+            JdbcTemplate jdbc, WikiLinkService links, AuditWriter audit,
             WikiPaths wikiPaths, WikiDirOps wikiDirOps) {
         this.jdbc = jdbc;
         this.links = links;

@@ -1,8 +1,10 @@
 package com.agentmemory.mcp;
 
 import com.agentmemory.hooks.Sanitizer;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.store.PageRepository;
+import com.agentmemory.wiki.SlotsReader;
 import com.agentmemory.wiki.WikiWriter;
 import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.server.McpServer;
@@ -38,7 +40,9 @@ import tools.jackson.databind.json.JsonMapper;
  * registered in {@code META-INF/spring/.../AutoConfiguration.imports} after the JDBC auto-config so
  * the {@link JdbcTemplate} exists when the condition is evaluated.
  */
-@AutoConfiguration(after = JdbcTemplateAutoConfiguration.class)
+@AutoConfiguration(
+        after = JdbcTemplateAutoConfiguration.class,
+        afterName = "com.agentmemory.links.LinksConfiguration")
 public class McpConfiguration {
 
     /** MCP endpoint path (ARCHITECTURE §5.1 / DD-003). */
@@ -59,8 +63,10 @@ public class McpConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public MemoryTools memoryTools(
-            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes) {
-        return new MemoryTools(recall, pages, reads, scopes, new McpJson(JsonMapper.builder().build()));
+            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes,
+            SlotsReader slots) {
+        return new MemoryTools(
+                recall, pages, reads, scopes, slots, new McpJson(JsonMapper.builder().build()));
     }
 
     /**
@@ -70,9 +76,10 @@ public class McpConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public MemoryWriteService memoryWriteService(
-            PageRepository pages, WikiWriter wikiWriter, Sanitizer sanitizer,
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager txManager) {
-        return new MemoryWriteService(pages, wikiWriter, sanitizer, jdbcTemplate, txManager);
+            PageRepository pages, WikiWriter wikiWriter, WikiLinkService wikiLinkService,
+            Sanitizer sanitizer, JdbcTemplate jdbcTemplate, PlatformTransactionManager txManager) {
+        return new MemoryWriteService(
+                pages, wikiWriter, wikiLinkService, sanitizer, jdbcTemplate, txManager);
     }
 
     @Bean

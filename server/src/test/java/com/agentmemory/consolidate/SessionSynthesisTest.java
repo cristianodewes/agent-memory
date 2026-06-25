@@ -81,6 +81,7 @@ class SessionSynthesisTest {
     @Autowired PageRepository pages;
     @Autowired WikiWriter wikiWriter;
     @Autowired WikiPaths wikiPaths;
+    @Autowired com.agentmemory.links.WikiLinkService links;
 
     private JdbcTemplate jdbc() {
         return new JdbcTemplate(dataSource);
@@ -111,12 +112,12 @@ class SessionSynthesisTest {
 
     private SessionSynthesizer synthesizerWith(TestDoubleProvider llm) {
         return new SessionSynthesizer(
-                new JdbcSessionObservationReader(jdbc()), llm, pages, wikiWriter);
+                new JdbcSessionObservationReader(jdbc()), llm, pages, wikiWriter, links);
     }
 
     private SessionSynthesizer synthesizerWith(TestDoubleProvider llm, int charBudget) {
         return new SessionSynthesizer(
-                new JdbcSessionObservationReader(jdbc()), llm, pages, wikiWriter,
+                new JdbcSessionObservationReader(jdbc()), llm, pages, wikiWriter, links,
                 new SynthesisPrompts(), new SessionSynthesisParser(),
                 new SessionMarkdownRenderer(), charBudget);
     }
