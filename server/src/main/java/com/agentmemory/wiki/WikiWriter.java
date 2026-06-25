@@ -87,9 +87,12 @@ public final class WikiWriter {
     }
 
     /**
-     * Map a persisted {@link PageRecord} to its {@link MarkdownDocument}. {@code pinned}/{@code
-     * slotKind} default (false/null) here — they are set by the curation flows that own them (#24
-     * pinning, slot pages); #13 establishes the contract and round-trips them.
+     * Map a persisted {@link PageRecord} to its {@link MarkdownDocument}. A {@code _slots/} page is
+     * <strong>auto-pinned</strong> (issue #26): its {@code pinned} frontmatter is forced on via
+     * {@link Slots#normalizePinned} so a slot is always written exempt from the retention sweep,
+     * regardless of how it was created. {@code slotKind} defaults to {@code null} here (resolved to
+     * {@code state} when read) — the write tool (#20) / consolidation set an explicit kind; #13
+     * establishes the round-trip and pinning is enforced here.
      *
      * @param record the stored page.
      * @return the document to write to disk.
@@ -99,7 +102,7 @@ public final class WikiWriter {
         PageFrontmatter fm = new PageFrontmatter(
                 page.title(),
                 PageKind.fromPath(page.path()),
-                false,
+                Slots.normalizePinned(page.path(), false),
                 null,
                 page.identity().workspace(),
                 page.identity().project(),

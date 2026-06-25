@@ -2,6 +2,7 @@ package com.agentmemory.mcp;
 
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.store.PageRepository;
+import com.agentmemory.wiki.SlotsReader;
 import io.modelcontextprotocol.json.jackson3.JacksonMcpJsonMapper;
 import io.modelcontextprotocol.server.McpServer;
 import io.modelcontextprotocol.server.McpSyncServer;
@@ -53,8 +54,10 @@ public class McpConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public MemoryTools memoryTools(
-            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes) {
-        return new MemoryTools(recall, pages, reads, scopes, new McpJson(JsonMapper.builder().build()));
+            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes,
+            SlotsReader slots) {
+        return new MemoryTools(
+                recall, pages, reads, scopes, slots, new McpJson(JsonMapper.builder().build()));
     }
 
     /**
