@@ -158,8 +158,9 @@ public class DefaultReindexService implements ReindexService {
             return;
         }
         if (!embeddingHook.isActive()) {
-            log.info("reindex: re-embed requested but no embedder configured — skipping "
-                    + "(recall stays on FTS + graph; embeddings axis is optional, DD-005)");
+            log.info("reindex: re-embed requested but the embeddings axis is not active — skipping "
+                    + "(no embedder, or its width does not match the page_embeddings column; recall "
+                    + "stays on FTS + graph, embeddings are optional, DD-005)");
             return;
         }
         for (PageRecord record : indexed) {

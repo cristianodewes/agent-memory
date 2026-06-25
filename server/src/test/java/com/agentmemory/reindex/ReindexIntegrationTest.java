@@ -300,13 +300,27 @@ class ReindexIntegrationTest {
     // --- re-embed is opt-in --------------------------------------------------------------------
 
     @Test
-    void reEmbedRequestWithNoEmbedderIsANoOpNotAFailure() {
+    void reEmbedRequestWithoutAMatchingEmbedderIsANoOpNotAFailure() {
         WorkspaceId ws = freshWorkspace();
         seed(pageAt(ws, "concepts/e.md"), "E", "embed me maybe\n");
 
+        // The real embed hook (#16 PageEmbeddingService) is wired in this context, but the 'test'
+        // embedder is 8-dim while the page_embeddings column is 1024-dim, so embeddingsEnabled() is
+        // false and the hook gracefully skips (DD-005). The reindex must still complete and index the
+        // page — re-embed availability never fails the rebuild.
         ReindexReport report = reindex.reindex(ReindexOptions.full().withReEmbed(true));
         assertThat(report.pagesIndexed()).isGreaterThanOrEqualTo(1);
-        // No page_embeddings rows are produced by the no-op hook (the test provider is not an embedder).
+        Integer embeddings = jdbc().queryForObject("SELECT count(*) FROM page_embeddings", Integer.class);
+        assertThat(embeddings).isZero();
+    }
+
+    @Test
+    void reEmbedOffNeverWritesEmbeddingsEvenIfAnEmbedderWereActive() {
+        WorkspaceId ws = freshWorkspace();
+        seed(pageAt(ws, "concepts/noembed.md"), "N", "do not embed\n");
+
+        // Default options (reEmbed=false): the embed hook is never invoked, full stop.
+        reindex.reindex(ReindexOptions.full());
         Integer embeddings = jdbc().queryForObject("SELECT count(*) FROM page_embeddings", Integer.class);
         assertThat(embeddings).isZero();
     }
