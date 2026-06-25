@@ -10,6 +10,8 @@ com.agentmemory.consolidate.ConsolidateConfiguration
 com.agentmemory.llmrecall.LlmRecallConfiguration
 com.agentmemory.handoff.HandoffConfiguration
 com.agentmemory.links.LinksConfiguration
+com.agentmemory.graph.GraphConfiguration
 com.agentmemory.timetravel.TimeTravelConfiguration
 com.agentmemory.forget.ForgetConfiguration
 com.agentmemory.security.SecurityConfiguration
+com.agentmemory.chat.ChatConfiguration
