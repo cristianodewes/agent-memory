@@ -46,11 +46,14 @@ public record AgentMemoryProperties(
      * @param address   bind address; loopback by default (DD-007: loopback-only unless opened up).
      * @param port      TCP port; {@code 0} lets the OS pick an ephemeral port.
      * @param basePath  path prefix all routes mount under (e.g. {@code /} or {@code /agent-memory}).
+     * @param webUiDir  optional filesystem directory for a custom {@code /web} SPA build (#36); blank
+     *     serves the bundled reference UI from the classpath. The {@code --web-ui-dir} knob.
      */
     public record Server(
             @DefaultValue("127.0.0.1") String address,
             @DefaultValue("8080") int port,
-            @DefaultValue("/") String basePath) {
+            @DefaultValue("/") String basePath,
+            @DefaultValue("") String webUiDir) {
     }
 
     /**

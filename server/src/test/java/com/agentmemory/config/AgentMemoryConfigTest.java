@@ -19,7 +19,7 @@ class AgentMemoryConfigTest {
 
     private static AgentMemoryProperties propsWithDataDir(String dir) {
         return new AgentMemoryProperties(
-                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/"),
+                new AgentMemoryProperties.Server("127.0.0.1", 8080, "/", ""),
                 new AgentMemoryProperties.Data(dir),
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
