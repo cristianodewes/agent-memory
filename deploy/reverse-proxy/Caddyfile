@@ -1,0 +1,32 @@
+# agent-memory — Caddy reverse proxy with automatic HTTPS.
+#
+# Terminates TLS (Let's Encrypt) and forwards to the loopback-bound agent-memory
+# server. The app itself does NOT terminate TLS (issue #38); Caddy does.
+#
+# Usage:
+#   1. Point DNS A/AAAA for memory.example.com at this host.
+#   2. Replace memory.example.com and the admin email below.
+#   3. Enable auth on the server (see ./README.md) and keep it on 127.0.0.1.
+#   4. caddy run --config ./Caddyfile
+#
+# Caddy obtains and renews the certificate automatically. Auth is left entirely to
+# the server (bearer token everywhere; Basic on /web; /healthz open) — do not add a
+# blanket Authorization guard here or you will break /healthz and the /web challenge.
+
+{
+	# ACME (Let's Encrypt) account email — replace with yours.
+	email admin@example.com
+}
+
+memory.example.com {
+	# Forward to the agent-memory server on the same host (plain HTTP, loopback).
+	# This hop stays on 127.0.0.1, so it never crosses the network in clear text.
+	reverse_proxy 127.0.0.1:8080
+
+	encode gzip
+
+	log {
+		output stdout
+		format console
+	}
+}

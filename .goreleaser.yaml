@@ -1,0 +1,78 @@
+# goreleaser configuration for the agent-memory Go client (#40, packaging slice).
+#
+# Builds the native client binary for the three supported OSes (linux/macos/windows,
+# amd64 + arm64) and publishes them, with checksums and an auto changelog, as a GitHub
+# Release on every `v*` tag. The Go module lives under client/, so the build runs with
+# `dir: client` and `main: ./cmd/agent-memory`; the version is injected into the
+# existing `internal/cli.Version` var via -ldflags (see client/internal/cli/root.go).
+#
+# Validate locally with `goreleaser check` and dry-run with
+# `goreleaser release --snapshot --clean`. CI (.github/workflows/release.yml) runs both:
+# a check + snapshot build on PRs that touch this file, and a real release on tags.
+version: 2
+
+project_name: agent-memory
+
+builds:
+  - id: agent-memory
+    # The module is the client/ subtree, not the repo root.
+    dir: client
+    main: ./cmd/agent-memory
+    binary: agent-memory
+    env:
+      # Pure-Go client (cobra + BurntSushi/toml): no cgo, so it cross-compiles cleanly.
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Reproducible builds: stamp binaries with the commit time, not the build time.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/cristianodewes/agent-memory/client/internal/cli.Version={{ .Version }}
+
+archives:
+  - id: default
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # tar.gz everywhere except Windows, which gets a .zip.
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  # Non-tag (PR / local) dry-runs get a clearly-marked snapshot version.
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: cristianodewes
+    name: agent-memory
+  # Pre-release when the tag looks like a pre-release (e.g. v1.2.0-rc1).
+  prerelease: auto
+  name_template: "agent-memory {{ .Tag }}"
+  footer: >-
+    These are the **agent-memory client** binaries. Run the matching server with
+    `docker compose -f docker/compose.yml up` and front it with one of the
+    reverse-proxy TLS templates under `deploy/reverse-proxy/` for remote access.

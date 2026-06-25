@@ -161,6 +161,19 @@ public final class WebDtos {
         }
     }
 
+    /** One folder in the scent map: a top-level path segment and how many latest pages sit under it. */
+    public record FolderCount(String folder, long pages) {}
+
+    /** One hub page in the scent map: a heavily-referenced page and its resolved inbound-link count. */
+    public record HubPage(String path, String title, long inbound) {}
+
+    /**
+     * {@code GET .../scent}: a compact "what memory exists" orientation map (issue #85) — the busiest
+     * folders and the most-linked hub pages — so an agent (or the SessionStart injection) can see the
+     * shape of a project's memory without reading it. No LLM, read-only.
+     */
+    public record ScentView(ScopeView scope, List<FolderCount> folders, List<HubPage> hubs) {}
+
     /** Memory-health rollup for {@code overview} (lifetime counts + recent activity). */
     public record HealthView(
             long pages, long observations, long sessions, long links, long dependents,

@@ -168,17 +168,23 @@ func runBoundaryDrain(
 			// resilience). Log and still attempt the orientation sections below.
 			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: handoff fetch:", handoffErr)
 		}
-		// Assemble the SessionStart orientation block (#85): the handoff (first, most actionable) plus a
-		// bounded project briefing snapshot so the agent knows what memory it can recall. The briefing is
-		// read-only and advisory — any error omits just that section; each section is optional, and an
-		// empty block emits nothing (a clean no-op).
+		// Assemble the SessionStart orientation block (#85): the handoff (first, most actionable), a
+		// bounded project briefing snapshot, and the scent "memory map" (busiest folders + hub pages) so
+		// the agent knows what memory it can recall. Both reads are read-only and advisory — any error
+		// omits just that section; each section is optional, and an empty block emits nothing.
 		briefing, briefErr := client.GetBriefing(ctx, workspace, project, orientation.RecentLimit)
 		if briefErr != nil {
 			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: briefing:", briefErr)
 			briefing = nil
 		}
+		scent, scentErr := client.GetScent(
+			ctx, workspace, project, orientation.ScentFolders, orientation.ScentHubs)
+		if scentErr != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: scent:", scentErr)
+			scent = nil
+		}
 		if out, ok := hook.SessionStartAdditionalContext(
-			orientation.Render(fetcher.Rendered(), briefing)); ok {
+			orientation.Render(fetcher.Rendered(), briefing, scent)); ok {
 			// Emit the injected context on stdout for Claude Code to add to the session.
 			fmt.Fprintln(cmd.OutOrStdout(), string(out))
 		}

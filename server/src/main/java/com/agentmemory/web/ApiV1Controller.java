@@ -196,6 +196,25 @@ public class ApiV1Controller {
         return ResponseEntity.ok(buildBriefing(Scope.of(ws, p), clampLimit(limit)));
     }
 
+    // --- scent (orientation map: busiest folders + hub pages) ----------------------------------
+
+    @GetMapping("/workspaces/{ws}/projects/{p}/scent")
+    public ResponseEntity<?> scent(
+            @PathVariable String ws,
+            @PathVariable String p,
+            @RequestParam(required = false) Integer folders,
+            @RequestParam(required = false) Integer hubs) {
+        if (notWired()) {
+            return unavailable();
+        }
+        Scope scope = Scope.of(ws, p);
+        WebReadRepository wr = webReads.getObject();
+        return ResponseEntity.ok(new WebDtos.ScentView(
+                WebDtos.ScopeView.of(scope),
+                wr.topFolders(scope, clampLimit(folders)),
+                wr.hubPages(scope, clampLimit(hubs))));
+    }
+
     // --- overview (bundle: handoff + briefing + health) ----------------------------------------
 
     @GetMapping("/workspaces/{ws}/overview")

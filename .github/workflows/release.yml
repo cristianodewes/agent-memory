@@ -1,0 +1,69 @@
+name: Release
+
+# Publishes the native agent-memory Go client binaries (#40, packaging slice).
+#
+# This workflow is intentionally SEPARATE from ci.yml so it never interferes with the
+# path-filtered CI gate ("CI / ci") that branch protection requires:
+#   - On a `v*` tag push it runs goreleaser for real, building the three-OS binaries
+#     and publishing them (with checksums + an auto changelog) as a GitHub Release.
+#   - On a pull request that touches the release config it validates the goreleaser
+#     config and cross-compiles a SNAPSHOT (no publish), so config changes get CI
+#     signal without cutting a release.
+#
+# See .goreleaser.yaml and docs/ARCHITECTURE.md §8.
+
+on:
+  push:
+    tags:
+      - "v*"
+  pull_request:
+    paths:
+      - ".goreleaser.yaml"
+      - ".github/workflows/release.yml"
+
+# Releases must not terminate TLS or push to a registry; the only privilege needed is
+# writing the GitHub Release on a tag. PRs run the snapshot path, which publishes nothing.
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  goreleaser:
+    name: goreleaser
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser's changelog needs the full history (and tags).
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      # Install the goreleaser CLI once, then drive it directly so the tag vs. PR
+      # branch is explicit and the config is always linted first.
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          install-only: true
+
+      - name: goreleaser check (validate config)
+        run: goreleaser check
+
+      - name: release (tag) or snapshot dry-run (PR)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag build: publishing the GitHub Release"
+            goreleaser release --clean
+          else
+            echo "PR build: validating + cross-compiling a snapshot (no publish)"
+            goreleaser release --snapshot --clean
+          fi
