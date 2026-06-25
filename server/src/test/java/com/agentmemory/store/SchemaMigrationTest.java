@@ -29,8 +29,16 @@ import org.testcontainers.utility.DockerImageName;
  * tests) and pin the pgvector image explicitly. That the Spring context starts at all is itself the
  * "app boot applies the migrations cleanly" acceptance check — {@code FlywayMigrationInitializer}
  * runs before the context is ready.
+ *
+ * <p>The LLM is a required dependency (DD-005): a full-context boot fails fast unless a chat
+ * provider is reachable, so the deterministic, offline {@code test} provider is selected for both
+ * axes here (same as {@link com.agentmemory.AgentMemoryServerApplicationTests}) — this test is about
+ * the schema, not the LLM.
  */
-@SpringBootTest
+@SpringBootTest(properties = {
+    "agent-memory.llm.auth.provider=test",
+    "agent-memory.embeddings.auth.provider=test"
+})
 @Testcontainers
 class SchemaMigrationTest {
 

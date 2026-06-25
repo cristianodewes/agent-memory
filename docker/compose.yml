@@ -33,6 +33,13 @@ services:
       AGENT_MEMORY_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agentmemory}
       AGENT_MEMORY_DB_USERNAME: ${POSTGRES_USER:-agentmemory}
       AGENT_MEMORY_DB_PASSWORD: ${POSTGRES_PASSWORD:-agentmemory}
+      # The LLM is a required dependency (DD-005): the server probes the
+      # configured chat provider at startup and FAILS FAST if none is set. Use
+      # the deterministic, offline 'test' provider (no API key, no network) so
+      # the stack boots without external credentials. Point these at 'anthropic'
+      # (+ AGENT_MEMORY_LLM_AUTH_API_KEY) / 'voyage' for a real local stack.
+      AGENT_MEMORY_LLM_AUTH_PROVIDER: ${AGENT_MEMORY_LLM_AUTH_PROVIDER:-test}
+      AGENT_MEMORY_EMBEDDINGS_AUTH_PROVIDER: ${AGENT_MEMORY_EMBEDDINGS_AUTH_PROVIDER:-test}
     depends_on:
       postgres:
         condition: service_healthy

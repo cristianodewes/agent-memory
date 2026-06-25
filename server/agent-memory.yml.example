@@ -23,13 +23,39 @@ agent-memory:
     username: agent_memory
     password: ""
 
-  # LLM is required at runtime (DD-005) but only wired/validated in issue #6. These are stubs.
+  # LLM is required at runtime (DD-005, invariant #13): the server probes it at startup and
+  # fails fast if it is unreachable. Pick ONE provider below.
   llm:
     auth:
       provider: ""       # anthropic | openai | openai-compat | gemini
-      api-key: ""
-      base-url: ""       # for openai-compat / self-hosted endpoints
-      model: ""
+      api-key: ""        # secret key; LEAVE EMPTY for keyless local engines (see openai-compat)
+      base-url: ""       # override endpoint; REQUIRED for openai-compat, optional otherwise
+      model: ""          # model id; required for openai-compat / local engines (no universal default)
+
+    # --- worked examples (copy one into `auth:` above) -------------------------------------------
+    #
+    # OpenAI (native): base-url defaults to https://api.openai.com/v1; model defaults to gpt-5.5.
+    #   auth:
+    #     provider: openai
+    #     api-key: ${OPENAI_API_KEY}
+    #     model: gpt-5.5
+    #
+    # OpenRouter (OpenAI-compatible gateway, with key): one key, hundreds of models.
+    #   auth:
+    #     provider: openai-compat
+    #     base-url: https://openrouter.ai/api/v1
+    #     api-key: ${OPENROUTER_API_KEY}
+    #     model: deepseek/deepseek-chat
+    #
+    # Ollama (local, KEYLESS): leave api-key empty — no Authorization header is sent.
+    #   auth:
+    #     provider: openai-compat
+    #     base-url: http://localhost:11434/v1
+    #     model: llama3.1
+    #
+    # Any other OpenAI-compatible engine (vLLM, LM Studio, llama.cpp server, Groq, Together,
+    # DeepSeek, Mistral, Gemini's OpenAI-compatible endpoint) works the same way: set
+    # provider=openai-compat, point base-url at the engine, set model, add api-key only if required.
 
   embeddings:
     auth:

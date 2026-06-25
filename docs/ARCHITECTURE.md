@@ -106,6 +106,32 @@ A pluggable provider behind a typed interface. The server validates connectivity
 and **fails fast** if no provider is reachable. Embeddings are a separate (default-on)
 provider axis; if embeddings are unavailable, recall degrades gracefully to FTS + graph.
 
+**Chat providers.** Two real chat providers ship today, selected purely by config (no consumer
+knows which is active):
+
+- **`anthropic`** — the Messages API; recommended default.
+- **`openai` / `openai-compat`** — the OpenAI **Chat Completions** API
+  (`POST {base_url}/chat/completions`). One client pointed at a configurable `base_url` unlocks
+  essentially **any LLM** that speaks the OpenAI wire format: OpenAI, OpenRouter, DeepSeek, Groq,
+  Together, Mistral, Gemini's OpenAI-compatible endpoint, and every local engine (Ollama, vLLM,
+  LM Studio, llama.cpp server).
+  - `openai` defaults `base_url` to `https://api.openai.com/v1`; `openai-compat` **requires** an
+    explicit `base_url` (fails fast with an actionable message otherwise).
+  - The API key is **optional**: keyless local engines send **no** `Authorization` header; when a
+    key is present it is sent as `Authorization: Bearer <key>`.
+  - **Structured JSON (invariant #7):** requests carrying a schema use
+    `response_format = {type:"json_schema", json_schema:{name, schema, strict:true}}`. Engines that
+    do not implement `json_schema` get a documented **tolerant fallback**
+    (`response_format = {type:"json_object"}` plus the schema injected into the prompt), and the
+    reply is validated as well-formed JSON client-side — malformed JSON never passes silently. A
+    one-time degraded-strictness warning is logged when the fallback engages.
+  - Local engines must pin their own `model` (there is no universal default across compatible
+    engines). See `agent-memory.yml.example` for worked **Ollama** (keyless) and **OpenRouter**
+    (with key) blocks.
+
+> Native Gemini chat and the embeddings provider matrix (`openai`/`voyage`/`google`) remain in
+> #40; the OpenAI-compatible client already covers Gemini via its OpenAI-compatible endpoint.
+
 ## 3. Data flow
 
 ### 3.1 Capture
@@ -166,7 +192,7 @@ next session-start ─▶ Go hook fetches + injects handoff ─▶ accept marks 
 | `observations_fts` | `tsvector` over raw observations (bounded fallback). |
 | `links` | Wikilinks / cross-refs; `to_page_id` nullable (forward/deferred links); cross-project scope. |
 | `handoffs` | Typed handoff records (open / accepted / expired). |
-| `page_embeddings` | `pgvector` column with `(provider, model, dim)` denormalized. |
+| `page_embeddings` | `pgvector` column with `(provider, model, dim)` denormalized. **Default dim contract = `1024`** (the default embedder, Voyage `voyage-3`; see §2.4 and `com.agentmemory.llm.VoyageEmbedder.DEFAULT_DIMENSIONS`). The `pgvector` column in #4 sizes to this; a provider returning a different width fails the `EmbeddingResult`/`Embedder.dimensions()` check rather than being stored. |
 | `audit_log` | Every mutation, addressable by `at DESC`. |
 | `pending_writes` | Self-improvement proposals awaiting/approved through the gate. |
 
