@@ -1,6 +1,8 @@
 package com.agentmemory.consolidate;
 
 import com.agentmemory.core.Observation;
+import com.agentmemory.core.ObservationKind;
+import com.agentmemory.core.SessionId;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -67,21 +69,30 @@ public final class ConsolidationObservationListener implements Consumer<Observat
         }
         // Cheap policy check on the worker thread: only triggering kinds cost a dispatch; every other
         // kind returns immediately so non-triggering events never touch the executor.
-        if (!SessionConsolidationTrigger.triggers(observation.kind())) {
+        ObservationKind kind = observation.kind();
+        if (!SessionConsolidationTrigger.triggers(kind)) {
             return;
         }
+        // Capture only the two fields the task needs (not the whole Observation, which carries the
+        // payload) so a queued task pins nothing extra.
+        SessionId sessionId = observation.sessionId();
         try {
-            // Capture the typed fields and run synthesis OFF the ingest worker so the blocking LLM call
-            // cannot stall the queue drain (invariant #5). onObservation is itself best-effort (it logs
-            // and swallows any synthesis failure), so the task body never escalates.
-            executor.execute(() -> trigger.onObservation(observation.sessionId(), observation.kind()));
+            // Run synthesis OFF the ingest worker so the blocking LLM call cannot stall the queue drain
+            // (invariant #5). onObservation is itself best-effort (it logs and swallows any synthesis
+            // failure), so the task body never escalates.
+            executor.execute(() -> trigger.onObservation(sessionId, kind));
         } catch (RejectedExecutionException reject) {
-            // Backlog saturated (or executor shutting down): drop rather than block ingest. The next
-            // session-end/pre-compact re-fires and synthesis is idempotent, so no work is permanently
-            // lost.
-            log.warn("consolidation backlog saturated; dropped synthesis for session {} ({}) "
-                    + "(will re-fire on the next trigger)",
-                    observation.sessionId(), observation.kind().wire());
+            if (executor.isShutdown()) {
+                // Shutting down (context stopping): not a backlog problem, and there is no "next
+                // trigger" to re-fire on — just note it and move on.
+                log.debug("consolidation executor is shutting down; skipped synthesis for session {} ({})",
+                        sessionId, kind.wire());
+            } else {
+                // Backlog saturated: drop rather than block ingest. The next session-end/pre-compact
+                // re-fires and synthesis is idempotent, so no work is permanently lost.
+                log.warn("consolidation backlog saturated; dropped synthesis for session {} ({}) "
+                        + "(will re-fire on the next trigger)", sessionId, kind.wire());
+            }
         }
     }
 

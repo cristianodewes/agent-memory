@@ -72,16 +72,19 @@ class ConsolidationObservationListenerTest {
             listener.accept(observation(session, ObservationKind.SESSION_END));
 
             // Dispatch is asynchronous (off the worker): the trigger is invoked shortly, on the
-            // dedicated synthesis thread, with the right session id and kind.
+            // dedicated synthesis thread, with the right session id and kind. All three recordings are
+            // asserted INSIDE the await — RecordingTrigger writes sessions, then kinds, then threads as
+            // separate (non-atomic) steps, so asserting threads outside the await could observe it
+            // before the third write lands (a flaky race).
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
                 assertThat(trigger.sessions).containsExactly(session);
                 assertThat(trigger.kinds).containsExactly(ObservationKind.SESSION_END);
+                assertThat(trigger.threads).hasSize(1);
+                assertThat(trigger.threads.get(0))
+                        .as("synthesis runs off the calling (ingest worker) thread")
+                        .isNotEqualTo(callerThread)
+                        .startsWith("agent-memory-consolidation");
             });
-            assertThat(trigger.threads).hasSize(1);
-            assertThat(trigger.threads.get(0))
-                    .as("synthesis runs off the calling (ingest worker) thread")
-                    .isNotEqualTo(callerThread)
-                    .startsWith("agent-memory-consolidation");
         }
     }
 
