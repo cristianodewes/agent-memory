@@ -14,8 +14,10 @@ import java.util.Locale;
  *
  * <p>Mapping (folder → layer):
  * <ul>
- *   <li>{@code concepts/}, {@code decisions/}, {@code _rules/} → {@link MemoryLayer#SEMANTIC} —
- *       distilled, timeless knowledge; does not age out.</li>
+ *   <li>{@code concepts/}, {@code decisions/}, {@code _rules/}, {@code _slots/} → {@link MemoryLayer#SEMANTIC} —
+ *       distilled, timeless knowledge; does not age out. ({@code _slots/} pages are also auto-pinned and
+ *       sweep-exempt — issue #26 — so a slot is never classified {@code WORKING} and thus never dropped
+ *       from latest at session end.)</li>
  *   <li>{@code procedures/} → {@link MemoryLayer#PROCEDURAL} — how-to/runbooks; frequency-driven.</li>
  *   <li>{@code sessions/}, {@code gotchas/} → {@link MemoryLayer#EPISODIC} — events in time; hot→cold
  *       age decay.</li>
@@ -61,6 +63,7 @@ public final class LayerClassifier {
             case "concepts":
             case "decisions":
             case "_rules":
+            case "_slots":
                 return MemoryLayer.SEMANTIC;
             case "procedures":
                 return MemoryLayer.PROCEDURAL;

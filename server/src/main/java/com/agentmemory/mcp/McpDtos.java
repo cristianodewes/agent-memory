@@ -4,6 +4,7 @@ import com.agentmemory.recall.RecallHit;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.Scope;
 import com.agentmemory.store.PageRecord;
+import com.agentmemory.wiki.SlotsReader;
 import java.util.List;
 
 /**
@@ -70,8 +71,19 @@ final class McpDtos {
             ScopeView scope, long pages, long observations, long sessions, long links) {}
 
     /**
+     * One memory slot in a briefing: an auto-pinned {@code _slots/} page with its declared write
+     * regime ({@code slot_kind} — {@code state} or {@code invariant}).
+     */
+    record SlotView(String path, String title, String slotKind, boolean pinned) {
+        static SlotView of(SlotsReader.SlotView s) {
+            return new SlotView(s.path(), s.title(), s.slotKind(), s.pinned());
+        }
+    }
+
+    /**
      * {@code memory_briefing} result: a structured snapshot (no LLM) — counts, recent activity
-     * windows, the {@code _rules/}/{@code _slots/} listings, and recent page paths.
+     * windows, the {@code _rules/} listing, the memory {@code slots} (with their {@code slot_kind}),
+     * and recent pages.
      */
     record BriefingResult(
             ScopeView scope,
@@ -82,6 +94,6 @@ final class McpDtos {
             long observationsLast7Days,
             long observationsLast30Days,
             List<String> rules,
-            List<String> slots,
+            List<SlotView> slots,
             List<RecentPage> recent) {}
 }
