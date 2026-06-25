@@ -29,13 +29,17 @@ final class HttpTestClient {
         this.base = "http://localhost:" + port;
     }
 
-    /** A GET response: HTTP status + raw body. */
-    record Response(int status, String body) {
+    /** A response: HTTP status + raw body + the response headers. */
+    record Response(int status, String body, java.net.http.HttpHeaders headers) {
         JsonNode json() {
             return JSON.readTree(body);
         }
         boolean is2xx() {
             return status >= 200 && status < 300;
+        }
+        /** First value of a response header, or {@code null} if absent. */
+        String header(String name) {
+            return headers.firstValue(name).orElse(null);
         }
     }
 
@@ -45,7 +49,7 @@ final class HttpTestClient {
                     HttpRequest.newBuilder(URI.create(base + path)).GET()
                             .timeout(Duration.ofSeconds(15)).build(),
                     HttpResponse.BodyHandlers.ofString());
-            return new Response(r.statusCode(), r.body());
+            return new Response(r.statusCode(), r.body(), r.headers());
         } catch (java.io.IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
@@ -63,12 +67,29 @@ final class HttpTestClient {
                             .POST(HttpRequest.BodyPublishers.ofString(JSON.writeValueAsString(body)))
                             .timeout(Duration.ofSeconds(15)).build(),
                     HttpResponse.BodyHandlers.ofString());
-            return new Response(r.statusCode(), r.body());
+            return new Response(r.statusCode(), r.body(), r.headers());
         } catch (java.io.IOException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
             throw new RuntimeException("POST " + path + " failed", e);
+        }
+    }
+
+    /** Send an arbitrary method with no body (e.g. to assert a write verb is rejected). */
+    Response send(String method, String path) {
+        try {
+            HttpResponse<String> r = client.send(
+                    HttpRequest.newBuilder(URI.create(base + path))
+                            .method(method, HttpRequest.BodyPublishers.noBody())
+                            .timeout(Duration.ofSeconds(15)).build(),
+                    HttpResponse.BodyHandlers.ofString());
+            return new Response(r.statusCode(), r.body(), r.headers());
+        } catch (java.io.IOException | InterruptedException e) {
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
+            throw new RuntimeException(method + " " + path + " failed", e);
         }
     }
 

@@ -71,4 +71,12 @@ class BasePathRelocationTest {
         assertThat(http.get("/agent-memory/mcp").status()).isNotEqualTo(404);
         assertThat(http.get("/mcp").status()).isEqualTo(404);
     }
+
+    @Test
+    void webUiAlsoMovesUnderTheBasePath() {
+        // The embedded /web browser (#36) relocates with the API/MCP: the reference index is served
+        // under the prefix, and the bare /web/ is gone — so its relative ../api/v1 fetch stays aligned.
+        assertThat(http.get("/agent-memory/web/").status()).isEqualTo(200);
+        assertThat(http.get("/web/").status()).isEqualTo(404);
+    }
 }
