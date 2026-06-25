@@ -124,6 +124,15 @@ class AuthEnabledIntegrationTest {
         assertThat(http().get("/actuator/health").status()).isEqualTo(200);
     }
 
+    @Test
+    void nonHealthActuatorEndpointsRequireAuth() {
+        // Only /actuator/health is public; the rest of /actuator/** must not leak config/secrets
+        // (env, beans, mappings, heapdump) — a request without the token is rejected, not served.
+        // (These are not web-exposed by default either, but the security deny is the guarantee.)
+        assertThat(http().get("/actuator/env").status()).isEqualTo(401);
+        assertThat(http().get("/actuator/beans").status()).isEqualTo(401);
+    }
+
     // --- non-GET browser write guard ---------------------------------------------------------------
 
     @Test
