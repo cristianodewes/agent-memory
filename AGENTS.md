@@ -30,7 +30,7 @@ Start here:
 ## Conventions
 
 - Go: `gofmt`/`goimports`, `golangci-lint`; package layout per ARCHITECTURE §6.
-- Java: Spring Boot 3.x on JDK 25, Gradle; package layout per ARCHITECTURE §6.
+- Java: Spring Boot 4.x on JDK 21+ (25 works), Maven; package layout per ARCHITECTURE §6.
 - Commits: Conventional Commits; branch `feat/<issue>-<slug>`.
 
 ## Project memory routing

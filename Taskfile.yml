@@ -1,0 +1,47 @@
+# Task runner shortcuts (https://taskfile.dev). Optional — the same commands are
+# documented natively in the README. Uses `mvn` (global) and `go`.
+version: "3"
+
+tasks:
+  build:
+    desc: Build client and server
+    deps: [build-client, build-server]
+
+  build-client:
+    dir: client
+    cmds:
+      - go build ./...
+
+  build-server:
+    dir: server
+    cmds:
+      - mvn -q -DskipTests package
+
+  test:
+    desc: Test client and server
+    deps: [test-client, test-server]
+
+  test-client:
+    dir: client
+    cmds:
+      - go test ./...
+
+  test-server:
+    dir: server
+    cmds:
+      - mvn -q test
+
+  lint-client:
+    dir: client
+    cmds:
+      - go vet ./...
+
+  up:
+    desc: Start the local Postgres (pgvector)
+    cmds:
+      - docker compose -f docker/compose.yml up -d postgres
+
+  down:
+    desc: Stop the local stack
+    cmds:
+      - docker compose -f docker/compose.yml down
