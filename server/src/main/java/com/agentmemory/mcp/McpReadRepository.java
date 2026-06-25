@@ -72,6 +72,41 @@ public class McpReadRepository {
         }
     }
 
+    /**
+     * Most recently active project <em>within a single capture session</em> — the {@code session_aware}
+     * isolation of issue #87's {@code auto_scope}. Keyed on the {@code session_id} the native hook
+     * reports (and writes on every {@code observations} row), so two sessions of the same user — even
+     * concurrent ones in different projects — resolve their no-scope MCP calls to their own session's
+     * project rather than to each other's. Unions the session's observations with the {@code sessions}
+     * row itself so a freshly-started session (its scope known before any further observation) still
+     * resolves.
+     *
+     * @param sessionId the capture session id (a UUID string); a {@code null}/blank id yields empty (the
+     *     caller {@code ScopeResolver} fail-fasts before reaching here when no session id is present).
+     * @return the session's most-recently-active {@code (workspace, project)}, or empty if the session
+     *     id matches no captured activity.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Scope> mostRecentActivityScopeForSession(String sessionId) {
+        if (sessionId == null || sessionId.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.ofNullable(jdbc.queryForObject(
+                    "SELECT workspace, project FROM ( "
+                            + "  SELECT workspace, project, created_at AS at FROM observations "
+                            + "    WHERE session_id = ?::uuid "
+                            + "  UNION ALL "
+                            + "  SELECT workspace, project, started_at AS at FROM sessions "
+                            + "    WHERE id = ?::uuid "
+                            + ") activity ORDER BY at DESC NULLS LAST LIMIT 1",
+                    (rs, n) -> Scope.of(rs.getString("workspace"), rs.getString("project")),
+                    sessionId, sessionId));
+        } catch (EmptyResultDataAccessException e) {
+            return Optional.empty();
+        }
+    }
+
     /** Lifetime counts for a project, for {@code memory_status} / {@code memory_briefing}. */
     @Transactional(readOnly = true)
     public Counts counts(Scope scope) {

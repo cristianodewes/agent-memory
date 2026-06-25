@@ -64,7 +64,6 @@ public final class AgentMemoryConfig {
         ensureLayout(resolved);
         validateAuth(props.auth());
         validateOidc(props.auth());
-        validateScope(props.scope());
         return new AgentMemoryConfig(props, resolved);
     }
 
@@ -107,22 +106,6 @@ public final class AgentMemoryConfig {
                     "agent-memory.auth.oidc.issuer is set but agent-memory.auth.oidc.audience is blank. "
                             + "An audience (the client/app id the token is issued for) is required so a "
                             + "token minted for another application cannot authenticate here.");
-        }
-    }
-
-    /**
-     * Fail fast on an unsupported {@code auto_scope} mode (issue #39). {@link AutoScope#SESSION_AWARE}
-     * is declared but not yet wired (the MCP tool boundary carries no capture-session id to isolate
-     * by), so selecting it must abort startup with a clear error — never silently fall back to
-     * {@link AutoScope#SINGLE_SLOT}, which on a shared server would leak activity across sessions.
-     */
-    static void validateScope(AgentMemoryProperties.Scope scope) {
-        if (scope.auto() == AutoScope.SESSION_AWARE) {
-            throw new ConfigException(
-                    "agent-memory.scope.auto=session_aware is not yet supported (it needs a "
-                            + "capture-session identity the MCP tool boundary does not yet carry). Use "
-                            + "'single_slot' (global, the default) or 'per_actor' (isolate the default "
-                            + "scope to the authenticated user). session_aware is tracked as a follow-up.");
         }
     }
 
