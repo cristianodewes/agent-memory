@@ -29,6 +29,24 @@
 	<properties>
 		<java.version>21</java.version>
 	</properties>
+
+	<!-- Import the Testcontainers BOM so the individual test modules (testcontainers-junit-jupiter,
+	     testcontainers-postgresql — the 2.x artifact names) inherit a version. Spring Boot's BOM
+	     imports this same BOM transitively, but importing it here directly (at the version Spring
+	     Boot manages, ${testcontainers.version} = 2.0.5) keeps the modules version-free without
+	     relying on grandparent import resolution. -->
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.testcontainers</groupId>
+				<artifactId>testcontainers-bom</artifactId>
+				<version>${testcontainers.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
+
 	<dependencies>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
@@ -39,6 +57,26 @@
 			<artifactId>spring-boot-starter-webmvc</artifactId>
 		</dependency>
 
+		<!-- Postgres derived index (issue #4). spring-boot-starter-flyway brings the Flyway
+		     auto-configuration (the spring-boot-flyway module — split out in Spring Boot 4.x and NOT
+		     pulled in by flyway-core alone) plus starter-jdbc (DataSource + JdbcTemplate) and
+		     flyway-core. flyway-database-postgresql adds Flyway 12's per-database Postgres support
+		     (not transitive). Versions are managed by the Spring Boot 4.1.0 BOM (flyway 12.4.0,
+		     postgresql 42.7.11). -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-flyway</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.flywaydb</groupId>
+			<artifactId>flyway-database-postgresql</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.postgresql</groupId>
+			<artifactId>postgresql</artifactId>
+			<scope>runtime</scope>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator-test</artifactId>
@@ -47,6 +85,25 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-webmvc-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- Testcontainers: the migration test boots a throwaway pgvector/pgvector:pg16 Postgres so
+		     CI runs the real schema without an external service (issue #4 acceptance + Testcontainers
+		     2.0.5 from the BOM). spring-boot-testcontainers wires @ServiceConnection / lifecycle. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-testcontainers</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-junit-jupiter</artifactId>
+			<scope>test</scope>
+		</dependency>
+		<dependency>
+			<groupId>org.testcontainers</groupId>
+			<artifactId>testcontainers-postgresql</artifactId>
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
