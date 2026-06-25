@@ -2,6 +2,7 @@ package com.agentmemory.config;
 
 import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
 /**
@@ -133,13 +134,22 @@ public record AgentMemoryProperties(
      *     <em>root</em> token (required for {@code /admin/*}), and per-user tokens (hashed with this
      *     pepper) authenticate as their own identity for everything else. Blank ⇒ single-user mode
      *     ({@link #token} alone). {@code AGENT_MEMORY_AUTH_TOKEN_PEPPER}; redacted in {@link #toString()}.
+     * @param oidc OIDC device-grant identity for native hooks (issue #39 PR2). Setting
+     *     {@code oidc.issuer} enables validating an OIDC access token (a JWT) against the IdP's
+     *     JWKS/issuer/audience; the verified subject authenticates as a regular user (the actor), in
+     *     addition to the root/per-user tokens. Inert in loopback mode ({@code enabled=false}).
      */
     public record Auth(
             @DefaultValue("false") boolean enabled,
             @DefaultValue("") String token,
             @DefaultValue List<String> allowedHosts,
-            @DefaultValue("") String tokenPepper) {
+            @DefaultValue("") String tokenPepper,
+            @DefaultValue Oidc oidc) {
 
+        // The canonical constructor is the one Spring binds @ConfigurationProperties through; mark it
+        // explicitly because the convenience 4-arg constructor below would otherwise make the binding
+        // constructor ambiguous (issue #39 PR2 added the 5th OIDC field).
+        @ConstructorBinding
         public Auth {
             // Normalize the allow-list to a defensive, lower-cased copy with blanks dropped so the
             // guard's membership test is a simple contains() and never NPEs on an unset list.
@@ -148,6 +158,17 @@ public record AgentMemoryProperties(
                             .filter(h -> h != null && !h.isBlank())
                             .map(h -> h.trim().toLowerCase(java.util.Locale.ROOT))
                             .toList();
+            if (oidc == null) {
+                oidc = Oidc.DISABLED;
+            }
+        }
+
+        /**
+         * Backwards-compatible constructor without OIDC (issue #39 PR2 added the 5th field). Most
+         * callers and tests predating OIDC use this 4-arg form; it defaults to OIDC disabled.
+         */
+        public Auth(boolean enabled, String token, List<String> allowedHosts, String tokenPepper) {
+            this(enabled, token, allowedHosts, tokenPepper, Oidc.DISABLED);
         }
 
         public boolean hasToken() {
@@ -163,7 +184,57 @@ public record AgentMemoryProperties(
         public String toString() {
             return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>")
                     + ", allowedHosts=" + allowedHosts
-                    + ", tokenPepper=" + (multiUser() ? "***" : "<none>") + "]";
+                    + ", tokenPepper=" + (multiUser() ? "***" : "<none>")
+                    + ", oidc=" + oidc + "]";
+        }
+
+        /**
+         * OIDC access-token validation for native hooks (issue #39 PR2 / RFC 8628 device grant on the
+         * client side). When {@link #issuer} is set, a bearer token that is a JWT is validated against
+         * the IdP — signature via the JWKS, plus the issuer, audience, and expiry — and the
+         * {@link #principalClaim} becomes the authenticated user (the audit actor). The opaque
+         * root/per-user tokens are unaffected (they are not JWTs).
+         *
+         * @param issuer        the OIDC issuer URL (e.g. {@code https://accounts.google.com}); blank ⇒
+         *     OIDC disabled. Used to validate the {@code iss} claim and, when {@link #jwksUri} is blank,
+         *     to discover the JWKS via {@code /.well-known/openid-configuration}.
+         * @param audience      the required {@code aud} value (the client/app id the token was issued
+         *     for); a token whose audience does not contain this is rejected. Required when OIDC is on.
+         * @param jwksUri       explicit JWKS endpoint; when set, used directly (no discovery, no
+         *     boot-time IdP I/O — the key set is fetched lazily and cached on first validation). Blank ⇒
+         *     derive it from {@link #issuer} discovery.
+         * @param principalClaim the JWT claim whose value becomes the authenticated user / audit actor;
+         *     defaults to {@code sub} (stable, collision-free). Operators may set {@code email} or
+         *     {@code preferred_username} for a human-readable actor.
+         */
+        public record Oidc(
+                @DefaultValue("") String issuer,
+                @DefaultValue("") String audience,
+                @DefaultValue("") String jwksUri,
+                @DefaultValue("sub") String principalClaim) {
+
+            /** The disabled default (no issuer) — OIDC off. */
+            public static final Oidc DISABLED = new Oidc("", "", "", "sub");
+
+            public Oidc {
+                if (principalClaim == null || principalClaim.isBlank()) {
+                    principalClaim = "sub";
+                }
+            }
+
+            /** @return whether OIDC validation is configured (a non-blank issuer). */
+            public boolean enabled() {
+                return issuer != null && !issuer.isBlank();
+            }
+
+            @Override
+            public String toString() {
+                return enabled()
+                        ? "Oidc[issuer=" + issuer + ", audience=" + audience
+                                + ", jwksUri=" + (jwksUri == null || jwksUri.isBlank() ? "<discover>" : jwksUri)
+                                + ", principalClaim=" + principalClaim + "]"
+                        : "Oidc[<disabled>]";
+            }
         }
     }
 

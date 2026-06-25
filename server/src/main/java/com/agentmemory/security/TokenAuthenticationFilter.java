@@ -66,15 +66,32 @@ public final class TokenAuthenticationFilter extends OncePerRequestFilter {
         Optional<UserId> resolve(String rawToken);
     }
 
+    /**
+     * Validates an OIDC access token (a JWT) and returns the authenticated subject (issue #39 PR2).
+     * The implementation ({@code OidcJwtAuthenticator}) verifies the signature against the IdP's JWKS
+     * and the issuer/audience/expiry; an empty result means the JWT is invalid (bad signature, wrong
+     * issuer/audience, or expired). Decoupled from the Spring Security JWT types like {@link UserResolver}.
+     */
+    @FunctionalInterface
+    public interface OidcAuthenticator {
+        Optional<String> authenticate(String jwt);
+    }
+
     private final byte[] expectedRoot;
     private final UserResolver users; // nullable — single-user mode resolves only the root token
+    private final OidcAuthenticator oidc; // nullable — only when OIDC is configured (#39 PR2)
 
     public TokenAuthenticationFilter(String rootToken, UserResolver users) {
+        this(rootToken, users, null);
+    }
+
+    public TokenAuthenticationFilter(String rootToken, UserResolver users, OidcAuthenticator oidc) {
         if (rootToken == null || rootToken.isBlank()) {
             throw new IllegalArgumentException("token must not be blank when auth is enabled");
         }
         this.expectedRoot = rootToken.getBytes(StandardCharsets.UTF_8);
         this.users = users;
+        this.oidc = oidc;
     }
 
     @Override
@@ -92,10 +109,20 @@ public final class TokenAuthenticationFilter extends OncePerRequestFilter {
         chain.doFilter(request, response);
     }
 
-    /** Decide who (if anyone) a presented token authenticates as: root, a per-user identity, or nobody. */
+    /**
+     * Decide who (if anyone) a presented token authenticates as: root, an OIDC subject, a per-user
+     * identity, or nobody. The opaque root/per-user tokens are checked by exact/hashed match; a token
+     * that is shaped like a JWT is validated by the OIDC authenticator (when configured) and never
+     * tried as an opaque token — a JWT that fails validation is rejected outright.
+     */
     private Optional<UsernamePasswordAuthenticationToken> authenticate(Presented presented) {
         if (matchesRoot(presented.token())) {
             return Optional.of(principal(ROOT_PRINCIPAL, presented.mechanism(), true));
+        }
+        // OIDC (#39 PR2): a JWT-shaped bearer is validated against the IdP, never as an opaque token.
+        if (oidc != null && looksLikeJwt(presented.token())) {
+            return oidc.authenticate(presented.token())
+                    .map(subject -> principal(subject, presented.mechanism(), false));
         }
         if (users != null) {
             Optional<UserId> user = users.resolve(presented.token());
@@ -104,6 +131,24 @@ public final class TokenAuthenticationFilter extends OncePerRequestFilter {
             }
         }
         return Optional.empty();
+    }
+
+    /**
+     * A compact-JWS (JWT) is exactly three non-empty {@code base64url} segments joined by two dots
+     * ({@code header.payload.signature}). The opaque root/per-user tokens are single base64url strings
+     * with no dots, so this cleanly disambiguates an OIDC token from an opaque one without decoding.
+     */
+    private static boolean looksLikeJwt(String token) {
+        int first = token.indexOf('.');
+        if (first <= 0) {
+            return false;
+        }
+        int second = token.indexOf('.', first + 1);
+        if (second <= first + 1) {
+            return false; // empty payload segment, or no second dot
+        }
+        // No third dot, and a non-empty signature segment after the second dot.
+        return token.indexOf('.', second + 1) < 0 && second < token.length() - 1;
     }
 
     /** Build an authenticated token with the base role, the mechanism tag, and (for root) {@link #ROLE_ROOT}. */

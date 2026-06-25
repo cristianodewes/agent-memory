@@ -79,6 +79,17 @@
 			<artifactId>spring-boot-starter-security</artifactId>
 		</dependency>
 
+		<!-- OIDC device-grant identity for native hooks (issue #39 PR2). Brings the Spring Security
+		     OAuth2 resource-server + JOSE support (NimbusJwtDecoder, JWKS client, JWT validators) so an
+		     OIDC access token is validated against the IdP's JWKS / issuer / audience with a battle-tested
+		     library — we never hand-roll JWT verification. We use the JwtDecoder directly in our own auth
+		     filter; Boot's OAuth2 resource-server auto-config stays inert (we set no
+		     spring.security.oauth2.resourceserver.* properties). Version from the BOM. -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+		</dependency>
+
 		<!-- Postgres derived index (issue #4). spring-boot-starter-flyway brings the Flyway
 		     auto-configuration (the spring-boot-flyway module — split out in Spring Boot 4.x and NOT
 		     pulled in by flyway-core alone) plus starter-jdbc (DataSource + JdbcTemplate) and

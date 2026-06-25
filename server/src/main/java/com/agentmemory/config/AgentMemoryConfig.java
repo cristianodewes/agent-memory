@@ -63,8 +63,32 @@ public final class AgentMemoryConfig {
         ensureWritableDirectory(resolved);
         ensureLayout(resolved);
         validateAuth(props.auth());
+        validateOidc(props.auth().oidc());
         validateScope(props.scope());
         return new AgentMemoryConfig(props, resolved);
+    }
+
+    /**
+     * Fail fast on an inconsistent OIDC config (issue #39 PR2). When OIDC is enabled (an issuer is set)
+     * an audience is <strong>required</strong> — accepting any audience would let a token minted for a
+     * different application authenticate here, so we refuse to start without one. The issuer must also
+     * be an absolute {@code http(s)} URL (the JWKS discovery / {@code iss} validation needs it).
+     */
+    static void validateOidc(AgentMemoryProperties.Auth.Oidc oidc) {
+        if (!oidc.enabled()) {
+            return;
+        }
+        if (!(oidc.issuer().startsWith("http://") || oidc.issuer().startsWith("https://"))) {
+            throw new ConfigException(
+                    "agent-memory.auth.oidc.issuer must be an absolute http(s) URL, was '"
+                            + oidc.issuer() + "'.");
+        }
+        if (oidc.audience() == null || oidc.audience().isBlank()) {
+            throw new ConfigException(
+                    "agent-memory.auth.oidc.issuer is set but agent-memory.auth.oidc.audience is blank. "
+                            + "An audience (the client/app id the token is issued for) is required so a "
+                            + "token minted for another application cannot authenticate here.");
+        }
     }
 
     /**

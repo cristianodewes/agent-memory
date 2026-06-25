@@ -81,7 +81,10 @@ public class SecurityConfiguration {
 
     @Bean
     public SecurityFilterChain securityFilterChain(
-            HttpSecurity http, AgentMemoryConfig config, ObjectProvider<UserService> userService)
+            HttpSecurity http,
+            AgentMemoryConfig config,
+            ObjectProvider<UserService> userService,
+            ObjectProvider<TokenAuthenticationFilter.OidcAuthenticator> oidcAuthenticator)
             throws Exception {
         var auth = config.auth();
         String bindAddress = config.server().address();
@@ -117,15 +120,24 @@ public class SecurityConfiguration {
                         + "only the root token will authenticate");
             }
         }
-        log.info("auth enabled ({} mode): root token required on admin {}, bearer/Basic elsewhere; "
+        // OIDC (issue #39 PR2): when an issuer is configured, a JWT-shaped bearer is validated against
+        // the IdP (JWKS / issuer / audience) and authenticates as its verified subject. Resolved via an
+        // ObjectProvider so the filter chain wires whether or not the OIDC bean is present.
+        TokenAuthenticationFilter.OidcAuthenticator oidc =
+                auth.oidc().enabled() ? oidcAuthenticator.getIfAvailable() : null;
+        if (auth.oidc().enabled() && oidc == null) {
+            log.warn("oidc.issuer set but no OIDC authenticator bean; OIDC tokens will not authenticate");
+        }
+        log.info("auth enabled ({} mode{}): root token required on admin {}, bearer/Basic elsewhere; "
                         + "public={}, allowedHosts={}",
                 auth.multiUser() ? "multi-user" : "single-user",
+                oidc != null ? " + OIDC" : "",
                 java.util.Arrays.toString(ADMIN_PATHS),
                 java.util.Arrays.toString(PUBLIC_PATHS), auth.allowedHosts());
 
-        // Authenticate the token (root, or per-user in multi-user mode), then gate cross-origin writes.
+        // Authenticate the token (root, OIDC subject, or per-user), then gate cross-origin writes.
         http.addFilterBefore(
-                new TokenAuthenticationFilter(auth.token(), resolver),
+                new TokenAuthenticationFilter(auth.token(), resolver, oidc),
                 UsernamePasswordAuthenticationFilter.class);
         http.addFilterAfter(new BrowserWriteGuardFilter(), BasicAuthenticationFilter.class);
 
@@ -156,6 +168,19 @@ public class SecurityConfiguration {
     @ConditionalOnMissingBean(ActorResolver.class)
     public ActorResolver actorResolver() {
         return new SecurityContextActorResolver();
+    }
+
+    /**
+     * The OIDC access-token validator (issue #39 PR2), present only when an issuer is configured
+     * ({@code agent-memory.auth.oidc.issuer}). Validates a JWT bearer against the IdP's JWKS / issuer /
+     * audience and yields the verified subject; the {@link TokenAuthenticationFilter} authenticates that
+     * subject as a regular user (the audit actor). No {@link DataSource} is needed — OIDC subjects are
+     * not provisioned in the {@code users} table.
+     */
+    @Bean
+    @ConditionalOnExpression("'${agent-memory.auth.oidc.issuer:}'.length() > 0")
+    public TokenAuthenticationFilter.OidcAuthenticator oidcJwtAuthenticator(AgentMemoryConfig config) {
+        return new OidcJwtAuthenticator(config.auth().oidc());
     }
 
     // --- per-user beans (multi-user mode only) -----------------------------------------------------
