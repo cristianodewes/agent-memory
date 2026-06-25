@@ -95,6 +95,30 @@ reverse proxy (templates provided), not the app.
 **Why.** Secure-by-default for the common case; explicit, well-trodden steps to go multi-user
 or networked without baking TLS into the app.
 
+**Multi-user mode (#39).** Setting a token pepper (`agent-memory.auth.token-pepper`) turns on
+multi-user mode on top of the bearer auth above. Each user gets their own token
+(`user add/list/expire/revive/rotate-token`); only its peppered SHA-256 hash is stored, never the
+token. A per-user token authenticates as that user on the normal routes (`/api/v1`, `/mcp`,
+`/hook`, `/handoff`, `/web`) and is **forbidden** on the mutating admin routes (project lifecycle,
+`/reset`, `/reindex`, the time-travel mutations, `/users/*`, `/llm-test`), which require the shared
+**root** token. The authenticated principal — a user slug, or `root` — is recorded as the `actor`
+on every `observations` and `audit_log` row, so a shared server's capture log and audit trail are
+attributable. Captures are resolved to an actor at the `/hook` boundary (the async write worker has
+no security context) and threaded through; synchronous admin mutations resolve it on the request
+thread. Single-user mode is unchanged: with no pepper the lone root token satisfies the admin gate
+and rows carry no actor.
+
+**auto_scope (#39).** `agent-memory.scope.auto` governs the *default* `(workspace, project)` an MCP
+call resolves to when it gives no explicit scope (DD-003): `single_slot` (default) keeps the prior
+behavior — the server's globally most-recent project — while `per_actor` resolves to the
+authenticated caller's *own* most-recent activity (via `observations.actor`), so users on a shared
+server don't default into each other's project. An explicit scope always wins; with no authenticated
+actor `per_actor` falls back to the global default. Selecting the not-yet-supported `session_aware`
+mode is rejected at startup with a clear error (never a silent fall-back to the global scope, which
+would leak activity across sessions). (OIDC device auth for native hooks, and the `session_aware`
+mode — which needs a capture-session id the MCP tool boundary doesn't yet carry — are tracked
+follow-ups; session_aware is #87.)
+
 ## DD-008 — Monorepo
 
 **Decision.** `client/` (Go) and `server/` (Spring) live in one repository with shared docs and

@@ -27,6 +27,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param sanitization privacy-strip tuning (size cap + custom patterns) — boundary in #9.
  * @param ingest       /hook ingest backpressure tuning (bounded queue + worker) — #8.
  * @param decay        layered-memory decay/retention tuning (λ, σ, μ + cold threshold) — #24.
+ * @param scope        multi-user scope-isolation tuning (the {@code auto_scope} mode) — #39.
  */
 @ConfigurationProperties(prefix = "agent-memory")
 public record AgentMemoryProperties(
@@ -38,7 +39,8 @@ public record AgentMemoryProperties(
         @DefaultValue Auth auth,
         @DefaultValue Sanitization sanitization,
         @DefaultValue Ingest ingest,
-        @DefaultValue Decay decay) {
+        @DefaultValue Decay decay,
+        @DefaultValue Scope scope) {
 
     /**
      * HTTP server surface.
@@ -126,11 +128,17 @@ public record AgentMemoryProperties(
      *     allow-list, {@code AGENT_MEMORY_AUTH_ALLOWED_HOSTS}). Empty ⇒ only loopback host names are
      *     accepted; a non-loopback bind with an empty list rejects browser requests by Host (the guard).
      *     Compared case-insensitively against the host portion of the {@code Host} header (port ignored).
+     * @param tokenPepper Secret mixed into every per-user token hash (issue #39). Setting it to a
+     *     non-blank value turns on <strong>multi-user mode</strong>: the {@link #token} becomes the
+     *     <em>root</em> token (required for {@code /admin/*}), and per-user tokens (hashed with this
+     *     pepper) authenticate as their own identity for everything else. Blank ⇒ single-user mode
+     *     ({@link #token} alone). {@code AGENT_MEMORY_AUTH_TOKEN_PEPPER}; redacted in {@link #toString()}.
      */
     public record Auth(
             @DefaultValue("false") boolean enabled,
             @DefaultValue("") String token,
-            @DefaultValue List<String> allowedHosts) {
+            @DefaultValue List<String> allowedHosts,
+            @DefaultValue("") String tokenPepper) {
 
         public Auth {
             // Normalize the allow-list to a defensive, lower-cased copy with blanks dropped so the
@@ -146,10 +154,16 @@ public record AgentMemoryProperties(
             return token != null && !token.isBlank();
         }
 
+        /** @return whether multi-user mode is on — i.e. a non-blank {@link #tokenPepper} was configured (#39). */
+        public boolean multiUser() {
+            return tokenPepper != null && !tokenPepper.isBlank();
+        }
+
         @Override
         public String toString() {
             return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>")
-                    + ", allowedHosts=" + allowedHosts + "]";
+                    + ", allowedHosts=" + allowedHosts
+                    + ", tokenPepper=" + (multiUser() ? "***" : "<none>") + "]";
         }
     }
 
@@ -284,6 +298,25 @@ public record AgentMemoryProperties(
             if (!(value >= 0) || !Double.isFinite(value)) {
                 throw new IllegalArgumentException(
                         "agent-memory.decay." + key + " must be a finite value >= 0, was " + value);
+            }
+        }
+    }
+
+    /**
+     * Multi-user scope isolation (issue #39). Governs the <em>default</em> {@code (workspace, project)}
+     * an MCP tool resolves to when a call gives no explicit scope (DD-003). Independent of the decay
+     * and auth groups so single-user setups can ignore it entirely (the default is the prior behavior).
+     *
+     * @param auto the {@link AutoScope} mode; defaults to {@link AutoScope#SINGLE_SLOT} (the server's
+     *     globally most-recent project — unchanged single-user behavior). {@link AutoScope#PER_ACTOR}
+     *     scopes the default to the authenticated user's own most-recent activity. Bound from
+     *     {@code agent-memory.scope.auto}.
+     */
+    public record Scope(@DefaultValue("single_slot") AutoScope auto) {
+
+        public Scope {
+            if (auto == null) {
+                auto = AutoScope.SINGLE_SLOT;
             }
         }
     }

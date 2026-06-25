@@ -108,14 +108,14 @@ class SecurityUnitTest {
 
     @Test
     void allowedHostsAreNormalizedAndBlanksDropped() {
-        var auth = new AgentMemoryProperties.Auth(true, "tok", List.of("  Example.COM  ", "", "  "));
+        var auth = new AgentMemoryProperties.Auth(true, "tok", List.of("  Example.COM  ", "", "  "), "");
         assertThat(auth.allowedHosts()).containsExactly("example.com");
         assertThat(auth.hasToken()).isTrue();
     }
 
     @Test
     void nullAllowedHostsBecomesEmpty() {
-        var auth = new AgentMemoryProperties.Auth(true, "supersecretvalue", null);
+        var auth = new AgentMemoryProperties.Auth(true, "supersecretvalue", null, "");
         assertThat(auth.allowedHosts()).isEmpty();
         // The token is redacted in toString (never logged in the clear).
         assertThat(auth.toString()).contains("***").doesNotContain("supersecretvalue");
