@@ -30,7 +30,7 @@ each issue.
 ## M0 — Foundations & scaffolding
 
 1. **feat(infra): monorepo scaffolding — Go client + Spring Boot server + dev tooling.**
-   `client/` Go module, `server/` Spring Boot (Gradle wrapper), `docker/` compose, root docs,
+   `client/` Go module, `server/` Spring Boot (Maven wrapper), `docker/` compose, root docs,
    editorconfig, Makefile/Taskfile.
 2. **feat(server): configuration loading (single path) + canonical absolute data dir.**
    One `Config.load()`; env + file; absolute data dir created/validated and logged at startup.
@@ -38,7 +38,7 @@ each issue.
    value types + Go structs; ID strategy; serialization contract for hooks/API.
 4. **feat(db): Postgres schema & Flyway migrations + tsvector FTS + pgvector.** All head tables
    (§4.2 of ARCHITECTURE), FTS generated columns, vector columns, indexes.
-5. **feat(infra): CI pipeline (GitHub Actions).** Go build/test/lint (`golangci-lint`) + Gradle
+5. **feat(infra): CI pipeline (GitHub Actions).** Go build/test/lint (`golangci-lint`) + Maven
    build/test + docker-compose smoke + migration check.
 6. **feat(llm): LLM provider abstraction (REQUIRED) + Embedder + typed ProviderAuth + startup
    health gate.** `LlmProvider`/`Embedder` interfaces, structured-JSON output contract, provider

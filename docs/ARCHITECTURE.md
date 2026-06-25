@@ -273,13 +273,13 @@ milestone must uphold these:
 | Concern | Choice |
 |---|---|
 | Client | Go 1.23+ (Cobra CLI, native MCP/hook bridges) |
-| Server | Spring Boot 3.x on JDK 25 (Gradle, Spring Web, Spring Data JDBC/JPA) |
+| Server | Spring Boot 4.x on JDK 21+ (Maven, Spring Web, Spring Data JDBC/JPA) |
 | Index DB | Postgres 16 + `pgvector`, full-text via `tsvector` |
 | Migrations | Flyway |
 | Wiki | Markdown in a git repo (JGit on the server) |
 | MCP | Streamable-HTTP transport mounted on the server |
 | LLM | Pluggable provider (Anthropic / OpenAI / OpenAI-compat / Gemini), **required** |
 | Packaging | docker-compose (server + postgres), native Go binaries, reverse-proxy TLS templates |
-| CI | GitHub Actions (Go + Gradle) |
+| CI | GitHub Actions (Go + Maven) |
 
 See [`design-decisions.md`](design-decisions.md) for the rationale behind each major choice.

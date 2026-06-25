@@ -1,0 +1,13 @@
+# Normalize line endings: LF in the repository for all text files; CRLF only
+# for Windows batch scripts. Keeps the Go binary, the Maven wrapper and shell
+# scripts correct across Linux/macOS/Windows.
+* text=auto eol=lf
+
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# Treat common binaries as binary (no EOL munging).
+*.png binary
+*.jar binary
+*.gz binary
+*.zip binary

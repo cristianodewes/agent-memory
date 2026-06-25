@@ -6,10 +6,8 @@
 *.out
 coverage.txt
 
-# ---- Java / Gradle / Spring (server/) ----
-.gradle/
-build/
-!gradle/wrapper/gradle-wrapper.jar
+# ---- Java / Maven / Spring (server/) ----
+target/
 out/
 *.class
 *.log

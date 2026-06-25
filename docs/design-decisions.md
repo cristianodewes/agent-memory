@@ -104,14 +104,13 @@ CI.
 keeping them in one repo keeps client and server in lockstep and simplifies cross-cutting
 changes and release coordination.
 
-## DD-009 — Toolchain: Go 1.23+, JDK 25, Gradle, Flyway, JGit
+## DD-009 — Toolchain: Go 1.23+, JDK 21+, Maven, Flyway, JGit
 
-**Decision.** Client targets Go 1.23+. Server targets Spring Boot 3.x on JDK 25 (21+ supported),
-built with Gradle; Flyway for migrations; JGit for wiki commits.
+**Decision.** Client targets Go 1.23+. Server targets Spring Boot 4.x on JDK 21+ (JDK 25 works),
+built with Maven (the Maven Wrapper `mvnw` is committed); Flyway for migrations; JGit for wiki commits.
 
-**Why.** These are the toolchains present/expected on the maintainer's machine (JDK 25 + Gradle
-8.x confirmed) and the mainstream choices for each ecosystem. _Note: `go` is not yet on the
-maintainer's PATH and must be installed before `client/` work begins._
+**Why.** These are the toolchains present/expected on the maintainer's machine (JDK 25, Maven
+3.9.9 and Go 1.26 all confirmed) and the mainstream choices for each ecosystem.
 
 ## DD-010 — Privacy sanitization is a typed boundary
 

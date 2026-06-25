@@ -25,7 +25,7 @@ workflow is the same.
 
 An issue is done when **all** of its acceptance criteria are checked **and**:
 
-- Tests cover the new behaviour and pass in CI (Go `go test ./...`; server `./gradlew test`).
+- Tests cover the new behaviour and pass in CI (Go `go test ./...`; server `./mvnw test`).
 - Lint passes (`golangci-lint run`; server static analysis / checkstyle if configured).
 - Public behaviour is documented (README / `docs/` updated if the surface changed).
 - No invariant from ARCHITECTURE §7 is violated.
@@ -41,10 +41,10 @@ docker compose -f docker/compose.yml up -d
 cd client && go build ./... && go test ./...
 
 # server
-cd server && ./gradlew build
+cd server && ./mvnw verify
 ```
 
-> The compose stack, Gradle wrapper and Go module are created by the **M0** scaffolding issue
+> The compose stack, Maven wrapper and Go module are created by the **M0** scaffolding issue
 > (#1). Until then this section is the target shape, not yet runnable.
 
 ## A note on the LLM requirement
