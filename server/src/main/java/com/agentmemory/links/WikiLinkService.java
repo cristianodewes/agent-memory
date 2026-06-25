@@ -1,7 +1,9 @@
 package com.agentmemory.links;
 
 import com.agentmemory.core.Identity;
+import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.Uuid7;
+import com.agentmemory.core.WorkspaceId;
 import com.agentmemory.store.PageRecord;
 import java.util.List;
 import java.util.UUID;
@@ -100,6 +102,46 @@ public class WikiLinkService {
                         + "WHERE NOT l.target_resolved AND l.target_path IS NOT NULL "
                         + "  AND p.is_latest AND p.workspace = l.target_workspace "
                         + "  AND p.project = l.target_project AND p.path = l.target_path");
+    }
+
+    /**
+     * Re-point the denormalized {@code (workspace, project)} slugs of every link that references a
+     * project being renamed or moved (issue #33 lifecycle). Both endpoints are rewritten: rows
+     * <em>sourced</em> from {@code (oldWs, oldProj)} get their {@code source_workspace}/
+     * {@code source_project} updated, and rows whose <em>target</em> is in {@code (oldWs, oldProj)}
+     * (cross-project links pointing at the renamed project) get {@code target_workspace}/
+     * {@code target_project} updated — so links survive the identity change. The target identity slugs
+     * travel as a group (V5 {@code links_target_identity_complete}); only the two we change here move,
+     * {@code target_path} stays. Idempotent: re-running with the same new identity is a no-op.
+     *
+     * @param oldWs   the project's current workspace; never null.
+     * @param oldProj the project's current slug; never null.
+     * @param newWs   the project's new workspace (same as old for a pure rename); never null.
+     * @param newProj the project's new slug (same as old for a pure move); never null.
+     * @return the number of link rows re-pointed (source-side + target-side).
+     */
+    @Transactional
+    public int repointProject(
+            WorkspaceId oldWs, ProjectId oldProj, WorkspaceId newWs, ProjectId newProj) {
+        if (oldWs == null || oldProj == null || newWs == null || newProj == null) {
+            throw new IllegalArgumentException("old/new workspace and project must not be null");
+        }
+        String ows = oldWs.value();
+        String oproj = oldProj.value();
+        String nws = newWs.value();
+        String nproj = newProj.value();
+
+        // Rewrite links sourced from the project being moved/renamed.
+        int sources = jdbc.update(
+                "UPDATE links SET source_workspace = ?, source_project = ? "
+                        + "WHERE source_workspace = ? AND source_project = ?",
+                nws, nproj, ows, oproj);
+        // Rewrite cross-project links that TARGET the project being moved/renamed.
+        int targets = jdbc.update(
+                "UPDATE links SET target_workspace = ?, target_project = ? "
+                        + "WHERE target_workspace = ? AND target_project = ?",
+                nws, nproj, ows, oproj);
+        return sources + targets;
     }
 
     /**
