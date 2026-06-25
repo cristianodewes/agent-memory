@@ -1,6 +1,7 @@
 package com.agentmemory.store;
 
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
@@ -43,14 +44,23 @@ public class StoreConfiguration {
      * {@link PlatformTransactionManager} rather than minting its own, so there is one of each in the
      * container.
      *
+     * <p>The optional {@link ObservationSideEffect} (issue #11's {@code log.md} + {@code raw/} writer,
+     * provided by the {@code wiki} layer as {@code SessionLog}) is resolved through an
+     * {@link ObjectProvider} so wiring is order-independent and the writer still constructs when the
+     * wiki layer is absent (DB-only — e.g. the smoke configuration). When present it runs inside the
+     * write transaction so the row and the file writes commit together.
+     *
      * @param jdbcTemplate the auto-configured JDBC template.
      * @param txManager    the auto-configured JDBC transaction manager.
+     * @param sideEffect   provider for the optional #11 file side effect (may resolve to none).
      * @return the Postgres single-writer.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public ObservationWriter observationWriter(
-            JdbcTemplate jdbcTemplate, PlatformTransactionManager txManager) {
-        return new PostgresObservationWriter(jdbcTemplate, txManager);
+            JdbcTemplate jdbcTemplate,
+            PlatformTransactionManager txManager,
+            ObjectProvider<ObservationSideEffect> sideEffect) {
+        return new PostgresObservationWriter(jdbcTemplate, txManager, sideEffect.getIfAvailable());
     }
 }
