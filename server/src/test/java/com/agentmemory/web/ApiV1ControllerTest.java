@@ -141,6 +141,10 @@ class ApiV1ControllerTest {
         assertThat(detail.get("title").asString()).isEqualTo("Recall");
         assertThat(detail.get("body").asString()).isEqualTo("the recall page body");
         assertThat(detail.get("latest").asBoolean()).isTrue();
+        // retention layer surfaced (#24). These rows are seeded with raw SQL (bypassing the
+        // classifier in JdbcPageRepository.create), so they carry the DB default 'episodic' — the
+        // point here is that the field is present and a valid layer, not which one.
+        assertThat(detail.get("layer").asString()).isEqualTo("episodic");
     }
 
     @Test

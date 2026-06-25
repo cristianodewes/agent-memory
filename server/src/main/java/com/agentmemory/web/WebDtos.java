@@ -52,14 +52,18 @@ public final class WebDtos {
         }
     }
 
-    /** A page summary (metadata only, no body) for listings and {@code recent}. */
+    /**
+     * A page summary (metadata only, no body) for listings and {@code recent}. Carries the retention
+     * {@code layer} (#24) so a frontend can show how a page is classified.
+     */
     public record PageSummary(
-            String path, String title, boolean latest,
+            String path, String title, String layer, boolean latest,
             long accessCount, String createdAt, String updatedAt) {
         static PageSummary of(PageRecord p) {
             return new PageSummary(
                     p.page().path().value(),
                     p.page().title(),
+                    p.layer().wire(),
                     p.isLatest(),
                     p.accessCount(),
                     p.page().createdAt().toString(),
@@ -69,13 +73,14 @@ public final class WebDtos {
 
     /** A page with its full body for {@code GET .../pages/{path}}. */
     public record PageDetail(
-            String path, String title, String body, boolean latest,
+            String path, String title, String body, String layer, boolean latest,
             long accessCount, String createdAt, String updatedAt) {
         static PageDetail of(PageRecord p) {
             return new PageDetail(
                     p.page().path().value(),
                     p.page().title(),
                     p.page().body(),
+                    p.layer().wire(),
                     p.isLatest(),
                     p.accessCount(),
                     p.page().createdAt().toString(),
