@@ -1,5 +1,6 @@
 package com.agentmemory.consolidate;
 
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.WikiWriter;
@@ -26,6 +27,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @AutoConfiguration(afterName = {
     "com.agentmemory.store.StoreConfiguration",
+    "com.agentmemory.links.LinksConfiguration",
     "com.agentmemory.wiki.WikiConfiguration"
 })
 public class ConsolidateConfiguration {
@@ -37,13 +39,17 @@ public class ConsolidateConfiguration {
     }
 
     @Bean
-    @ConditionalOnBean({SessionObservationReader.class, PageRepository.class, WikiWriter.class})
+    @ConditionalOnBean({
+        SessionObservationReader.class, PageRepository.class, WikiWriter.class, WikiLinkService.class
+    })
     public SessionSynthesizer sessionSynthesizer(
             SessionObservationReader reader,
             @Qualifier("llmProvider") LlmProvider llmProvider,
             PageRepository pageRepository,
-            WikiWriter wikiWriter) {
-        return new SessionSynthesizer(reader, llmProvider, pageRepository, wikiWriter);
+            WikiWriter wikiWriter,
+            WikiLinkService wikiLinkService) {
+        return new SessionSynthesizer(
+                reader, llmProvider, pageRepository, wikiWriter, wikiLinkService);
     }
 
     @Bean

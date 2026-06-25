@@ -1,8 +1,8 @@
 package com.agentmemory.lifecycle;
 
 import com.agentmemory.config.AgentMemoryConfig;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.store.AuditWriter;
-import com.agentmemory.store.LinkRepository;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.WikiGit;
 import com.agentmemory.wiki.WikiPaths;
@@ -29,6 +29,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @AutoConfiguration(afterName = {
     "com.agentmemory.store.StoreConfiguration",
+    "com.agentmemory.links.LinksConfiguration",
     "com.agentmemory.wiki.WikiConfiguration"
 })
 public class LifecycleConfiguration {
@@ -64,10 +65,10 @@ public class LifecycleConfiguration {
      * paths and the wiki dir ops.
      */
     @Bean
-    @ConditionalOnBean({PageRepository.class, LinkRepository.class, AuditWriter.class,
+    @ConditionalOnBean({PageRepository.class, WikiLinkService.class, AuditWriter.class,
             WikiPaths.class, JdbcProjectLifecycleService.WikiDirOps.class})
     public ProjectLifecycleService projectLifecycleService(
-            JdbcTemplate jdbcTemplate, LinkRepository links, AuditWriter audit,
+            JdbcTemplate jdbcTemplate, WikiLinkService links, AuditWriter audit,
             WikiPaths wikiPaths, JdbcProjectLifecycleService.WikiDirOps wikiDirOps) {
         return new JdbcProjectLifecycleService(jdbcTemplate, links, audit, wikiPaths, wikiDirOps);
     }
