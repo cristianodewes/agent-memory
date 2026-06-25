@@ -6,7 +6,6 @@ import com.agentmemory.core.Identity;
 import com.agentmemory.core.PagePath;
 import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.WorkspaceId;
-import com.agentmemory.store.LinkRepository;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.MarkdownDocument;
@@ -81,7 +80,6 @@ class ReindexIntegrationTest {
     }
 
     @Autowired PageRepository pages;
-    @Autowired LinkRepository links;
     @Autowired WikiWriter wikiWriter;
     @Autowired WikiPaths wikiPaths;
     @Autowired WikiGit wikiGit;
@@ -140,6 +138,16 @@ class ReindexIntegrationTest {
                 .collect(Collectors.toMap(row -> (String) row.get("path"), row -> (String) row.get("body")));
     }
 
+    /** The number of links sourced from a given page identity (any resolution state). */
+    private long linkCountFrom(Identity source) {
+        Long n = jdbc().queryForObject(
+                "SELECT count(*) FROM links "
+                        + "WHERE source_workspace = ? AND source_project = ? AND source_path = ?",
+                Long.class,
+                source.workspace().value(), source.project().value(), source.page().value());
+        return n == null ? 0L : n;
+    }
+
     /** Set of resolved link edges "fromPath -> targetPath" within a workspace. */
     private List<String> resolvedEdges(WorkspaceId ws) {
         return jdbc().queryForList(
@@ -184,7 +192,7 @@ class ReindexIntegrationTest {
         assertThat(ftsPaths(ws, "derived index")).isEqualTo(storageHits);
 
         // The wikilink graph was rebuilt and the link resolved to the (existing) target.
-        assertThat(links.countFrom(recall)).isEqualTo(1);
+        assertThat(linkCountFrom(recall)).isEqualTo(1);
         assertThat(resolvedEdges(ws)).contains("concepts/recall.md -> concepts/fusion.md");
     }
 
@@ -211,10 +219,11 @@ class ReindexIntegrationTest {
     void crossProjectLinkIsRecordedAndResolvesWhenTargetExists() {
         WorkspaceId ws = freshWorkspace();
         Identity src = pageAt(ws, "concepts/src.md");
-        // Target lives in a DIFFERENT project of the same workspace, named via the explicit scope form.
+        // Target lives in a DIFFERENT project of the same workspace, named via the canonical
+        // sibling-project scope form [[project:path]] (#27 grammar).
         Identity tgt = Identity.ofPage(ws, ProjectId.of("otherproj"), PagePath.of("concepts/tgt.md"));
 
-        seed(src, "Src", "see [[" + ws.value() + ":otherproj:concepts/tgt.md]]\n");
+        seed(src, "Src", "see [[otherproj:concepts/tgt.md]]\n");
         seed(tgt, "Tgt", "the cross-project target\n");
 
         reindex.reindex(ReindexOptions.full());

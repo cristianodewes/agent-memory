@@ -54,6 +54,17 @@ public final class IngestService implements AutoCloseable {
     private final AtomicLong inFlight = new AtomicLong();
 
     /**
+     * Post-write listeners (issue #22): each is invoked on the single worker thread after every
+     * observation is durably written, off the HTTP hot path and outside the write transaction. The
+     * handoff trigger uses one to synthesize a handoff when a {@code session-end} lands; session
+     * consolidation (#18/#32) attaches another to the same fan-out. A {@link CopyOnWriteArrayList}
+     * because listeners are registered from other threads at startup and iterated on the worker; a
+     * throwing listener is caught per-listener so one never stalls the worker or the others.
+     */
+    private final java.util.List<java.util.function.Consumer<com.agentmemory.core.Observation>>
+            postWriteListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /**
      * Spring entry point.
      *
      * @param config    resolved server config; its {@code ingest()} block tunes the queue.
@@ -136,7 +147,8 @@ public final class IngestService implements AutoCloseable {
 
     private void runWrite(Sanitized<NewObservation> sanitized) {
         try {
-            writer.append(sanitized);
+            com.agentmemory.core.Observation persisted = writer.append(sanitized);
+            notifyPostWrite(persisted);
         } catch (RuntimeException e) {
             // A write failure must not kill the single worker thread (that would stall all ingest).
             // Log and drop; the client's spool still holds the event and a later drain retries it.
@@ -144,6 +156,38 @@ public final class IngestService implements AutoCloseable {
                     e.toString());
         } finally {
             inFlight.decrementAndGet();
+        }
+    }
+
+    /** Fire each post-write listener; a listener failure is logged, never propagated to the others. */
+    private void notifyPostWrite(com.agentmemory.core.Observation persisted) {
+        if (persisted == null || postWriteListeners.isEmpty()) {
+            return;
+        }
+        for (java.util.function.Consumer<com.agentmemory.core.Observation> listener : postWriteListeners) {
+            try {
+                listener.accept(persisted);
+            } catch (RuntimeException e) {
+                // The capture already succeeded and is durable; a downstream reaction (e.g. handoff
+                // synthesis or session consolidation) failing must not affect ingest or the other
+                // listeners. Log and move on.
+                log.warn("post-write listener {} failed for observation {}: {}",
+                        listener.getClass().getName(), persisted.id().value(), e.toString());
+            }
+        }
+    }
+
+    /**
+     * Register a post-write listener (issue #22). Each is invoked on the single worker thread after
+     * every successful write, off the HTTP path and outside the write transaction. Multiple listeners
+     * fan out independently (e.g. handoff synthesis and session consolidation), in registration order;
+     * a {@code null} is ignored.
+     *
+     * @param listener the post-write reaction to add.
+     */
+    public void addPostWriteListener(java.util.function.Consumer<com.agentmemory.core.Observation> listener) {
+        if (listener != null) {
+            postWriteListeners.add(listener);
         }
     }
 

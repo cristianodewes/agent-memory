@@ -107,6 +107,44 @@ class IngestServiceBackpressureTest {
         }
     }
 
+    // --- post-write listener fan-out (issue #22; coexists with #18/#32) ------------------------
+
+    @Test
+    void allPostWriteListenersFireOnEachWrite() throws Exception {
+        ObservationWriter counting = IngestServiceBackpressureTest::echo;
+        AtomicInteger a = new AtomicInteger();
+        AtomicInteger b = new AtomicInteger();
+        try (IngestService svc = new IngestService(new Ingest(1024, 50), sanitizer, counting)) {
+            svc.addPostWriteListener(o -> a.incrementAndGet()); // e.g. handoff trigger
+            svc.addPostWriteListener(o -> b.incrementAndGet()); // e.g. consolidation trigger (#32)
+            for (int i = 0; i < 5; i++) {
+                assertThat(svc.ingest(payload())).isEqualTo(IngestStatus.ACCEPTED);
+            }
+            assertThat(svc.awaitIdle(Duration.ofSeconds(5))).isTrue();
+            // Both listeners ran for every write — registering one never disables the other.
+            assertThat(a.get()).isEqualTo(5);
+            assertThat(b.get()).isEqualTo(5);
+        }
+    }
+
+    @Test
+    void aThrowingListenerDoesNotSuppressOthersOrKillTheWorker() throws Exception {
+        ObservationWriter counting = IngestServiceBackpressureTest::echo;
+        AtomicInteger survivor = new AtomicInteger();
+        try (IngestService svc = new IngestService(new Ingest(1024, 50), sanitizer, counting)) {
+            svc.addPostWriteListener(o -> {
+                throw new RuntimeException("listener boom");
+            });
+            svc.addPostWriteListener(o -> survivor.incrementAndGet());
+            for (int i = 0; i < 3; i++) {
+                assertThat(svc.ingest(payload())).isEqualTo(IngestStatus.ACCEPTED);
+            }
+            assertThat(svc.awaitIdle(Duration.ofSeconds(5))).isTrue();
+            // The throwing listener was isolated; the second still ran for every write.
+            assertThat(survivor.get()).isEqualTo(3);
+        }
+    }
+
     @Test
     void aWriteFailureDoesNotKillTheWorker() throws Exception {
         // The single worker must survive a write that throws (otherwise one bad event stalls ALL

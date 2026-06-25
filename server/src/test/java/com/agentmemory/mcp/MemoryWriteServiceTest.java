@@ -139,6 +139,42 @@ class MemoryWriteServiceTest {
         assertThat(detail).contains("\"actor\": \"mcp\"");
     }
 
+    /** The number of links sourced from a page, regardless of resolution. */
+    private Long linkCountFrom(Identity source) {
+        return jdbc().queryForObject(
+                "SELECT count(*) FROM links WHERE source_workspace = ? AND source_project = ? "
+                        + "AND source_path = ?",
+                Long.class,
+                source.workspace().value(), source.project().value(), source.page().value());
+    }
+
+    @Test
+    void writePageMaintainsTheWikilinkGraph() {
+        // memory_write_page is a real write path, so a [[link]] in the body must enter the graph
+        // (issue #20 wired to #27's WikiLinkService.syncPageLinks).
+        WorkspaceId ws = freshWorkspace();
+
+        // Target does not exist yet: the link is stored deferred (to_page_id NULL, not resolved).
+        Identity source = page(ws, "app", "concepts/linker.md");
+        writes.writePage(source, "Linker", "see [[concepts/linktarget]] for details",
+                MemoryWriteService.ACTOR_MCP);
+        assertThat(linkCountFrom(source)).isEqualTo(1L);
+        Long deferred = jdbc().queryForObject(
+                "SELECT count(*) FROM links WHERE source_workspace = ? AND source_path = ? "
+                        + "AND to_page_id IS NULL AND NOT target_resolved",
+                Long.class, ws.value(), "concepts/linker.md");
+        assertThat(deferred).isEqualTo(1L);
+
+        // Writing the target later self-heals the deferred link (syncPageLinks re-points inbound).
+        Identity target = page(ws, "app", "concepts/linktarget.md");
+        PageRecord targetRec = writes.writePage(target, "Target", "the link target page",
+                MemoryWriteService.ACTOR_MCP);
+        UUID toPageId = jdbc().queryForObject(
+                "SELECT to_page_id FROM links WHERE source_workspace = ? AND source_path = ?",
+                UUID.class, ws.value(), "concepts/linker.md");
+        assertThat(toPageId).isEqualTo(targetRec.id().value());
+    }
+
     @Test
     void writePageVersionsInPlaceOnSecondWrite() {
         WorkspaceId ws = freshWorkspace();

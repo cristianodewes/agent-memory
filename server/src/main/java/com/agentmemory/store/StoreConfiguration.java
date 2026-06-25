@@ -46,19 +46,6 @@ public class StoreConfiguration {
     }
 
     /**
-     * The {@code links} repository (issue #14). First writer of the wikilink graph the recall graph
-     * arm reads; gated on a {@code DataSource} exactly like {@link #pageRepository}.
-     *
-     * @param jdbcTemplate the auto-configured JDBC template.
-     * @return the links writer/maintenance repository.
-     */
-    @Bean
-    @ConditionalOnSingleCandidate(DataSource.class)
-    public LinkRepository linkRepository(JdbcTemplate jdbcTemplate) {
-        return new JdbcLinkRepository(jdbcTemplate);
-    }
-
-    /**
      * The {@code audit_log} writer (issue #33). The shared seam for recording mutations with their
      * before/after identity (lifecycle ops, and reusable by other writers); gated on a
      * {@code DataSource} like the others.
@@ -70,6 +57,19 @@ public class StoreConfiguration {
     @ConditionalOnSingleCandidate(DataSource.class)
     public AuditWriter auditWriter(JdbcTemplate jdbcTemplate) {
         return new JdbcAuditWriter(jdbcTemplate);
+    }
+
+    /**
+     * The {@code handoffs} repository (issue #22): single-use, one-open-per-project typed handoffs.
+     * Gated on a {@code DataSource} exactly like {@link #pageRepository}.
+     *
+     * @param jdbcTemplate the auto-configured JDBC template.
+     * @return the handoff store.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public HandoffRepository handoffRepository(JdbcTemplate jdbcTemplate) {
+        return new JdbcHandoffRepository(jdbcTemplate);
     }
 
     /**

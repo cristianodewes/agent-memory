@@ -46,11 +46,14 @@ public record AgentMemoryProperties(
      * @param address   bind address; loopback by default (DD-007: loopback-only unless opened up).
      * @param port      TCP port; {@code 0} lets the OS pick an ephemeral port.
      * @param basePath  path prefix all routes mount under (e.g. {@code /} or {@code /agent-memory}).
+     * @param webUiDir  optional filesystem directory for a custom {@code /web} SPA build (#36); blank
+     *     serves the bundled reference UI from the classpath. The {@code --web-ui-dir} knob.
      */
     public record Server(
             @DefaultValue("127.0.0.1") String address,
             @DefaultValue("8080") int port,
-            @DefaultValue("/") String basePath) {
+            @DefaultValue("/") String basePath,
+            @DefaultValue("") String webUiDir) {
     }
 
     /**
@@ -220,13 +223,21 @@ public record AgentMemoryProperties(
      *     to {@code 1.0}. Must be {@code > 0}.
      * @param coldThreshold   retention score at/below which a latest page is "cold" (a sweep
      *     candidate, #25). Defaults to {@code 0.05}. Must be {@code >= 0}.
+     * @param hardDeleteAfterDays days a soft-deleted page (sweep stage one) survives before it is
+     *     <em>purged</em> (hard-deleted) if still untouched — the recovery window (#25). Defaults to
+     *     {@code 30}. Must be {@code >= 0} ({@code 0} = purge as soon as the next sweep runs).
+     * @param recentlyAccessedDays a page accessed within this many days is exempt from the sweep even
+     *     if its score is cold — the "recently touched survives" guard (#25). Defaults to {@code 7}.
+     *     Must be {@code >= 0} ({@code 0} disables the recency guard).
      */
     public record Decay(
             @DefaultValue("0.02") double lambda,
             @DefaultValue("1.0") double sigma,
             @DefaultValue("0.01") double mu,
             @DefaultValue("1.0") double defaultSalience,
-            @DefaultValue("0.05") double coldThreshold) {
+            @DefaultValue("0.05") double coldThreshold,
+            @DefaultValue("30") int hardDeleteAfterDays,
+            @DefaultValue("7") int recentlyAccessedDays) {
 
         public Decay {
             requireNonNegative("lambda", lambda);
@@ -237,6 +248,16 @@ public record AgentMemoryProperties(
                 throw new IllegalArgumentException(
                         "agent-memory.decay.default-salience must be a finite value > 0, was "
                                 + defaultSalience);
+            }
+            if (hardDeleteAfterDays < 0) {
+                throw new IllegalArgumentException(
+                        "agent-memory.decay.hard-delete-after-days must be >= 0, was "
+                                + hardDeleteAfterDays);
+            }
+            if (recentlyAccessedDays < 0) {
+                throw new IllegalArgumentException(
+                        "agent-memory.decay.recently-accessed-days must be >= 0, was "
+                                + recentlyAccessedDays);
             }
         }
 

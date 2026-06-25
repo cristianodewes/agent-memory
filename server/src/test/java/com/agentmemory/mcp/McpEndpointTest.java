@@ -9,6 +9,9 @@ import io.modelcontextprotocol.spec.McpSchema.CallToolRequest;
 import io.modelcontextprotocol.spec.McpSchema.CallToolResult;
 import io.modelcontextprotocol.spec.McpSchema.TextContent;
 import io.modelcontextprotocol.spec.McpSchema.Tool;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -17,6 +20,7 @@ import javax.sql.DataSource;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
@@ -51,11 +55,16 @@ class McpEndpointTest {
             new PostgreSQLContainer(DockerImageName.parse("pgvector/pgvector:pg16")
                     .asCompatibleSubstituteFor("postgres"));
 
+    @TempDir
+    static Path dataDir;
+
     @DynamicPropertySource
     static void datasourceProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.datasource.url", POSTGRES::getJdbcUrl);
         registry.add("spring.datasource.username", POSTGRES::getUsername);
         registry.add("spring.datasource.password", POSTGRES::getPassword);
+        // A real (empty) data dir so SlotsReader reads slot files from a known location, not ~/.
+        registry.add("agent-memory.data.dir", () -> dataDir.toString());
     }
 
     private static final JsonMapper JSON = JsonMapper.builder().build();
@@ -138,10 +147,88 @@ class McpEndpointTest {
         List<String> readTools = List.of(
                 "memory_query", "memory_recent", "memory_read_page", "memory_status", "memory_briefing");
         assertThat(tools).extracting(Tool::name).containsAll(readTools);
-        // each of the five read tools is flagged read-only (write tools, #20, are not — covered by
-        // McpWriteEndpointTest).
+        // each of the five read tools is flagged read-only (write tools #20 and handoff tools #22 are
+        // not — those are asserted in McpWriteEndpointTest and listsTheThreeHandoffToolsAsMutating).
         assertThat(tools).filteredOn(t -> readTools.contains(t.name()))
                 .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isTrue());
+    }
+
+    // --- handoff tools (issue #22) -----------------------------------------------------------------
+
+    /** Seed an OPEN handoff row directly, returning its id (so accept/cancel can be tested over MCP). */
+    private UUID seedOpenHandoff(String ws, String proj, String summary) {
+        UUID sessionId = jdbc().queryForObject(
+                "SELECT id FROM sessions WHERE workspace = ? AND project = ? LIMIT 1",
+                UUID.class, ws, proj);
+        UUID wsId = jdbc().queryForObject("SELECT id FROM workspaces WHERE slug = ?", UUID.class, ws);
+        UUID projId = jdbc().queryForObject(
+                "SELECT id FROM projects WHERE workspace = ? AND slug = ?", UUID.class, ws, proj);
+        UUID id = UUID.randomUUID();
+        jdbc().update(
+                "INSERT INTO handoffs (id, workspace_id, project_id, workspace, project, from_session, "
+                        + "status, summary, open_questions, next_steps, created_at) "
+                        + "VALUES (?, ?, ?, ?, ?, ?, 'open', ?, '{}', '{}', ?)",
+                id, wsId, projId, ws, proj, sessionId, summary, java.sql.Timestamp.from(Instant.now()));
+        return id;
+    }
+
+    @Test
+    void listsTheThreeHandoffToolsAsMutating() {
+        List<Tool> tools = client.listTools().tools();
+        assertThat(tools).extracting(Tool::name).contains(
+                "memory_handoff_begin", "memory_handoff_accept", "memory_handoff_cancel");
+        // handoff tools mutate the lifecycle — not read-only.
+        assertThat(tools).filteredOn(t -> t.name().startsWith("memory_handoff_"))
+                .allSatisfy(t -> assertThat(t.annotations().readOnlyHint()).isFalse());
+    }
+
+    @Test
+    void handoffAcceptReturnsTheOpenHandoffOnceThenNone() {
+        String[] s = seedProject("t", "b", "x");
+        UUID handoffId = seedOpenHandoff(s[0], s[1], "where I left off");
+
+        // First accept consumes it: present, the seeded body, marked accepted.
+        JsonNode first = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(first.get("present").asBoolean()).isTrue();
+        assertThat(first.get("id").asString()).isEqualTo(handoffId.toString());
+        assertThat(first.get("summary").asString()).isEqualTo("where I left off");
+        assertThat(first.get("status").asString()).isEqualTo("accepted");
+
+        // Second accept finds nothing — single-use — but is still a well-formed result, not an error.
+        JsonNode second = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(second.get("present").asBoolean()).isFalse();
+        assertThat(second.get("id").isNull()).isTrue();
+    }
+
+    @Test
+    void handoffCancelExpiresTheOpenHandoff() {
+        String[] s = seedProject("t", "b", "x");
+        UUID handoffId = seedOpenHandoff(s[0], s[1], "opened by mistake");
+
+        JsonNode cancelled = json(call("memory_handoff_cancel", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(cancelled.get("present").asBoolean()).isTrue();
+        assertThat(cancelled.get("id").asString()).isEqualTo(handoffId.toString());
+        assertThat(cancelled.get("status").asString()).isEqualTo("expired");
+
+        // Now nothing is open: accept finds none.
+        JsonNode accept = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(accept.get("present").asBoolean()).isFalse();
+    }
+
+    @Test
+    void handoffAcceptOnEmptyProjectIsWellFormedNotAnError() {
+        String[] s = seedProject("t", "b", "x");
+        JsonNode r = json(call("memory_handoff_accept", Map.of("workspace", s[0], "project", s[1])));
+        assertThat(r.get("present").asBoolean()).isFalse();
+        assertThat(r.get("scope").get("project").asString()).isEqualTo("proj");
+    }
+
+    @Test
+    void handoffBeginRequiresASessionId() {
+        String[] s = seedProject("t", "b", "x");
+        CallToolResult result = call("memory_handoff_begin", Map.of("workspace", s[0], "project", s[1]));
+        // No sessionId → a clear tool error (the schema marks it required; the handler guards too).
+        assertThat(result.isError()).isTrue();
     }
 
     // --- memory_query ------------------------------------------------------------------------------
@@ -230,6 +317,47 @@ class McpEndpointTest {
         assertThat(r.get("rules").isArray()).isTrue();
         assertThat(r.get("slots").isArray()).isTrue();
         assertThat(r.get("recent")).isNotEmpty();
+    }
+
+    @Test
+    void memoryBriefingRendersSlotsAsADedicatedSectionWithKind() throws Exception {
+        String[] s = seedProject("Recall", "body", "investigate the widget");
+        // Two slot pages on disk (source of truth) under wiki/<ws>/proj/_slots/.
+        writeSlotFile(s[0], s[1], "identity.md", "Who I am", "invariant");
+        writeSlotFile(s[0], s[1], "current-focus.md", "Current focus", "state");
+
+        JsonNode r = json(call("memory_briefing", Map.of("workspace", s[0], "project", s[1])));
+        JsonNode slots = r.get("slots");
+        assertThat(slots.isArray()).isTrue();
+        assertThat(slots.size()).isEqualTo(2);
+        // Ordered by path; each carries path/title/slot_kind/pinned.
+        JsonNode first = slots.get(0);
+        assertThat(first.get("path").asString()).isEqualTo("_slots/current-focus.md");
+        assertThat(first.get("slotKind").asString()).isEqualTo("state");
+        assertThat(first.get("pinned").asBoolean()).isTrue();
+        JsonNode second = slots.get(1);
+        assertThat(second.get("path").asString()).isEqualTo("_slots/identity.md");
+        assertThat(second.get("slotKind").asString()).isEqualTo("invariant");
+    }
+
+    /** Write a minimal valid slot page file under {@code wiki/<ws>/<proj>/_slots/<name>}. */
+    private static void writeSlotFile(String ws, String proj, String name, String title, String slotKind)
+            throws Exception {
+        String path = "_slots/" + name;
+        String content = "---\n"
+                + "title: \"" + title + "\"\n"
+                + "kind: _slots\n"
+                + "pinned: true\n"
+                + "slot_kind: " + slotKind + "\n"
+                + "workspace: \"" + ws + "\"\n"
+                + "project: \"" + proj + "\"\n"
+                + "path: \"" + path + "\"\n"
+                + "created_at: 2026-06-25T12:00:00Z\n"
+                + "updated_at: 2026-06-25T12:00:00Z\n"
+                + "---\n\n" + title + " body\n";
+        Path file = dataDir.resolve("wiki").resolve(ws).resolve(proj).resolve(path);
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, content, StandardCharsets.UTF_8);
     }
 
     // --- scope resolution --------------------------------------------------------------------------

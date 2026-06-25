@@ -9,6 +9,7 @@ import com.agentmemory.llm.ChatMessage;
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ChatResponse;
 import com.agentmemory.llm.JsonSchema;
+import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
@@ -36,7 +37,9 @@ import org.slf4j.LoggerFactory;
  *   <li><strong>Render + write</strong>: render to markdown ({@link SessionMarkdownRenderer}) and
  *       write {@code sessions/<id>.md} through {@link PageRepository#create} with the
  *       {@link WikiWriter} callback, so the DB row and the markdown file + git commit land in one
- *       atomic operation (#12/#13).</li>
+ *       atomic operation (#12/#13), then maintain its wikilink graph via
+ *       {@link WikiLinkService#syncPageLinks} (#27) so any {@code [[links]]} in the synthesized page
+ *       become live edges.</li>
  * </ol>
  *
  * <h2>Idempotency</h2>
@@ -70,6 +73,7 @@ public class SessionSynthesizer {
     private final LlmProvider llm;
     private final PageRepository pages;
     private final WikiWriter wikiWriter;
+    private final WikiLinkService links;
     private final SynthesisPrompts prompts;
     private final SessionSynthesisParser parser;
     private final SessionMarkdownRenderer renderer;
@@ -79,9 +83,10 @@ public class SessionSynthesizer {
             SessionObservationReader reader,
             LlmProvider llm,
             PageRepository pages,
-            WikiWriter wikiWriter) {
-        this(reader, llm, pages, wikiWriter, new SynthesisPrompts(), new SessionSynthesisParser(),
-                new SessionMarkdownRenderer(), DEFAULT_CHAR_BUDGET);
+            WikiWriter wikiWriter,
+            WikiLinkService links) {
+        this(reader, llm, pages, wikiWriter, links, new SynthesisPrompts(),
+                new SessionSynthesisParser(), new SessionMarkdownRenderer(), DEFAULT_CHAR_BUDGET);
     }
 
     SessionSynthesizer(
@@ -89,6 +94,7 @@ public class SessionSynthesizer {
             LlmProvider llm,
             PageRepository pages,
             WikiWriter wikiWriter,
+            WikiLinkService links,
             SynthesisPrompts prompts,
             SessionSynthesisParser parser,
             SessionMarkdownRenderer renderer,
@@ -100,6 +106,7 @@ public class SessionSynthesizer {
         this.llm = llm;
         this.pages = pages;
         this.wikiWriter = wikiWriter;
+        this.links = links;
         this.prompts = prompts;
         this.parser = parser;
         this.renderer = renderer;
@@ -158,6 +165,9 @@ public class SessionSynthesizer {
         String commitMessage = "consolidate: " + pageIdentity.page().value();
         PageRecord written = pages.create(
                 pageIdentity, synthesis.title(), body, wikiWriter.callbackFor(commitMessage));
+        // Maintain the wikilink graph for the synthesized page (#27): record its outgoing [[links]]
+        // and re-point any inbound links now that this page exists.
+        links.syncPageLinks(written);
         log.info("synthesized session {} -> {} ({} observations)",
                 sessionId, pageIdentity.page().value(), obsCount);
         return SynthesisOutcome.written(sessionId, written, synthesis);
