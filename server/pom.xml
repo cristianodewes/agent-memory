@@ -28,6 +28,8 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<!-- JGit is not managed by the Spring Boot BOM, so pin it. 7.1.x targets Java 17+ (we run 21). -->
+		<jgit.version>7.1.0.202411261347-r</jgit.version>
 	</properties>
 
 	<!-- Import the Testcontainers BOM so the individual test modules (testcontainers-junit-jupiter,
@@ -77,6 +79,14 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<!-- Markdown wiki = source of truth (issue #13, DD-002): JGit gives commit-on-write over one
+		     git repo for the whole wiki/. Not in the Spring Boot BOM, so version-pinned above. -->
+		<dependency>
+			<groupId>org.eclipse.jgit</groupId>
+			<artifactId>org.eclipse.jgit</artifactId>
+			<version>${jgit.version}</version>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-actuator-test</artifactId>
@@ -93,6 +103,14 @@
 			<groupId>com.tngtech.archunit</groupId>
 			<artifactId>archunit-junit5</artifactId>
 			<version>1.3.0</version>
+			<scope>test</scope>
+		</dependency>
+
+		<!-- Await the live file-watcher's async reconcile without fixed sleeps (issue #13 tests).
+		     Version managed by the Spring Boot BOM (awaitility 4.3.0). -->
+		<dependency>
+			<groupId>org.awaitility</groupId>
+			<artifactId>awaitility</artifactId>
 			<scope>test</scope>
 		</dependency>
 
