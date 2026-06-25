@@ -142,22 +142,33 @@ class HybridRecallTest {
     @Test
     void graphArmPullsInNeighborOfAStrongFtsHit() {
         Scope s = freshScope();
-        // "decisions/storage.md" is the strong FTS hit; "concepts/indexing.md" does NOT contain the
-        // query terms but is linked from it, so the graph arm should fold it into the fused result.
+        // "decisions/storage.md" is the FTS hit; "concepts/indexing.md" does NOT contain the query
+        // terms, so without the link the graph arm has nothing to add and it would not surface.
         UUID storage = seedPage(s, "decisions/storage.md", "Storage decision",
                 "We chose Postgres with pgvector for the derived index.");
         UUID indexing = seedPage(s, "concepts/indexing.md", "Indexing notes",
                 "Background material on B-trees and GIN.");
+
+        // Control: with NO link, the non-matching neighbor must be absent (proves it can only enter
+        // via the graph arm, not via its own text).
+        RecallResult before = recall.search(RecallQuery.of("postgres pgvector index", s));
+        assertThat(before.hits()).extracting(RecallHit::path)
+                .contains("decisions/storage.md")
+                .doesNotContain("concepts/indexing.md");
+
+        // Now link the FTS hit to the neighbor; the graph arm must fold the neighbor into the result.
         seedLink(s, storage, "decisions/storage.md", indexing, "concepts/indexing.md");
+        RecallResult after = recall.search(RecallQuery.of("postgres pgvector index", s));
 
-        RecallResult r = recall.search(RecallQuery.of("postgres pgvector index", s));
-
-        assertThat(r.rawFallback()).isFalse();
-        List<String> paths = r.hits().stream().map(RecallHit::path).toList();
-        assertThat(paths).contains("decisions/storage.md", "concepts/indexing.md");
-        // the FTS hit ranks above the graph-only neighbor
-        assertThat(paths.indexOf("decisions/storage.md"))
-                .isLessThan(paths.indexOf("concepts/indexing.md"));
+        assertThat(after.rawFallback()).isFalse();
+        assertThat(after.hits()).extracting(RecallHit::path)
+                .as("graph neighbor pulled in via the link")
+                .contains("decisions/storage.md", "concepts/indexing.md");
+        // The FTS-matching page is a genuine PAGE hit (sanity on the hit shape).
+        assertThat(after.hits()).anySatisfy(h -> {
+            assertThat(h.path()).isEqualTo("decisions/storage.md");
+            assertThat(h.source()).isEqualTo(HitSource.PAGE);
+        });
     }
 
     @Test
