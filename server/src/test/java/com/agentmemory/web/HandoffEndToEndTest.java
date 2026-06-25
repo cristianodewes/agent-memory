@@ -1,6 +1,7 @@
 package com.agentmemory.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.SessionId;
@@ -209,24 +210,16 @@ class HandoffEndToEndTest {
         assertThat(openHandoffs(ws, proj)).as("no handoff before session-end").isZero();
 
         // A real SessionEnd flows through the autowired ingest pipeline; the registered
-        // SessionEndHandoffTrigger (post-write listener) must open a handoff. Poll briefly because the
-        // trigger runs on the ingest worker AFTER the write returns (awaitIdle covers the write, the
-        // LLM call + open happen in the same listener invocation, so awaitIdle is sufficient — but we
-        // give a small grace window for robustness).
+        // SessionEndHandoffTrigger (post-write listener) must open a handoff. We POLL rather than read
+        // once: the trigger does the cheap session-end check on the ingest worker but dispatches the
+        // (blocking) LLM generation to its own off-worker executor (issue #78), so awaitIdle() — which
+        // only tracks the WRITE (inFlight), not that executor — does not cover the open. The handoff
+        // appears shortly after the write returns.
         seed(ws, proj, session, "SessionEnd");
 
-        long open = openHandoffs(ws, proj);
-        if (open == 0) {
-            // grace: the listener fires synchronously within the worker's write task, so this is belt-
-            // and-suspenders for any scheduling slack.
-            try {
-                Thread.sleep(500);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
-            open = openHandoffs(ws, proj);
-        }
-        assertThat(open).as("session-end opened a handoff via the attached trigger").isEqualTo(1);
+        await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                assertThat(openHandoffs(ws, proj))
+                        .as("session-end opened a handoff via the attached trigger").isEqualTo(1));
 
         // And it is the project's open handoff, summarizing this session.
         Instant created = jdbc().queryForObject(

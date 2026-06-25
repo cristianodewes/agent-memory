@@ -97,4 +97,16 @@ public class RecallConfiguration {
             RecallRepository recallRepository, Fusion fusion, VectorArm vectorArm) {
         return new HybridRecallService(recallRepository, fusion, vectorArm);
     }
+
+    /**
+     * Cross-project recall (#29): fans the single-scope {@link RecallService} out over named scopes or
+     * every project ({@code global}) and merges the per-scope ranked hits. DB-backed (it enumerates
+     * scopes for {@code global}), so gated on a {@link DataSource} like the rest.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public CrossProjectRecallService crossProjectRecallService(
+            RecallService recallService, RecallRepository recallRepository) {
+        return new CrossProjectRecallService(recallService, recallRepository);
+    }
 }
