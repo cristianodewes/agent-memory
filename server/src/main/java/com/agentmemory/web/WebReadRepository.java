@@ -90,6 +90,53 @@ public class WebReadRepository {
                 scope.workspaceSlug(), scope.projectSlug());
     }
 
+    /**
+     * The busiest top-level folders in a project: each distinct first path segment of the latest pages
+     * with its page count, most-populated first (issue #85 scent map). Root-level pages (a path with no
+     * {@code /}) are grouped under {@code (root)}.
+     *
+     * @param scope the project.
+     * @param limit max folders.
+     * @return folder + page-count rows, descending by count then folder name.
+     */
+    @Transactional(readOnly = true)
+    public List<WebDtos.FolderCount> topFolders(Scope scope, int limit) {
+        return jdbc.query(
+                "SELECT CASE WHEN position('/' in path) > 0 THEN split_part(path, '/', 1) "
+                        + "ELSE '(root)' END AS folder, count(*) AS pages "
+                        + "FROM pages WHERE workspace = ? AND project = ? AND is_latest "
+                        + "GROUP BY 1 ORDER BY count(*) DESC, folder ASC LIMIT ?",
+                (rs, n) -> new WebDtos.FolderCount(rs.getString("folder"), rs.getLong("pages")),
+                scope.workspaceSlug(), scope.projectSlug(), limit);
+    }
+
+    /**
+     * The "hub" pages of a project: the latest pages with the most resolved inbound links, most-linked
+     * first (issue #85 scent map). Inbound links are counted per target {@code path} (page identity,
+     * across versions) over resolved links that target this project, then joined to the latest page for
+     * its title. Pages with no inbound links are omitted.
+     *
+     * @param scope the project.
+     * @param limit max hub pages.
+     * @return path + title + inbound-link count rows, descending by inbound then path.
+     */
+    @Transactional(readOnly = true)
+    public List<WebDtos.HubPage> hubPages(Scope scope, int limit) {
+        return jdbc.query(
+                "SELECT p.path AS path, p.title AS title, c.inbound AS inbound "
+                        + "FROM (SELECT target_path, count(*) AS inbound FROM links "
+                        + "      WHERE target_resolved AND to_page_id IS NOT NULL "
+                        + "        AND target_workspace = ? AND target_project = ? "
+                        + "      GROUP BY target_path) c "
+                        + "JOIN pages p ON p.workspace = ? AND p.project = ? "
+                        + "            AND p.path = c.target_path AND p.is_latest "
+                        + "ORDER BY c.inbound DESC, p.path ASC LIMIT ?",
+                (rs, n) -> new WebDtos.HubPage(
+                        rs.getString("path"), rs.getString("title"), rs.getLong("inbound")),
+                scope.workspaceSlug(), scope.projectSlug(),
+                scope.workspaceSlug(), scope.projectSlug(), limit);
+    }
+
     private long count(String sql, Object... args) {
         Long n = jdbc.queryForObject(sql, Long.class, args);
         return n == null ? 0L : n;

@@ -5,12 +5,12 @@
 // read-only briefing.
 //
 // Everything is bounded and advisory: this is orientation, not a dump, so the rendered block is capped
-// (a handful of recent pages / rules / slots) to avoid flooding the session context, and any missing
-// section is simply omitted. The handoff stays FIRST (it is the most actionable). An empty result means
-// the caller injects nothing — a clean no-op.
+// (a handful of recent pages / rules / slots / folders / hubs) to avoid flooding the session context,
+// and any missing section is simply omitted. The handoff stays FIRST (it is the most actionable). An
+// empty result means the caller injects nothing — a clean no-op.
 //
-// The scent / dependency-graph orientation map (top folders + hub pages) is a follow-up slice; this one
-// delivers the briefing + recent-pages sections by composing the existing /briefing endpoint.
+// Sections, in order: handoff (#23) → briefing snapshot (counts + activity + rules/slots + recent
+// pages, from /briefing) → scent "memory map" (busiest folders + most-linked hub pages, from /scent).
 package orientation
 
 import (
@@ -27,19 +27,25 @@ const (
 	RecentLimit = 8
 	maxRules    = 8
 	maxSlots    = 8
+	// ScentFolders / ScentHubs cap the scent map (busiest folders / hub pages) fetched AND rendered.
+	ScentFolders = 8
+	ScentHubs    = 6
 )
 
-// Render assembles the SessionStart orientation block from the already-rendered handoff block (#23) and
-// the project briefing (#85). The handoff stays first; the briefing snapshot follows. Each section is
-// optional — a nil or empty-project briefing contributes nothing, and a blank handoff is skipped — so
-// the result is "" when there is nothing at all to inject (the caller then emits no output).
-func Render(handoffBlock string, briefing *apiclient.Briefing) string {
+// Render assembles the SessionStart orientation block from the already-rendered handoff block (#23),
+// the project briefing, and the scent map (#85), in that order. Each section is optional — a nil or
+// empty-project briefing/scent contributes nothing, and a blank handoff is skipped — so the result is
+// "" when there is nothing at all to inject (the caller then emits no output).
+func Render(handoffBlock string, briefing *apiclient.Briefing, scent *apiclient.Scent) string {
 	var sections []string
 	if h := strings.TrimSpace(handoffBlock); h != "" {
 		sections = append(sections, h)
 	}
 	if b := renderBriefing(briefing); b != "" {
 		sections = append(sections, b)
+	}
+	if s := renderScent(scent); s != "" {
+		sections = append(sections, s)
 	}
 	return strings.Join(sections, "\n\n")
 }
@@ -80,6 +86,50 @@ func renderBriefing(b *apiclient.Briefing) string {
 		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
+}
+
+// renderScent formats the bounded "memory map" — the busiest folders and the most-linked hub pages —
+// or "" when there is nothing to show. The server already caps each list; the bounds here are a
+// belt-and-suspenders guard.
+func renderScent(s *apiclient.Scent) string {
+	if s == nil || (len(s.Folders) == 0 && len(s.Hubs) == 0) {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("## Memory map\n")
+	if folders := boundedFolders(s.Folders, ScentFolders); len(folders) > 0 {
+		parts := make([]string, 0, len(folders))
+		for _, f := range folders {
+			parts = append(parts, fmt.Sprintf("%s (%d)", f.Folder, f.Pages))
+		}
+		fmt.Fprintf(&sb, "- Folders: %s\n", strings.Join(parts, ", "))
+	}
+	if hubs := boundedHubs(s.Hubs, ScentHubs); len(hubs) > 0 {
+		parts := make([]string, 0, len(hubs))
+		for _, h := range hubs {
+			label := strings.TrimSpace(h.Title)
+			if label == "" {
+				label = h.Path
+			}
+			parts = append(parts, fmt.Sprintf("%s (`%s`)", label, h.Path))
+		}
+		fmt.Fprintf(&sb, "- Hubs: %s\n", strings.Join(parts, ", "))
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func boundedFolders(items []apiclient.ScentFolder, n int) []apiclient.ScentFolder {
+	if len(items) <= n {
+		return items
+	}
+	return items[:n]
+}
+
+func boundedHubs(items []apiclient.ScentHub, n int) []apiclient.ScentHub {
+	if len(items) <= n {
+		return items
+	}
+	return items[:n]
 }
 
 // bounded returns at most n non-blank entries from items.
