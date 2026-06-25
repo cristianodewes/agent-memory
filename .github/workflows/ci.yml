@@ -5,9 +5,10 @@ name: CI
 # Jobs are path-filtered: the Go `client` job runs only when the client tree (or
 # shared CI files) change, and the `server` job runs only for server changes.
 # The `compose-smoke` job validates the docker-compose dev stack and probes the
-# server's /healthz endpoint. A `migration-check` placeholder is intentionally
-# deferred to issue #4 (the Postgres schema / Flyway migrations do not exist yet)
-# and is documented below rather than run.
+# server's /healthz endpoint. Since issue #4 the Flyway migrations are exercised by
+# the `server` job's `mvn verify` via Testcontainers (SchemaMigrationTest spins up a
+# throwaway pgvector/pgvector:pg16 Postgres), so no separate migration-check job or
+# DB service is needed on the runner — Docker is available on ubuntu-latest.
 #
 # See CONTRIBUTING.md (Definition of Done) and docs/ARCHITECTURE.md §8.
 
@@ -96,9 +97,10 @@ jobs:
   # --------------------------------------------------------------------------
   # Spring Boot server: `mvn -B verify`.
   #
-  # No database is required yet: the server does not connect to Postgres until
-  # issue #4. We therefore run verify with no DB service. When #4 lands, add a
-  # Postgres service (or Testcontainers) here alongside the migration check.
+  # No DB *service* is wired here: the migration test (SchemaMigrationTest) brings up
+  # its own throwaway pgvector/pgvector:pg16 Postgres via Testcontainers, so `verify`
+  # both compiles/unit-tests the server and applies the Flyway migrations against a
+  # real Postgres. Docker is available on ubuntu-latest, which Testcontainers needs.
   # --------------------------------------------------------------------------
   server:
     name: server (maven)
