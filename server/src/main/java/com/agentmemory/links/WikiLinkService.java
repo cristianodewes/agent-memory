@@ -30,8 +30,14 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Because it operates through the shared {@link JdbcTemplate} and is {@code @Transactional}, a
  * caller (the consolidation / page-write flow, or #14 reindex) gets link maintenance committed
- * atomically with the page row. The parse step is delegated to the pure {@link WikiLinkParser}, which
- * #14 can reuse directly.
+ * atomically with the page row. The parse step is delegated to the pure {@link WikiLinkParser}.
+ *
+ * <p>This is the <strong>single</strong> writer/maintenance authority for the {@code links} table:
+ * the canonical scoped-wikilink grammar ({@link WikiLinkParser}) and the deferred-safe resolution
+ * live here, and reindex (#14, {@code reindex.ReindexTxn}) drives the same logic — {@link #syncPageLinks}
+ * per (re)indexed page, {@link #deleteAllLinks()} for a full-rebuild reset, and
+ * {@link #resolveAllDeferred()} for the trailing forward-link pass — so a page's links are identical
+ * however they were produced (a write, a consolidation, or a rebuild).
  */
 public class WikiLinkService {
 
@@ -49,21 +55,59 @@ public class WikiLinkService {
      * given (page version, body).
      *
      * @param page the page version just persisted (its {@code id} is the current {@code is_latest}).
+     * @return the number of outgoing links (re)written for this page.
      */
     @Transactional
-    public void syncPageLinks(PageRecord page) {
+    public int syncPageLinks(PageRecord page) {
         if (page == null) {
             throw new IllegalArgumentException("page must not be null");
         }
         Identity source = page.identity();
         UUID fromPageId = page.id().value();
 
-        rebuildOutgoing(source, fromPageId, page.page().body());
+        int written = rebuildOutgoing(source, fromPageId, page.page().body());
         resolveInboundTo(source, fromPageId);
+        return written;
     }
 
-    /** Delete the source's old links (by identity) and insert the ones parsed from {@code body}. */
-    private void rebuildOutgoing(Identity source, UUID fromPageId, String body) {
+    /**
+     * Remove every link — the full-rebuild reset (the {@code links} graph is fully derived from page
+     * bodies, DD-002). Used by reindex {@code FULL} before recreating pages; capture tables untouched.
+     *
+     * @return the number of link rows removed.
+     */
+    @Transactional
+    public int deleteAllLinks() {
+        return jdbc.update("DELETE FROM links");
+    }
+
+    /**
+     * Resolve every still-deferred link whose target now has a latest page version: fill its
+     * {@code to_page_id} and flip {@code target_resolved} true. Idempotent (already-resolved or
+     * still-missing links are skipped). Run after a (re)index batch so forward links written before
+     * their targets existed become live graph edges. This is the set-based complement to the
+     * per-page {@link #resolveInboundTo} re-point that {@link #syncPageLinks} already does.
+     *
+     * @return the number of links newly resolved.
+     */
+    @Transactional
+    public int resolveAllDeferred() {
+        // For every unresolved link whose target now has a latest page version, fill to_page_id and
+        // flip target_resolved. The join picks that latest version; the guards keep it idempotent.
+        return jdbc.update(
+                "UPDATE links l SET to_page_id = p.id, target_resolved = true "
+                        + "FROM pages p "
+                        + "WHERE NOT l.target_resolved AND l.target_path IS NOT NULL "
+                        + "  AND p.is_latest AND p.workspace = l.target_workspace "
+                        + "  AND p.project = l.target_project AND p.path = l.target_path");
+    }
+
+    /**
+     * Delete the source's old links (by identity) and insert the ones parsed from {@code body}.
+     *
+     * @return the number of links inserted.
+     */
+    private int rebuildOutgoing(Identity source, UUID fromPageId, String body) {
         String ws = source.workspace().value();
         String proj = source.project().value();
         String path = source.page().value();
@@ -94,6 +138,7 @@ public class WikiLinkService {
                     Uuid7.randomUuid(), fromPageId, ws, proj, path,
                     toPageId, tws, tproj, tpath, link.anchor(), toPageId != null);
         }
+        return links.size();
     }
 
     /**

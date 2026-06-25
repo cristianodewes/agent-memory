@@ -2,5 +2,7 @@ com.agentmemory.store.StoreConfiguration
 com.agentmemory.wiki.WikiConfiguration
 com.agentmemory.hooks.IngestModule
 com.agentmemory.recall.RecallConfiguration
+com.agentmemory.reindex.ReindexConfiguration
 com.agentmemory.mcp.McpConfiguration
+com.agentmemory.consolidate.ConsolidateConfiguration
 com.agentmemory.links.LinksConfiguration
