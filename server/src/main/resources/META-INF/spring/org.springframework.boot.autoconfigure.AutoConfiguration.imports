@@ -1,2 +1,3 @@
 com.agentmemory.store.StoreConfiguration
 com.agentmemory.hooks.IngestModule
+com.agentmemory.recall.RecallConfiguration
