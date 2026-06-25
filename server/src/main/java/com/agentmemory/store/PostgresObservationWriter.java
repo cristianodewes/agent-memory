@@ -14,6 +14,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
 import org.springframework.transaction.support.TransactionTemplate;
 
 /**
@@ -68,13 +69,14 @@ public final class PostgresObservationWriter implements ObservationWriter {
     private final ReentrantLock writeLock = new ReentrantLock(true);
 
     /**
-     * @param jdbc the JDBC access template bound to the single application {@code DataSource}.
-     * @param tx   a transaction template over the same {@code DataSource}; the multi-statement write
-     *     runs inside it so a mid-sequence failure rolls back the session/observation/audit together.
+     * @param jdbc      the JDBC access template bound to the single application {@code DataSource}.
+     * @param txManager the JDBC transaction manager over the same {@code DataSource}; the
+     *     multi-statement write runs in a transaction from it so a mid-sequence failure rolls back the
+     *     session/observation/audit together.
      */
-    public PostgresObservationWriter(JdbcTemplate jdbc, TransactionTemplate tx) {
+    public PostgresObservationWriter(JdbcTemplate jdbc, PlatformTransactionManager txManager) {
         this.jdbc = jdbc;
-        this.tx = tx;
+        this.tx = new TransactionTemplate(txManager);
     }
 
     @Override
