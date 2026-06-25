@@ -1,0 +1,50 @@
+[
+  { "event": "SessionStart", "kind": "session-start" },
+  { "event": "session-start", "kind": "session-start" },
+  { "event": "session_start", "kind": "session-start" },
+  { "event": "startup", "kind": "session-start" },
+  { "event": "start", "kind": "session-start" },
+
+  { "event": "UserPromptSubmit", "kind": "user-prompt" },
+  { "event": "user-prompt-submit", "kind": "user-prompt" },
+  { "event": "user_prompt_submit", "kind": "user-prompt" },
+  { "event": "user-prompt", "kind": "user-prompt" },
+  { "event": "prompt", "kind": "user-prompt" },
+  { "event": "UserMessage", "kind": "user-prompt" },
+
+  { "event": "PreToolUse", "kind": "pre-tool-use" },
+  { "event": "pre-tool-use", "kind": "pre-tool-use" },
+  { "event": "pre_tool_use", "kind": "pre-tool-use" },
+  { "event": "tool-call-start", "kind": "pre-tool-use" },
+
+  { "event": "PostToolUse", "kind": "post-tool-use" },
+  { "event": "post-tool-use", "kind": "post-tool-use" },
+  { "event": "post_tool_use", "kind": "post-tool-use" },
+  { "event": "POST-TOOL-USE", "kind": "post-tool-use" },
+  { "event": "tool-call-end", "kind": "post-tool-use" },
+  { "event": "tool-result", "kind": "post-tool-use" },
+
+  { "event": "PreCompact", "kind": "pre-compact" },
+  { "event": "pre-compact", "kind": "pre-compact" },
+  { "event": "compact", "kind": "pre-compact" },
+
+  { "event": "Notification", "kind": "notification" },
+  { "event": "notification", "kind": "notification" },
+  { "event": "notify", "kind": "notification" },
+
+  { "event": "Stop", "kind": "stop" },
+  { "event": "stop", "kind": "stop" },
+  { "event": "SubagentStop", "kind": "stop" },
+  { "event": "turn-end", "kind": "stop" },
+
+  { "event": "SessionEnd", "kind": "session-end" },
+  { "event": "session-end", "kind": "session-end" },
+  { "event": "session_end", "kind": "session-end" },
+  { "event": "shutdown", "kind": "session-end" },
+  { "event": "exit", "kind": "session-end" },
+
+  { "event": "other", "kind": "other" },
+  { "event": "deploy.finished", "kind": "other" },
+  { "event": "totally-unknown-event", "kind": "other" },
+  { "event": "", "kind": "other" }
+]
