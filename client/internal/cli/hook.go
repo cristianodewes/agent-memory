@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/cristianodewes/agent-memory/client/internal/apiclient"
@@ -14,6 +13,7 @@ import (
 	"github.com/cristianodewes/agent-memory/client/internal/core"
 	"github.com/cristianodewes/agent-memory/client/internal/drain"
 	"github.com/cristianodewes/agent-memory/client/internal/hook"
+	"github.com/cristianodewes/agent-memory/client/internal/identity"
 	"github.com/cristianodewes/agent-memory/client/internal/spool"
 	"github.com/spf13/cobra"
 )
@@ -62,15 +62,14 @@ func newHookCmd() *cobra.Command {
 // boundary) drain. A capture failure is returned (non-zero exit); a drain failure at a boundary is
 // logged but NOT fatal — the event is already safely spooled, which is the guarantee that matters.
 func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
-	cfg := config.Load()
-
 	cwd, _ := os.Getwd()
-	ws, proj := resolveIdentity(cwd)
+	id := identity.Resolve(cwd)
+	cfg := config.Load().WithIdentityOverrides(id.ServerURL, id.Token)
 
 	p, err := hook.BuildPayload(raw, hook.InputContext{
 		Event:     eventFlag,
-		Workspace: ws,
-		Project:   proj,
+		Workspace: id.Workspace,
+		Project:   id.Project,
 		Cwd:       cwd,
 		Now:       time.Now().UTC(),
 	})
@@ -140,39 +139,6 @@ func readPayload(stdin io.Reader, flag string) ([]byte, error) {
 		return data, nil
 	}
 	return []byte(flag), nil
-}
-
-// resolveIdentity derives (workspace, project) from cwd by walking up to the main git root: the git
-// root directory name is the project, and its parent directory name is the workspace (ARCHITECTURE
-// §2.1). Without a git root it falls back to the cwd's own name for both, so capture still works
-// outside a repo. This is the minimal resolver #10 needs; the .agent-memory.toml marker override is
-// #2/#32.
-func resolveIdentity(cwd string) (workspace, project string) {
-	if cwd == "" {
-		return "unknown", "unknown"
-	}
-	if root := gitRoot(cwd); root != "" {
-		project = filepath.Base(root)
-		workspace = filepath.Base(filepath.Dir(root))
-		return workspace, project
-	}
-	base := filepath.Base(cwd)
-	return base, base
-}
-
-// gitRoot walks up from dir looking for a `.git` entry, returning the directory that contains it, or
-// "" if none is found before the filesystem root.
-func gitRoot(dir string) string {
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return ""
-		}
-		dir = parent
-	}
 }
 
 func plural(n int) string {
