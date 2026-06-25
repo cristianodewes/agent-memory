@@ -82,6 +82,18 @@ public class McpConfiguration {
     }
 
     /**
+     * The {@code memory_forget_sweep} tool (issue #25). Built here (where the package-private
+     * {@link McpJson} helper lives) over the {@link com.agentmemory.forget.ForgetSweepService} bean
+     * wired by {@code ForgetConfiguration}. DataSource-gated like the rest.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public MemorySweepTools memorySweepTools(
+            com.agentmemory.forget.ForgetSweepService sweep, ScopeResolver scopes) {
+        return new MemorySweepTools(sweep, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The Streamable-HTTP transport provider (a Jakarta servlet). Built with the Jackson-3 JSON
      * mapper and the {@code /mcp} endpoint.
      */
@@ -116,9 +128,10 @@ public class McpConfiguration {
     @ConditionalOnSingleCandidate(DataSource.class)
     public McpSyncServer mcpSyncServer(
             HttpServletStreamableServerTransportProvider transportProvider,
-            MemoryTools tools, MemoryWriteTools writeTools) {
+            MemoryTools tools, MemoryWriteTools writeTools, MemorySweepTools sweepTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
+        specs.addAll(sweepTools.all());
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")
                 .capabilities(ServerCapabilities.builder().tools(true).build())
@@ -128,8 +141,10 @@ public class McpConfiguration {
                                 + "bodies, memory_recent for latest pages, memory_status/memory_briefing "
                                 + "for a project snapshot. Write (only when the user explicitly asks to "
                                 + "remember or delete): memory_write_page creates/updates a durable page, "
-                                + "memory_delete_page removes one by path. Scope defaults to the most "
-                                + "recently active project; pass workspace+project to override.")
+                                + "memory_delete_page removes one by path. Maintenance: "
+                                + "memory_forget_sweep evicts cold pages (soft-delete then purge; pass "
+                                + "dry_run=true to preview). Scope defaults to the most recently active "
+                                + "project; pass workspace+project to override.")
                 .tools(specs)
                 .build();
     }
