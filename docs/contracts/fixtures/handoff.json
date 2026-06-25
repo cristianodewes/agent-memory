@@ -1,0 +1,20 @@
+{
+  "id": "0190b3e2-2000-7a00-8000-000000000005",
+  "identity": {
+    "workspace": "acme",
+    "project": "agent-memory"
+  },
+  "fromSession": "0190b3e2-1d00-7a00-8000-000000000002",
+  "status": "accepted",
+  "summary": "Implemented hybrid recall; wired RRF fusion over FTS + graph + vector.",
+  "openQuestions": [
+    "Should embeddings degrade silently when the provider is down?",
+    "What is the right RRF k constant?"
+  ],
+  "nextSteps": [
+    "Add pgvector index migration.",
+    "Benchmark recall latency."
+  ],
+  "createdAt": "2026-06-25T12:45:00Z",
+  "acceptedAt": "2026-06-25T13:00:05Z"
+}

@@ -1,0 +1,15 @@
+{
+  "id": "0190b3e2-1f00-7a00-8000-000000000004",
+  "source": {
+    "workspace": "acme",
+    "project": "agent-memory",
+    "path": "concepts/recall.md"
+  },
+  "target": {
+    "workspace": "acme",
+    "project": "shared-notes",
+    "path": "decisions/rrf.md"
+  },
+  "anchor": "RRF",
+  "targetResolved": true
+}

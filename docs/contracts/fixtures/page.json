@@ -1,0 +1,14 @@
+{
+  "id": "0190b3e2-1c00-7a00-8000-000000000001",
+  "identity": {
+    "workspace": "acme",
+    "project": "agent-memory",
+    "path": "concepts/recall.md"
+  },
+  "title": "Hybrid recall",
+  "body": "# Hybrid recall\n\nFTS + graph + vector fused with RRF.\n",
+  "isLatest": true,
+  "supersedes": "0190b3e2-1b00-7a00-8000-0000000000ff",
+  "createdAt": "2026-06-25T12:00:00Z",
+  "updatedAt": "2026-06-25T12:30:00Z"
+}

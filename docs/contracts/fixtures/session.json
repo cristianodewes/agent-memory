@@ -1,0 +1,10 @@
+{
+  "id": "0190b3e2-1d00-7a00-8000-000000000002",
+  "identity": {
+    "workspace": "acme",
+    "project": "agent-memory"
+  },
+  "agent": "claude-code",
+  "startedAt": "2026-06-25T12:00:00Z",
+  "endedAt": "2026-06-25T12:45:00Z"
+}
