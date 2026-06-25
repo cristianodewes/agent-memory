@@ -40,6 +40,12 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newRestoreCmd())
 	root.AddCommand(newBootstrapCmd())
 	root.AddCommand(newUserCmd())
+	root.AddCommand(newInstallHooksCmd())
+	root.AddCommand(newInstallMcpCmd())
+	root.AddCommand(newInstallInstructionsCmd())
+	root.AddCommand(newSetupAgentCmd())
+	root.AddCommand(newUpgradeCmd())
+	root.AddCommand(newUninstallCmd())
 	return root
 }
 
