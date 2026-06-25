@@ -32,6 +32,7 @@ public final class AgentMemoryConfig {
     private final AgentMemoryProperties.Llm llm;
     private final AgentMemoryProperties.Embeddings embeddings;
     private final AgentMemoryProperties.Auth auth;
+    private final AgentMemoryProperties.Sanitization sanitization;
     private final Path dataDir;
 
     private AgentMemoryConfig(AgentMemoryProperties props, Path dataDir) {
@@ -40,6 +41,7 @@ public final class AgentMemoryConfig {
         this.llm = props.llm();
         this.embeddings = props.embeddings();
         this.auth = props.auth();
+        this.sanitization = props.sanitization();
         this.dataDir = dataDir;
     }
 
@@ -168,6 +170,10 @@ public final class AgentMemoryConfig {
 
     public AgentMemoryProperties.Auth auth() {
         return auth;
+    }
+
+    public AgentMemoryProperties.Sanitization sanitization() {
+        return sanitization;
     }
 
     @Override

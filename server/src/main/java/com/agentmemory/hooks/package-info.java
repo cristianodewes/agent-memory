@@ -23,8 +23,22 @@
  * <p>The cross-language golden fixtures under {@code docs/contracts/fixtures/hook_*.json} are
  * round-tripped by both this package and the Go mirror {@code client/internal/hook}.
  *
+ * <h2>Issue #9 — sanitization typed boundary</h2>
+ * {@link com.agentmemory.hooks.Sanitizer} is the privacy strip (DD-010, invariant #6): the only way
+ * to turn a raw {@link com.agentmemory.hooks.NewObservation} into a storable value is
+ * {@link com.agentmemory.hooks.Sanitizer#sanitize(com.agentmemory.hooks.NewObservation)}, which
+ * returns a {@link com.agentmemory.hooks.Sanitized}{@code <NewObservation>}. Because
+ * {@link com.agentmemory.hooks.Sanitized} has no public constructor and the sanitizer is its sole
+ * producer, untrusted captured text cannot reach the store ({@code com.agentmemory.store}, whose
+ * {@code ObservationWriter} accepts only the sanitized type) without being scrubbed — a compile-time
+ * guarantee, backed by an architecture test. The redaction pipeline
+ * ({@link com.agentmemory.hooks.Redactor} / {@link com.agentmemory.hooks.Redactors}) covers
+ * secrets/keys/tokens, emails and home-dir paths, plus configurable custom regexes, and enforces a
+ * deterministic size cap.
+ *
  * <h2>Still scaffolding</h2>
- * The sanitizer (typed privacy boundary, #9) and the {@code /hook} ingress controller (#8) arrive
- * with their own issues.
+ * The {@code /hook} ingress controller (#8) — which builds a {@code NewObservation} from a
+ * {@link com.agentmemory.hooks.HookPayload} and feeds it through the sanitizer — arrives with its own
+ * issue.
  */
 package com.agentmemory.hooks;
