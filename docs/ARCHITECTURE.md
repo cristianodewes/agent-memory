@@ -196,6 +196,19 @@ next session-start ─▶ Go hook fetches + injects handoff ─▶ accept marks 
 | `audit_log` | Every mutation, addressable by `at DESC`. |
 | `pending_writes` | Self-improvement proposals awaiting/approved through the gate. |
 
+**Embedding-dim contract.** The `page_embeddings.embedding` `pgvector` column has a **fixed width of
+1024**, chosen at DDL time to match the default embedder on the embeddings axis (Voyage `voyage-3`,
+`llm.VoyageEmbedder.DEFAULT_DIMENSIONS`; see §2.4, DD-005). This single number is the contract
+`Embedder#dimensions()` must satisfy (invariant #8 keeps `{provider, model, dim}` next to every
+vector). To switch to a different embedding model/width: set the embeddings model + dimensions in
+config, then add a **new** Flyway migration that recreates the column at the new width and rebuilds
+the HNSW index — migrations are append-only, so a released migration is never edited in place.
+
+The FTS arm (`pages_fts`, `observations_fts` above) is implemented as a **generated `tsvector`
+column** (`search_vector`) on `pages` and `observations` plus a GIN index of that name, rather than
+a side table: a generated column is recomputed by Postgres in lockstep with the row, so the index
+can never drift from the data it describes (invariant #3).
+
 ## 5. Integration surface
 
 ### 5.1 MCP tools (hosted on the server `/mcp`)

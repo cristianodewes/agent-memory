@@ -17,8 +17,8 @@ services:
       timeout: 3s
       retries: 10
 
-  # The server does not connect to Postgres yet (that arrives with issue #4).
-  # It is included so `docker compose up` brings the full local stack online.
+  # On boot the server runs the Flyway migrations (issue #4) against this Postgres, then serves.
+  # `docker compose up` brings the full local stack online with a migrated schema.
   server:
     build:
       context: ..
@@ -28,6 +28,11 @@ services:
       # unreachable through the published port. Listen on all interfaces so the
       # mapped 8080 (and the compose-smoke /healthz probe) can reach it.
       AGENT_MEMORY_SERVER_ADDRESS: 0.0.0.0
+      # Point the derived index at the compose Postgres (relaxed-binding of agent-memory.db.*).
+      # Host is the `postgres` service on the compose network; creds match the postgres service.
+      AGENT_MEMORY_DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-agentmemory}
+      AGENT_MEMORY_DB_USERNAME: ${POSTGRES_USER:-agentmemory}
+      AGENT_MEMORY_DB_PASSWORD: ${POSTGRES_PASSWORD:-agentmemory}
       # The LLM is a required dependency (DD-005): the server probes the
       # configured chat provider at startup and FAILS FAST if none is set. Use
       # the deterministic, offline 'test' provider (no API key, no network) so
