@@ -1,5 +1,6 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.recall.RecallService;
@@ -15,8 +16,8 @@ import io.modelcontextprotocol.spec.McpSchema.ServerCapabilities;
 import java.util.ArrayList;
 import java.util.List;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
-import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
 import org.springframework.boot.web.servlet.ServletRegistrationBean;
@@ -70,6 +71,25 @@ public class McpConfiguration {
     }
 
     /**
+     * The handoff MCP tools (issue #22): begin/accept/cancel over {@link HandoffService}. Built only
+     * when the handoff module is wired — its service is injected through an {@link ObjectProvider}, so
+     * the MCP server still starts (with just the read tools) if handoffs are unavailable.
+     *
+     * @param scopes the shared scope resolver (reused from the read surface).
+     * @param handoff the handoff service, if the handoff module is present.
+     * @return the handoff tools, or {@code null} when no {@link HandoffService} bean exists.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public HandoffTools handoffTools(ScopeResolver scopes, ObjectProvider<HandoffService> handoff) {
+        HandoffService service = handoff.getIfAvailable();
+        if (service == null) {
+            return null;
+        }
+        return new HandoffTools(service, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The admission chain behind the two write tools (issue #20): redaction + versioned store +
      * wiki/git commit + audit, all atomically. DataSource-gated like the rest of the MCP beans.
      */
@@ -115,28 +135,41 @@ public class McpConfiguration {
     }
 
     /**
-     * The MCP server: binds the transport to the tool surface (the read-only tools plus the issue #20
-     * write tools) and advertises tool support. Returned as {@link McpSyncServer} so its lifecycle
-     * (graceful close) is managed by the context.
+     * The MCP server: binds the transport to the full tool surface and advertises tool support.
+     * Registers the read tools ({@link MemoryTools}), the issue #20 write tools
+     * ({@link MemoryWriteTools}), and — when the handoff module is wired — the begin/accept/cancel
+     * handoff tools ({@link HandoffTools}, injected via {@link ObjectProvider} so the server still
+     * starts without them). Returned as {@link McpSyncServer} so its lifecycle (graceful close) is
+     * managed by the context.
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnSingleCandidate(DataSource.class)
     public McpSyncServer mcpSyncServer(
             HttpServletStreamableServerTransportProvider transportProvider,
-            MemoryTools tools, MemoryWriteTools writeTools) {
+            MemoryTools tools,
+            MemoryWriteTools writeTools,
+            ObjectProvider<HandoffTools> handoffTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
+        HandoffTools handoff = handoffTools.getIfAvailable();
+        if (handoff != null) {
+            specs.addAll(handoff.all());
+        }
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")
                 .capabilities(ServerCapabilities.builder().tools(true).build())
                 .instructions(
-                        "agent-memory: recall over and curation of this project's compiled memory. "
-                                + "Read: memory_query for hybrid search, memory_read_page for full "
-                                + "bodies, memory_recent for latest pages, memory_status/memory_briefing "
-                                + "for a project snapshot. Write (only when the user explicitly asks to "
-                                + "remember or delete): memory_write_page creates/updates a durable page, "
-                                + "memory_delete_page removes one by path. Scope defaults to the most "
-                                + "recently active project; pass workspace+project to override.")
+                        "agent-memory: recall over and curation of this project's compiled memory, "
+                                + "plus session handoffs. Read: memory_query for hybrid search, "
+                                + "memory_read_page for full bodies, memory_recent for latest pages, "
+                                + "memory_status/memory_briefing for a project snapshot. Write (only when "
+                                + "the user explicitly asks to remember or delete): memory_write_page "
+                                + "creates/updates a durable page, memory_delete_page removes one by "
+                                + "path. Handoffs: memory_handoff_accept picks up where the previous "
+                                + "agent left off (single-use), memory_handoff_begin opens one "
+                                + "explicitly, memory_handoff_cancel expires a mistaken one. Scope "
+                                + "defaults to the most recently active project; pass workspace+project "
+                                + "to override.")
                 .tools(specs)
                 .build();
     }
