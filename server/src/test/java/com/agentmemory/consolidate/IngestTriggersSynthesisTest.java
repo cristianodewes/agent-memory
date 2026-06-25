@@ -1,6 +1,7 @@
 package com.agentmemory.consolidate;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.ProjectId;
@@ -57,7 +58,7 @@ class IngestTriggersSynthesisTest {
             {
               "title": "Ingest-driven session synthesis",
               "summary": "Wired the consolidation trigger into the ingest path so session-end synthesizes.",
-              "decisions": ["Used an ObservationListener seam to keep hooks decoupled"],
+              "decisions": ["Wired the consolidation trigger via the ingest post-write fan-out"],
               "follow_ups": [],
               "open_questions": [],
               "highlights": ["Synthesis fires from a real captured session-end"]
@@ -143,23 +144,28 @@ class IngestTriggersSynthesisTest {
         SessionId sid = seedSession(s);
         // A couple of prior observations give the synthesis something to summarize.
         seedObservation(s, sid, "user-prompt", "wire the consolidation trigger into ingest");
-        seedObservation(s, sid, "post-tool-use", "added ObservationListener seam and adapter");
+        seedObservation(s, sid, "post-tool-use", "registered the consolidation post-write listener");
 
         Identity sessionPage = Identity.ofPage(
                 WorkspaceId.of(s.ws()), ProjectId.of(s.proj()), SessionSynthesizer.pagePathFor(sid));
         // Pre-condition: no sessions page yet.
         assertThat(pages.readLatest(sessionPage)).isEmpty();
 
-        // Drive the REAL ingest path with the session-end event (this also persists the session-end
-        // observation, then the post-write listener fires synthesis on the ingest worker thread).
+        // Drive the REAL ingest path with the session-end event. This persists the session-end
+        // observation; the post-write listener then fires and DISPATCHES synthesis to its dedicated
+        // executor (off the ingest worker, invariant #5).
         assertThat(ingest.ingest(sessionEndHook(s, sid))).isEqualTo(IngestStatus.ACCEPTED);
+        // awaitIdle only proves the WRITE drained — synthesis runs off-worker, so its completion is not
+        // tracked by inFlight. Poll for the page the off-worker synthesis writes.
         assertThat(ingest.awaitIdle(Duration.ofSeconds(20)))
-                .as("ingest write + synthesis complete on the worker")
-                .isTrue();
+                .as("ingest write drained").isTrue();
 
-        // The sessions/<id>.md page now exists, written by synthesis triggered through ingest.
+        // The sessions/<id>.md page is written by synthesis dispatched through the ingest listener.
+        await().atMost(Duration.ofSeconds(20)).untilAsserted(() ->
+                assertThat(pages.readLatest(sessionPage))
+                        .as("session-end via ingest produced the sessions page").isPresent());
         Optional<PageRecord> latest = pages.readLatest(sessionPage);
-        assertThat(latest).as("session-end via ingest produced the sessions page").isPresent();
+        assertThat(latest).isPresent();
         assertThat(latest.get().page().title()).isEqualTo("Ingest-driven session synthesis");
         assertThat(latest.get().page().path().value()).isEqualTo("sessions/" + sid.value() + ".md");
         assertThat(latest.get().page().body())
@@ -175,11 +181,15 @@ class IngestTriggersSynthesisTest {
         Identity sessionPage = Identity.ofPage(
                 WorkspaceId.of(s.ws()), ProjectId.of(s.proj()), SessionSynthesizer.pagePathFor(sid));
 
-        // A user-prompt event is captured but is NOT a consolidation trigger, so no page is written.
+        // A user-prompt event is captured but is NOT a consolidation trigger, so the listener filters
+        // it on the worker and never dispatches synthesis — no page is written.
         assertThat(ingest.ingest(HookPayload.of(
                 "UserPromptSubmit", sid, WorkspaceId.of(s.ws()), ProjectId.of(s.proj()), Instant.now())))
                 .isEqualTo(IngestStatus.ACCEPTED);
         assertThat(ingest.awaitIdle(Duration.ofSeconds(10))).isTrue();
+        // Settle: give any (erroneously) dispatched off-worker synthesis a chance to write before we
+        // assert nothing was written, so this negative test cannot pass spuriously.
+        Thread.sleep(500);
 
         assertThat(pages.readLatest(sessionPage))
                 .as("a non-triggering kind must not synthesize").isEmpty();

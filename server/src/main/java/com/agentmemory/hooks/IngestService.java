@@ -7,7 +7,6 @@ import com.agentmemory.store.ObservationWriter;
 import jakarta.annotation.PreDestroy;
 import java.time.Duration;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
@@ -46,57 +45,38 @@ public final class IngestService implements AutoCloseable {
 
     private static final Logger log = LoggerFactory.getLogger(IngestService.class);
 
-    /** Bounded backlog of post-write listener tasks; keeps the seam non-blocking yet bounded. */
-    private static final int LISTENER_QUEUE_CAPACITY = 256;
-
     private final Sanitizer sanitizer;
     private final ObservationWriter writer;
-    private final ObservationListener listener; // post-write hook; NO_OP when nothing reacts
     private final ThreadPoolExecutor worker;
-    /**
-     * Dedicated single-thread executor that runs the post-write {@link #listener} OFF the ingest worker
-     * thread, so a slow listener (e.g. an LLM-backed session synthesis, #18) never blocks the queue
-     * drain or the agent's hot path (invariant #5). {@code null} when the listener is a no-op (nothing
-     * to dispatch). One thread keeps listener work serialized and bounded.
-     */
-    private final ThreadPoolExecutor listenerExecutor;
     private final long offerTimeoutMillis;
 
-    /**
-     * Count of in-flight units of work — accepted-but-unwritten events PLUS dispatched-but-unfinished
-     * listener tasks — so {@link #awaitIdle} can block until both the writes and their post-write
-     * side effects have settled.
-     */
+    /** Count of events accepted but not yet fully written, so tests can await a quiescent pipeline. */
     private final AtomicLong inFlight = new AtomicLong();
 
     /**
-     * Spring entry point with no post-write listener (the default when nothing reacts to capture).
+     * Post-write listeners (issue #22): each is invoked on the single worker thread after every
+     * observation is durably written, off the HTTP hot path and outside the write transaction. The
+     * handoff trigger uses one to synthesize a handoff when a {@code session-end} lands; session
+     * consolidation (#18/#32) attaches another to the same fan-out. A {@link CopyOnWriteArrayList}
+     * because listeners are registered from other threads at startup and iterated on the worker; a
+     * throwing listener is caught per-listener so one never stalls the worker or the others.
+     */
+    private final java.util.List<java.util.function.Consumer<com.agentmemory.core.Observation>>
+            postWriteListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /**
+     * Spring entry point.
      *
      * @param config    resolved server config; its {@code ingest()} block tunes the queue.
      * @param sanitizer the privacy boundary (#9) — the only producer of a storable observation.
      * @param writer    the single writer (#4) the worker drains to.
      */
     public IngestService(AgentMemoryConfig config, Sanitizer sanitizer, ObservationWriter writer) {
-        this(config.ingest(), sanitizer, writer, ObservationListener.NO_OP);
+        this(config.ingest(), sanitizer, writer);
     }
 
     /**
-     * Spring entry point with an optional post-write {@link ObservationListener} (issue #18: session
-     * consolidation reacts to {@code session-end}/{@code pre-compact} captures).
-     *
-     * @param config    resolved server config; its {@code ingest()} block tunes the queue.
-     * @param sanitizer the privacy boundary (#9) — the only producer of a storable observation.
-     * @param writer    the single writer (#4) the worker drains to.
-     * @param listener  the post-write hook, or {@code null} for none.
-     */
-    public IngestService(
-            AgentMemoryConfig config, Sanitizer sanitizer, ObservationWriter writer,
-            ObservationListener listener) {
-        this(config.ingest(), sanitizer, writer, listener);
-    }
-
-    /**
-     * Direct constructor with no post-write listener (test-friendly: no Spring context).
+     * Direct constructor (test-friendly: no Spring context).
      *
      * @param ingest    queue capacity + offer timeout.
      * @param sanitizer the privacy boundary.
@@ -104,23 +84,8 @@ public final class IngestService implements AutoCloseable {
      */
     public IngestService(
             AgentMemoryProperties.Ingest ingest, Sanitizer sanitizer, ObservationWriter writer) {
-        this(ingest, sanitizer, writer, ObservationListener.NO_OP);
-    }
-
-    /**
-     * Direct constructor with an optional post-write listener (test-friendly: no Spring context).
-     *
-     * @param ingest    queue capacity + offer timeout.
-     * @param sanitizer the privacy boundary.
-     * @param writer    the single writer.
-     * @param listener  the post-write hook, or {@code null} for none.
-     */
-    public IngestService(
-            AgentMemoryProperties.Ingest ingest, Sanitizer sanitizer, ObservationWriter writer,
-            ObservationListener listener) {
         this.sanitizer = sanitizer;
         this.writer = writer;
-        this.listener = listener == null ? ObservationListener.NO_OP : listener;
         this.offerTimeoutMillis = ingest.offerTimeoutMillis();
         // One worker thread guarantees serialized writes; the bounded queue gives backpressure. The
         // AbortPolicy is unused because we offer to the queue explicitly and translate a full queue
@@ -137,25 +102,6 @@ public final class IngestService implements AutoCloseable {
                     return t;
                 },
                 new ThreadPoolExecutor.AbortPolicy());
-        // A separate single-thread executor for post-write listeners, so synthesis (or any reaction)
-        // runs off the ingest worker and cannot stall the drain. Only created when there is a real
-        // listener; a no-op needs no thread. A bounded queue + AbortPolicy keeps it from growing
-        // unbounded — an overflowing listener backlog drops the task (best-effort; #18 synthesis is
-        // idempotent and re-fires on the next trigger) rather than blocking ingest.
-        this.listenerExecutor = this.listener == ObservationListener.NO_OP
-                ? null
-                : new ThreadPoolExecutor(
-                        1,
-                        1,
-                        0L,
-                        TimeUnit.MILLISECONDS,
-                        new ArrayBlockingQueue<>(LISTENER_QUEUE_CAPACITY),
-                        r -> {
-                            Thread t = new Thread(r, "agent-memory-ingest-listener");
-                            t.setDaemon(true);
-                            return t;
-                        },
-                        new ThreadPoolExecutor.AbortPolicy());
     }
 
     /**
@@ -201,14 +147,8 @@ public final class IngestService implements AutoCloseable {
 
     private void runWrite(Sanitized<NewObservation> sanitized) {
         try {
-            writer.append(sanitized);
-            // Hand the post-write listener (#18 session consolidation) off to its own executor — only
-            // after a successful write. Dispatching (not running) it here keeps the ingest worker free
-            // to drain the next event immediately, so a slow listener (an LLM call) can never stall the
-            // queue or the agent's hot path (invariant #5). The dispatch increments inFlight for the
-            // listener task BEFORE this method's finally decrements the write's count, so awaitIdle
-            // never sees a transient zero between the write finishing and the listener starting.
-            dispatchListener(sanitized.value());
+            com.agentmemory.core.Observation persisted = writer.append(sanitized);
+            notifyPostWrite(persisted);
         } catch (RuntimeException e) {
             // A write failure must not kill the single worker thread (that would stall all ingest).
             // Log and drop; the client's spool still holds the event and a later drain retries it.
@@ -219,35 +159,35 @@ public final class IngestService implements AutoCloseable {
         }
     }
 
-    /**
-     * Submit the post-write listener call to the dedicated listener executor (off the ingest worker).
-     * Best-effort and bounded: if the listener backlog is saturated the task is dropped (logged), not
-     * blocked — #18 synthesis is idempotent and re-fires on the next trigger. A no-op listener has no
-     * executor and nothing is dispatched. The task accounts itself in {@link #inFlight} so
-     * {@link #awaitIdle} waits for it.
-     */
-    private void dispatchListener(NewObservation observation) {
-        if (listenerExecutor == null) {
-            return; // no-op listener: nothing to dispatch
+    /** Fire each post-write listener; a listener failure is logged, never propagated to the others. */
+    private void notifyPostWrite(com.agentmemory.core.Observation persisted) {
+        if (persisted == null || postWriteListeners.isEmpty()) {
+            return;
         }
-        inFlight.incrementAndGet(); // balanced in the task's finally (or below if it never starts)
-        try {
-            listenerExecutor.execute(() -> {
-                try {
-                    listener.onObservationWritten(observation);
-                } catch (RuntimeException e) {
-                    log.warn("post-write listener failed for session {} ({}); ingest unaffected: {}",
-                            observation.sessionId(), observation.kind(), e.toString());
-                } finally {
-                    inFlight.decrementAndGet();
-                }
-            });
-        } catch (RejectedExecutionException reject) {
-            // Listener backlog full (or shutting down): drop this notification rather than block ingest.
-            inFlight.decrementAndGet();
-            log.warn("post-write listener backlog saturated; dropped notification for session {} ({}) "
-                    + "(will re-fire on the next trigger): {}",
-                    observation.sessionId(), observation.kind(), reject.toString());
+        for (java.util.function.Consumer<com.agentmemory.core.Observation> listener : postWriteListeners) {
+            try {
+                listener.accept(persisted);
+            } catch (RuntimeException e) {
+                // The capture already succeeded and is durable; a downstream reaction (e.g. handoff
+                // synthesis or session consolidation) failing must not affect ingest or the other
+                // listeners. Log and move on.
+                log.warn("post-write listener {} failed for observation {}: {}",
+                        listener.getClass().getName(), persisted.id().value(), e.toString());
+            }
+        }
+    }
+
+    /**
+     * Register a post-write listener (issue #22). Each is invoked on the single worker thread after
+     * every successful write, off the HTTP path and outside the write transaction. Multiple listeners
+     * fan out independently (e.g. handoff synthesis and session consolidation), in registration order;
+     * a {@code null} is ignored.
+     *
+     * @param listener the post-write reaction to add.
+     */
+    public void addPostWriteListener(java.util.function.Consumer<com.agentmemory.core.Observation> listener) {
+        if (listener != null) {
+            postWriteListeners.add(listener);
         }
     }
 
@@ -298,30 +238,18 @@ public final class IngestService implements AutoCloseable {
         return p == null ? "<null>" : String.valueOf(p.event());
     }
 
-    /**
-     * Drain and stop the executors on shutdown so in-flight work is not lost abruptly. The writer
-     * worker is drained first (its tasks dispatch listener work), then the listener executor (so an
-     * in-flight synthesis can finish). Each is bounded by a short grace period.
-     */
+    /** Drain and stop the worker on shutdown so in-flight writes are not lost abruptly. */
     @PreDestroy
     @Override
     public void close() {
-        shutdownGracefully(worker);
-        if (listenerExecutor != null) {
-            shutdownGracefully(listenerExecutor);
-        }
-    }
-
-    /** Stop an executor, waiting briefly for in-flight tasks before forcing termination. */
-    private static void shutdownGracefully(ThreadPoolExecutor executor) {
-        executor.shutdown();
+        worker.shutdown();
         try {
-            if (!executor.awaitTermination(5, TimeUnit.SECONDS)) {
-                executor.shutdownNow();
+            if (!worker.awaitTermination(5, TimeUnit.SECONDS)) {
+                worker.shutdownNow();
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            executor.shutdownNow();
+            worker.shutdownNow();
         }
     }
 }
