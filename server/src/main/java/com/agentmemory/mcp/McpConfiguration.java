@@ -5,6 +5,7 @@ import com.agentmemory.consolidate.MemoryExplore;
 import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
+import com.agentmemory.recall.CrossProjectRecallService;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.SlotsReader;
@@ -66,10 +67,11 @@ public class McpConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public MemoryTools memoryTools(
-            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes,
-            SlotsReader slots) {
+            RecallService recall, CrossProjectRecallService crossRecall, PageRepository pages,
+            McpReadRepository reads, ScopeResolver scopes, SlotsReader slots) {
         return new MemoryTools(
-                recall, pages, reads, scopes, slots, new McpJson(JsonMapper.builder().build()));
+                recall, crossRecall, pages, reads, scopes, slots,
+                new McpJson(JsonMapper.builder().build()));
     }
 
     /**

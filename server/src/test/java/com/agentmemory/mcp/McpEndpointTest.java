@@ -250,6 +250,69 @@ class McpEndpointTest {
         assertThat(top.get("rank").asInt()).isEqualTo(1);
     }
 
+    /** Seed two sibling projects (alpha, beta) in a fresh workspace, each with a page carrying {@code token}. */
+    private String seedCrossProjectCorpus(String token) {
+        String ws = "ws" + UUID.randomUUID().toString().replace("-", "");
+        UUID wsId = UUID.randomUUID();
+        jdbc().update("INSERT INTO workspaces (id, slug) VALUES (?, ?)", wsId, ws);
+        seedProjectPage(wsId, ws, "alpha", "concepts/a.md", "Alpha page", "alpha covers " + token);
+        seedProjectPage(wsId, ws, "beta", "concepts/b.md", "Beta page", "beta covers " + token);
+        return ws;
+    }
+
+    private void seedProjectPage(
+            UUID wsId, String ws, String proj, String path, String title, String body) {
+        UUID projId = UUID.randomUUID();
+        jdbc().update("INSERT INTO projects (id, workspace_id, workspace, slug) VALUES (?, ?, ?, ?)",
+                projId, wsId, ws, proj);
+        jdbc().update("INSERT INTO pages (id, workspace_id, project_id, workspace, project, path, "
+                        + "title, body, is_latest, access_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, true, 0)",
+                UUID.randomUUID(), wsId, projId, ws, proj, path, title, body);
+    }
+
+    @Test
+    void memoryQueryAcrossNamedScopesAnnotatesEachHitsOrigin() {
+        String tok = "ztoken" + UUID.randomUUID().toString().replace("-", "");
+        String ws = seedCrossProjectCorpus(tok);
+        JsonNode r = json(call("memory_query", Map.of(
+                "query", tok,
+                "scopes", List.of(
+                        Map.of("workspace", ws, "project", "alpha"),
+                        Map.of("workspace", ws, "project", "beta")))));
+
+        assertThat(r.get("global").asBoolean()).isFalse();
+        assertThat(r.get("scopes")).hasSize(2);
+        assertThat(r.get("hits")).isNotEmpty();
+        // Every hit is annotated with its origin workspace + project, and only the requested ones appear.
+        for (JsonNode h : r.get("hits")) {
+            assertThat(h.get("workspace").asString()).isEqualTo(ws);
+            assertThat(h.get("project").asString()).isIn("alpha", "beta");
+        }
+    }
+
+    @Test
+    void memoryQueryGlobalSearchesEveryProject() {
+        String tok = "ztoken" + UUID.randomUUID().toString().replace("-", "");
+        String ws = seedCrossProjectCorpus(tok);
+        JsonNode r = json(call("memory_query", Map.of("query", tok, "global", true)));
+
+        assertThat(r.get("global").asBoolean()).isTrue();
+        // The nonce keeps other tests' data out, so the global result is exactly alpha + beta here.
+        boolean alpha = false;
+        boolean beta = false;
+        for (JsonNode h : r.get("hits")) {
+            assertThat(h.get("workspace").asString()).isEqualTo(ws);
+            if ("alpha".equals(h.get("project").asString())) {
+                alpha = true;
+            }
+            if ("beta".equals(h.get("project").asString())) {
+                beta = true;
+            }
+        }
+        assertThat(alpha).as("alpha project reached by global query").isTrue();
+        assertThat(beta).as("beta project reached by global query").isTrue();
+    }
+
     // --- memory_read_page --------------------------------------------------------------------------
 
     @Test

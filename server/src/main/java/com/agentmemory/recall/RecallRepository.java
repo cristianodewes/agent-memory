@@ -149,6 +149,24 @@ public class RecallRepository {
                 HEADLINE_OPTS, text, workspace, project, limit);
     }
 
+    // --- scope enumeration (for global cross-project recall, #29) -----------------------------------
+
+    /**
+     * Every {@code (workspace, project)} that currently has at least one latest page — the scope set a
+     * {@code global} cross-project query (issue #29) fans out over. Ordered {@code (workspace, project)}
+     * for a deterministic enumeration. Projects with only superseded/soft-deleted pages are excluded
+     * (nothing recallable lives there).
+     *
+     * @return the distinct latest-page scopes, ordered.
+     */
+    @Transactional(readOnly = true)
+    public List<Scope> allScopes() {
+        return jdbc.query(
+                "SELECT DISTINCT workspace, project FROM pages WHERE is_latest "
+                        + "ORDER BY workspace, project",
+                (rs, n) -> Scope.of(rs.getString("workspace"), rs.getString("project")));
+    }
+
     // --- mapping ------------------------------------------------------------------------------------
 
     /** Maps a page row to a PAGE candidate; the arm's order is the ranking, so score starts at 0. */
