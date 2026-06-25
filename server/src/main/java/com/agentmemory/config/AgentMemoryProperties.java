@@ -126,11 +126,17 @@ public record AgentMemoryProperties(
      *     allow-list, {@code AGENT_MEMORY_AUTH_ALLOWED_HOSTS}). Empty ⇒ only loopback host names are
      *     accepted; a non-loopback bind with an empty list rejects browser requests by Host (the guard).
      *     Compared case-insensitively against the host portion of the {@code Host} header (port ignored).
+     * @param tokenPepper Secret mixed into every per-user token hash (issue #39). Setting it to a
+     *     non-blank value turns on <strong>multi-user mode</strong>: the {@link #token} becomes the
+     *     <em>root</em> token (required for {@code /admin/*}), and per-user tokens (hashed with this
+     *     pepper) authenticate as their own identity for everything else. Blank ⇒ single-user mode
+     *     ({@link #token} alone). {@code AGENT_MEMORY_AUTH_TOKEN_PEPPER}; redacted in {@link #toString()}.
      */
     public record Auth(
             @DefaultValue("false") boolean enabled,
             @DefaultValue("") String token,
-            @DefaultValue List<String> allowedHosts) {
+            @DefaultValue List<String> allowedHosts,
+            @DefaultValue("") String tokenPepper) {
 
         public Auth {
             // Normalize the allow-list to a defensive, lower-cased copy with blanks dropped so the
@@ -146,10 +152,16 @@ public record AgentMemoryProperties(
             return token != null && !token.isBlank();
         }
 
+        /** @return whether multi-user mode is on — i.e. a non-blank {@link #tokenPepper} was configured (#39). */
+        public boolean multiUser() {
+            return tokenPepper != null && !tokenPepper.isBlank();
+        }
+
         @Override
         public String toString() {
             return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>")
-                    + ", allowedHosts=" + allowedHosts + "]";
+                    + ", allowedHosts=" + allowedHosts
+                    + ", tokenPepper=" + (multiUser() ? "***" : "<none>") + "]";
         }
     }
 
