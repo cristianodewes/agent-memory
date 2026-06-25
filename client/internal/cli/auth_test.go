@@ -58,7 +58,7 @@ func TestAuthLoginDeviceRequiresIssuerAndClientID(t *testing.T) {
 // cobra command, then proves the credential was persisted where the native hook's fallback reads it
 // (oidc.AccessToken) — i.e. obtained, stored, and attachable.
 func TestAuthLoginDeviceEndToEnd(t *testing.T) {
-	idp := startMockIdP(t)
+	idp := startMockIDP(t)
 	dir := t.TempDir()
 
 	// Inject the mock IdP's HTTP client + a no-op poll sleeper into the command's device client.
@@ -130,8 +130,8 @@ func TestAuthStatusWhenNotLoggedIn(t *testing.T) {
 
 // --- mock IdP ------------------------------------------------------------------------------------
 
-// startMockIdP serves a minimal RFC 8628 device grant that issues a token on the first token poll.
-func startMockIdP(t *testing.T) *httptest.Server {
+// startMockIDP serves a minimal RFC 8628 device grant that issues a token on the first token poll.
+func startMockIDP(t *testing.T) *httptest.Server {
 	t.Helper()
 	var base string
 	mux := http.NewServeMux()

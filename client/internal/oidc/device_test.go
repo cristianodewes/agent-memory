@@ -14,10 +14,10 @@ import (
 	"time"
 )
 
-// mockIdP is a minimal RFC 8628 device-grant IdP for tests: a discovery document, a device-auth
+// mockIDP is a minimal RFC 8628 device-grant IdP for tests: a discovery document, a device-auth
 // endpoint, and a token endpoint whose first calls return authorization_pending / slow_down before it
 // finally issues a token — exercising the full poll state machine.
-type mockIdP struct {
+type mockIDP struct {
 	server   *httptest.Server
 	clientID string
 
@@ -32,9 +32,9 @@ type mockIdP struct {
 	accessToken    string
 }
 
-func newMockIdP(t *testing.T, pending, slowDown int) *mockIdP {
+func newMockIDP(t *testing.T, pending, slowDown int) *mockIDP {
 	t.Helper()
-	idp := &mockIdP{
+	idp := &mockIDP{
 		clientID:      "device-client",
 		pendingCalls:  pending,
 		slowDownCalls: slowDown,
@@ -114,7 +114,7 @@ func noSleep(ctx context.Context, _ time.Duration) error {
 }
 
 func TestLoginDeviceGrantHappyPath(t *testing.T) {
-	idp := newMockIdP(t, 2, 1) // 2 pending, then 1 slow_down, then success
+	idp := newMockIDP(t, 2, 1) // 2 pending, then 1 slow_down, then success
 	var prompt strings.Builder
 	client := NewClient(
 		WithHTTPClient(idp.server.Client()),
@@ -169,7 +169,7 @@ func TestLoginDeviceGrantHappyPath(t *testing.T) {
 }
 
 func TestLoginUsesExplicitEndpointsWithoutDiscovery(t *testing.T) {
-	idp := newMockIdP(t, 0, 0)
+	idp := newMockIDP(t, 0, 0)
 	// Point discovery at a dead URL to prove it is never consulted when endpoints are pinned.
 	client := NewClient(WithHTTPClient(idp.server.Client()), WithSleeper(noSleep), WithOutput(io.Discard))
 	creds, err := client.Login(context.Background(), LoginRequest{
