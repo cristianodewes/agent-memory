@@ -24,7 +24,7 @@ class AgentMemoryConfigTest {
                 new AgentMemoryProperties.Db("jdbc:postgresql://localhost/db", "u", ""),
                 new AgentMemoryProperties.Llm(ProviderAuth.NONE),
                 new AgentMemoryProperties.Embeddings(ProviderAuth.NONE),
-                new AgentMemoryProperties.Auth(false, ""),
+                new AgentMemoryProperties.Auth(false, "", java.util.List.of()),
                 new AgentMemoryProperties.Sanitization(65536, java.util.List.of()),
                 new AgentMemoryProperties.Ingest(1024, 0),
                 new AgentMemoryProperties.Decay(0.02, 1.0, 0.01, 1.0, 0.05, 30, 7));
@@ -126,6 +126,27 @@ class AgentMemoryConfigTest {
         assertThatThrownBy(() -> AgentMemoryConfig.resolve(propsWithDataDir(target.toString())))
                 .isInstanceOf(ConfigException.class)
                 .hasMessageContaining("Could not create data dir");
+    }
+
+    // --- auth fail-fast (#38) ------------------------------------------------------------------
+
+    @Test
+    void failsFastWhenAuthEnabledWithoutToken() {
+        // Enabling auth but leaving the token blank would lock everyone out (or accept a blank token).
+        assertThatThrownBy(() -> AgentMemoryConfig.validateAuth(
+                new AgentMemoryProperties.Auth(true, "", java.util.List.of())))
+                .isInstanceOf(ConfigException.class)
+                .hasMessageContaining("agent-memory.auth.enabled");
+    }
+
+    @Test
+    void authValidationPassesWhenDisabledOrTokenPresent() {
+        assertThatCode(() -> {
+            // Default: disabled, no token.
+            AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(false, "", java.util.List.of()));
+            // Enabled with a token.
+            AgentMemoryConfig.validateAuth(new AgentMemoryProperties.Auth(true, "tok", java.util.List.of()));
+        }).doesNotThrowAnyException();
     }
 
     // --- decay tuning (#24) --------------------------------------------------------------------

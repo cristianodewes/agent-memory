@@ -50,10 +50,13 @@ public final class ProviderFactory {
                 auth -> new OpenAiCompatLlmProvider(OpenAiCompatLlmProvider.PROVIDER_KEY, auth));
         registerLlm(OpenAiCompatLlmProvider.COMPAT_KEY,
                 auth -> new OpenAiCompatLlmProvider(OpenAiCompatLlmProvider.COMPAT_KEY, auth));
+        registerLlm(GeminiLlmProvider.PROVIDER_KEY, GeminiLlmProvider::new);
         registerLlm(TestDoubleProvider.PROVIDER_KEY, auth -> sharedTestDouble);
 
         // --- embedders ---
         registerEmbedder(VoyageEmbedder.PROVIDER_KEY, VoyageEmbedder::new);
+        registerEmbedder(OpenAiEmbedder.PROVIDER_KEY, OpenAiEmbedder::new);
+        registerEmbedder(GoogleEmbedder.PROVIDER_KEY, GoogleEmbedder::new);
         registerEmbedder(TestDoubleProvider.PROVIDER_KEY, auth -> sharedTestDouble);
     }
 

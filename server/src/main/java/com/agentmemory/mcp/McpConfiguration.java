@@ -1,5 +1,7 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.consolidate.Consolidator;
+import com.agentmemory.consolidate.MemoryExplore;
 import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
@@ -109,6 +111,32 @@ public class McpConfiguration {
     }
 
     /**
+     * The consolidation MCP tools (issue #19): {@code memory_consolidate} + {@code memory_explore}.
+     * Built only when the consolidate module is wired — its {@link Consolidator} and
+     * {@link MemoryExplore} live in {@code ConsolidateConfiguration} (ordered after this), so they are
+     * injected through {@link ObjectProvider}s and resolved on demand when the MCP server is assembled;
+     * the server still starts without them.
+     *
+     * @param scopes      the shared scope resolver.
+     * @param consolidator the LLM multi-page consolidation orchestrator, if present.
+     * @param explore     the prose-digest service, if present.
+     * @return the consolidation tools, or {@code null} when the consolidate beans are absent.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public ConsolidationTools consolidationTools(
+            ScopeResolver scopes,
+            ObjectProvider<Consolidator> consolidator,
+            ObjectProvider<MemoryExplore> explore) {
+        Consolidator c = consolidator.getIfAvailable();
+        MemoryExplore e = explore.getIfAvailable();
+        if (c == null || e == null) {
+            return null;
+        }
+        return new ConsolidationTools(c, e, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The {@code memory_forget_sweep} tool (issue #25). Built here (where the package-private
      * {@link McpJson} helper lives) over the {@link com.agentmemory.forget.ForgetSweepService} bean
      * wired by {@code ForgetConfiguration}. DataSource-gated like the rest.
@@ -161,13 +189,18 @@ public class McpConfiguration {
             MemoryTools tools,
             MemoryWriteTools writeTools,
             MemorySweepTools sweepTools,
-            ObjectProvider<HandoffTools> handoffTools) {
+            ObjectProvider<HandoffTools> handoffTools,
+            ObjectProvider<ConsolidationTools> consolidationTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
         specs.addAll(sweepTools.all());
         HandoffTools handoff = handoffTools.getIfAvailable();
         if (handoff != null) {
             specs.addAll(handoff.all());
+        }
+        ConsolidationTools consolidation = consolidationTools.getIfAvailable();
+        if (consolidation != null) {
+            specs.addAll(consolidation.all());
         }
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")
@@ -176,11 +209,13 @@ public class McpConfiguration {
                         "agent-memory: recall over and curation of this project's compiled memory, "
                                 + "plus session handoffs. Read: memory_query for hybrid search, "
                                 + "memory_read_page for full bodies, memory_recent for latest pages, "
-                                + "memory_status/memory_briefing for a project snapshot. Write (only when "
-                                + "the user explicitly asks to remember or delete): memory_write_page "
-                                + "creates/updates a durable page, memory_delete_page removes one by "
-                                + "path. Maintenance: memory_forget_sweep evicts cold pages (soft-delete "
-                                + "then purge; pass dry_run=true to preview). Handoffs: "
+                                + "memory_status/memory_briefing for a project snapshot, memory_explore "
+                                + "for a prose digest. Write (only when the user explicitly asks to "
+                                + "remember or delete): memory_write_page creates/updates a durable "
+                                + "page, memory_delete_page removes one by path, memory_consolidate "
+                                + "compiles a session's durable knowledge into pages (multi_page fans "
+                                + "out atomically). Maintenance: memory_forget_sweep evicts cold pages "
+                                + "(soft-delete then purge; pass dry_run=true to preview). Handoffs: "
                                 + "memory_handoff_accept picks up where the previous agent left off "
                                 + "(single-use), memory_handoff_begin opens one explicitly, "
                                 + "memory_handoff_cancel expires a mistaken one. Setup: "

@@ -347,6 +347,9 @@ class McpEndpointTest {
         assertThat(r.get("pages").asLong()).isEqualTo(1);
         assertThat(r.get("observationsLast7Days").asLong()).isEqualTo(1);
         assertThat(r.get("observationsLast30Days").asLong()).isEqualTo(1);
+        // Inbound dependents (#28): the lone seeded page has no inbound links -> 0, but the field is
+        // present so a client can show how much other memory depends on this project.
+        assertThat(r.get("dependents").asLong()).isEqualTo(0);
         assertThat(r.get("rules").isArray()).isTrue();
         assertThat(r.get("slots").isArray()).isTrue();
         assertThat(r.get("recent")).isNotEmpty();

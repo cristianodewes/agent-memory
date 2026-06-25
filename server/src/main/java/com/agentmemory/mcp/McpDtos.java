@@ -91,6 +91,7 @@ final class McpDtos {
             long observations,
             long sessions,
             long links,
+            long dependents,
             long observationsLast7Days,
             long observationsLast30Days,
             List<String> rules,

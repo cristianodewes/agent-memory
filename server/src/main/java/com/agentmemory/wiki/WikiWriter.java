@@ -73,6 +73,66 @@ public final class WikiWriter {
     }
 
     /**
+     * Render, atomically write, and commit <em>several</em> page documents as a single git commit
+     * (issue #19 atomic multi-page fan-out). Every file is written to disk first, then all are staged
+     * and committed together via {@link WikiGit#stageAndCommit(String, Iterable)} so the fan-out lands
+     * as one commit (all-or-nothing at the git layer). Intended to be called from inside the store's
+     * write transaction (after the page rows are inserted) so the rows, the files, and the one commit
+     * are one logical operation; a failure here throws and rolls the rows back.
+     *
+     * <p><strong>File cleanup on failure.</strong> If a later file write (or the commit) throws after
+     * earlier files were already written, the files written by <em>this</em> call are best-effort
+     * removed before the exception propagates, so a rolled-back transaction does not leave orphan files
+     * on disk that a later reindex would resurrect. (Pre-existing versions are restored by the wiki's
+     * git history / a reindex; this method only cleans up what it just wrote.)
+     *
+     * @param documents     the pages to write; never null. Empty ⇒ no-op, returns empty.
+     * @param commitMessage the single git commit message for the whole fan-out.
+     * @return the created commit, or empty when nothing changed (all byte-identical) or no documents.
+     * @throws IOException if an atomic file write fails (after cleaning up files already written).
+     */
+    public Optional<RevCommit> writeAllAndCommit(List<MarkdownDocument> documents, String commitMessage)
+            throws IOException {
+        if (documents == null || documents.isEmpty()) {
+            return Optional.empty();
+        }
+        List<Path> written = new java.util.ArrayList<>(documents.size());
+        try {
+            for (MarkdownDocument document : documents) {
+                Path file = paths.resolve(document.identity());
+                String rendered = document.render();
+                // Record the expectation BEFORE writing so the watcher recognizes the self-write.
+                String expectedHash = AtomicFileWriter.hashOf(rendered);
+                selfWrites.recordWrite(file, expectedHash);
+                String writtenHash = fileWriter.write(file, rendered);
+                if (!writtenHash.equals(expectedHash)) {
+                    selfWrites.recordWrite(file, writtenHash);
+                    throw new IllegalStateException(
+                            "written hash differs from rendered hash for " + file);
+                }
+                written.add(file);
+            }
+            // One commit for the whole fan-out (all staged files, single revision).
+            Optional<RevCommit> commit = git.stageAndCommit(commitMessage, written);
+            log.debug("wiki multi-write {} pages -> {}", documents.size(),
+                    commit.map(RevCommit::getName).orElse("(no change)"));
+            return commit;
+        } catch (IOException | RuntimeException e) {
+            // Roll back the files this call wrote so the rolled-back DB transaction and the wiki do not
+            // drift (best effort; a reindex reconciles anything left behind from a partial git state).
+            for (Path f : written) {
+                try {
+                    selfWrites.forget(f);
+                    java.nio.file.Files.deleteIfExists(f);
+                } catch (IOException cleanup) {
+                    log.warn("failed to clean up partial multi-write file {}: {}", f, cleanup.toString());
+                }
+            }
+            throw e;
+        }
+    }
+
+    /**
      * Delete a page's markdown file from the wiki and commit the removal (issue #20
      * {@code memory_delete_page}). The file is removed from disk and the deletion staged + committed,
      * so the wiki git history (the source of truth, DD-002) records the page being removed and a later

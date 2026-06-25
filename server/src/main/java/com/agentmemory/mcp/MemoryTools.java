@@ -257,7 +257,7 @@ public final class MemoryTools {
                     .stream().map(McpDtos.SlotView::of).toList();
             return json.ok(new McpDtos.BriefingResult(
                     McpDtos.ScopeView.of(scope),
-                    c.pages(), c.observations(), c.sessions(), c.links(),
+                    c.pages(), c.observations(), c.sessions(), c.links(), c.dependents(),
                     reads.observationsInLastDays(scope, 7),
                     reads.observationsInLastDays(scope, 30),
                     reads.latestPathsUnder(scope, "_rules/", 50),
