@@ -1,0 +1,28 @@
+# agent-memory — Cloudflare Tunnel (cloudflared) ingress template.
+#
+# Exposes the loopback-bound agent-memory server over HTTPS WITHOUT opening any
+# inbound port: cloudflared dials OUT to Cloudflare's edge, which terminates TLS at
+# your hostname and routes requests back down the tunnel. Ideal for home/NAT/private
+# hosts. The app itself does NOT terminate TLS (issue #38).
+#
+# Prerequisites (run once):
+#   cloudflared tunnel login
+#   cloudflared tunnel create agent-memory          # prints the <TUNNEL_ID>
+#   cloudflared tunnel route dns agent-memory memory.example.com
+#
+# Then run:
+#   cloudflared tunnel --config ./cloudflared-config.yml run
+#
+# Replace <TUNNEL_ID> and memory.example.com below. Enable auth on the server first
+# (see ./README.md) — a tunnel makes the service reachable from the public internet.
+
+tunnel: <TUNNEL_ID>
+credentials-file: ~/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # Route the public hostname to the agent-memory server on the same host
+  # (plain HTTP, loopback-bound). This hop stays on 127.0.0.1.
+  - hostname: memory.example.com
+    service: http://127.0.0.1:8080
+  # Required catch-all: anything that does not match above gets a 404.
+  - service: http_status:404
