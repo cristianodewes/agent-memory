@@ -159,6 +159,26 @@ public class McpConfiguration {
     }
 
     /**
+     * The {@code memory_auto_improve} tool (issue #30): report + approve/reject over the auto-improve
+     * approval gate ({@link com.agentmemory.autoimprove.AutoImproveGate}, wired by
+     * {@code AutoImproveConfiguration}, ordered after this). Injected via {@link ObjectProvider} so the
+     * MCP server still starts (without this tool) when the auto-improve module is absent.
+     *
+     * @return the auto-improve tools, or {@code null} when no {@link AutoImproveGate} bean exists.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public AutoImproveTools autoImproveTools(
+            ScopeResolver scopes,
+            ObjectProvider<com.agentmemory.autoimprove.AutoImproveGate> gate) {
+        com.agentmemory.autoimprove.AutoImproveGate service = gate.getIfAvailable();
+        if (service == null) {
+            return null;
+        }
+        return new AutoImproveTools(service, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The Streamable-HTTP transport provider (a Jakarta servlet). Built with the Jackson-3 JSON
      * mapper and the {@code /mcp} endpoint.
      */
@@ -200,7 +220,8 @@ public class McpConfiguration {
             MemoryWriteTools writeTools,
             MemorySweepTools sweepTools,
             ObjectProvider<HandoffTools> handoffTools,
-            ObjectProvider<ConsolidationTools> consolidationTools) {
+            ObjectProvider<ConsolidationTools> consolidationTools,
+            ObjectProvider<AutoImproveTools> autoImproveTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
         specs.addAll(sweepTools.all());
@@ -211,6 +232,10 @@ public class McpConfiguration {
         ConsolidationTools consolidation = consolidationTools.getIfAvailable();
         if (consolidation != null) {
             specs.addAll(consolidation.all());
+        }
+        AutoImproveTools autoImprove = autoImproveTools.getIfAvailable();
+        if (autoImprove != null) {
+            specs.addAll(autoImprove.all());
         }
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")
@@ -225,7 +250,9 @@ public class McpConfiguration {
                                 + "page, memory_delete_page removes one by path, memory_consolidate "
                                 + "compiles a session's durable knowledge into pages (multi_page fans "
                                 + "out atomically). Maintenance: memory_forget_sweep evicts cold pages "
-                                + "(soft-delete then purge; pass dry_run=true to preview). Handoffs: "
+                                + "(soft-delete then purge; pass dry_run=true to preview). "
+                                + "memory_auto_improve reports self-improvement proposals and "
+                                + "approves/rejects a held one by id. Handoffs: "
                                 + "memory_handoff_accept picks up where the previous agent left off "
                                 + "(single-use), memory_handoff_begin opens one explicitly, "
                                 + "memory_handoff_cancel expires a mistaken one. Setup: "
