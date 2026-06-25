@@ -3,6 +3,8 @@ package com.agentmemory.autoimprove;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentmemory.core.SessionId;
+import com.agentmemory.eval.EvalGate;
+import com.agentmemory.eval.EvalGateProperties;
 import com.agentmemory.recall.Scope;
 import java.nio.file.Path;
 import java.sql.Timestamp;
@@ -115,7 +117,9 @@ class AutoImproveSchedulerIntegrationTest {
     }
 
     private AutoImproveGate gate(AutoImproveProperties props) {
-        return new AutoImproveGate(pending, (scope, write) -> applied.add(write), props);
+        return new AutoImproveGate(
+                pending, (scope, write) -> applied.add(write), props,
+                new EvalGate(new EvalGateProperties(false, null, null, null, 0, null)));
     }
 
     private static AutoImproveProperties props(int maxAttempts, int maxPerTick) {
