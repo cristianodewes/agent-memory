@@ -805,10 +805,10 @@
 
   // ---- wiring -------------------------------------------------------------------------------
   el("ws-select").addEventListener("change", function () {
-    state.ws = this.value; el("search-input").value = ""; loadProjects().catch(showError);
+    state.ws = this.value; el("search-input").value = ""; chatReset(); loadProjects().catch(showError);
   });
   el("proj-select").addEventListener("change", function () {
-    state.proj = this.value; el("search-input").value = ""; loadTree().catch(showError);
+    state.proj = this.value; el("search-input").value = ""; chatReset(); loadTree().catch(showError);
   });
 
   // ---- chat with your memory (#37) ----------------------------------------------------------
@@ -824,6 +824,17 @@
     el("chat-input").focus();
   }
   function chatClose() { document.body.classList.remove("chat-on"); }
+
+  // A chat is grounded in one project; on a workspace/project switch, drop the old transcript (whose
+  // citations resolve against the old scope and would 404) and re-label an open drawer with the new
+  // scope.
+  function chatReset() {
+    el("chat-msgs").innerHTML = "";
+    if (document.body.classList.contains("chat-on")) {
+      el("chat-scope").textContent =
+        state.proj ? (state.ws + " / " + state.proj) : "(no project selected)";
+    }
+  }
 
   function chatAppend(cls) {
     var msgs = el("chat-msgs");
@@ -877,7 +888,12 @@
         answerEl.textContent += text;
         el("chat-msgs").scrollTop = el("chat-msgs").scrollHeight;
       },
-      function onDone() { finish(); },
+      function onDone() {
+        // A grounded answer can legitimately be empty (no deltas) — replace the pending placeholder so
+        // the bubble never stays stuck on "…".
+        if (answerEl.textContent === "…") answerEl.textContent = "(no answer was generated)";
+        finish();
+      },
       function onError(msg) {
         answerEl.className = "chat-msg assistant chat-err";
         answerEl.textContent = msg || "chat failed";

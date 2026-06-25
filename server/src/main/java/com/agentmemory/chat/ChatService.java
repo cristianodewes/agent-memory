@@ -1,6 +1,8 @@
 package com.agentmemory.chat;
 
 import com.agentmemory.core.Identity;
+import com.agentmemory.core.Page;
+import com.agentmemory.core.PageId;
 import com.agentmemory.core.PagePath;
 import com.agentmemory.llm.ChatMessage;
 import com.agentmemory.llm.ChatRequest;
@@ -37,11 +39,15 @@ import org.slf4j.LoggerFactory;
  *
  * <h2>Read-only (project guardrail)</h2>
  * This service composes <strong>only</strong> {@code RecallService.search},
- * {@code PageRepository.readLatest}, and {@code LlmProvider.chat} — three read/answer operations. It
- * holds no write collaborator (no {@code MemoryWriteService}, no {@code WikiWriter}) and performs no
- * tool-calling, so a chat turn can never create, update, or delete memory. Any write-capable action
- * remains an explicit, separately-audited path (issue #37: "no silent write; browser LLM-mediated
- * writes require guardrails").
+ * {@code PageRepository.readLatest}/{@code findById}, and {@code LlmProvider.chat} — read/answer
+ * operations. It holds no write collaborator (no {@code MemoryWriteService}, no {@code WikiWriter})
+ * and performs no tool-calling, so a chat turn can never <em>create, update, or delete</em> memory:
+ * no page or observation is ever written. Any such write-capable action remains an explicit,
+ * separately-audited path (issue #37: "no silent write; browser LLM-mediated writes require
+ * guardrails"). The one incidental write is recall's access-count reinforcement (ARCHITECTURE §3.3):
+ * like {@code /api/v1/search} and MCP {@code memory_query}, searching bumps {@code access_count} on
+ * the hit pages so used knowledge survives the forget sweep — it mutates no content and is the
+ * intended recall behavior, not a chat side effect.
  *
  * <h2>Cost controls</h2>
  * Retrieval is capped at {@link ChatProperties#retrievalK()} hits; the assembled context is bounded by
@@ -104,6 +110,7 @@ public final class ChatService {
             String title;
             String path;
             if (hit.source() == HitSource.PAGE && hit.path() != null) {
+                // Full-text / link-graph page hit: it carries its path and title; read the body by path.
                 Optional<PageRecord> record = readPage(scope, hit.path());
                 if (record.isEmpty()) {
                     // Page was superseded/removed between recall and read; skip rather than fail.
@@ -112,12 +119,25 @@ public final class ChatService {
                 title = hit.title();
                 path = hit.path();
                 excerpt = truncate(record.get().page().body(), perHitChars);
+            } else if (hit.source() == HitSource.PAGE) {
+                // Vector-only page hit (#16): a semantic match the lexical arms missed, so it carries
+                // only its surrogate id (path/title/snippet are null). Resolve the compiled page by id
+                // so it grounds and cites like any other page instead of being rendered as an empty,
+                // mislabeled "raw observation".
+                Optional<PageRecord> record = readPageById(hit.id());
+                if (record.isEmpty()) {
+                    continue;
+                }
+                Page page = record.get().page();
+                title = page.title();
+                path = page.identity().page().value();
+                excerpt = truncate(page.body(), perHitChars);
             } else {
                 // Raw-observation fallback (no compiled page yet): include the snippet as lower-confidence
                 // context, but it is not a citeable page (path stays null).
                 title = hit.title();
                 path = null;
-                excerpt = truncate(stripHtml(hit.snippet()), perHitChars);
+                excerpt = truncate(stripMarks(hit.snippet()), perHitChars);
             }
 
             index++;
@@ -192,6 +212,16 @@ public final class ChatService {
         }
     }
 
+    private Optional<PageRecord> readPageById(String id) {
+        try {
+            return pages.findById(PageId.of(id));
+        } catch (RuntimeException e) {
+            // An unparseable/unknown id from a hit must not break the whole answer; drop this source.
+            log.debug("chat: skipping unresolvable page id '{}': {}", id, e.toString());
+            return Optional.empty();
+        }
+    }
+
     private static void requireQuestion(String question) {
         if (question == null || question.isBlank()) {
             throw new IllegalArgumentException("chat question must not be null or blank");
@@ -208,9 +238,14 @@ public final class ChatService {
         return text.substring(0, max).strip() + "…";
     }
 
-    /** Strip HTML tags (recall snippets are {@code <mark>}-annotated) down to plain text. */
-    private static String stripHtml(String html) {
-        return html == null ? "" : html.replaceAll("<[^>]+>", "");
+    /**
+     * Strip the {@code <mark>} highlight tags a recall snippet carries down to plain text. Only those
+     * literal tags are removed (mirroring {@code RecallInjection}): the surrounding excerpt comes from
+     * Postgres {@code ts_headline}, which does <em>not</em> HTML-escape the source, so a blanket
+     * {@code <[^>]+>} strip would eat legitimate text like {@code List<String>} or {@code x < y}.
+     */
+    private static String stripMarks(String snippet) {
+        return snippet == null ? "" : snippet.replace("<mark>", "").replace("</mark>", "");
     }
 
     /**
