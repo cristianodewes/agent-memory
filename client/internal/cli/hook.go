@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/cristianodewes/agent-memory/client/internal/apiclient"
@@ -27,6 +28,13 @@ import (
 // server cannot hang the agent indefinitely. The drain leaves the spool intact on timeout (nothing
 // lost); the next boundary retries.
 const boundaryDrainTimeout = 15 * time.Second
+
+// recallInjectTimeout bounds the proactive recall call on UserPromptSubmit (#84). Unlike the capture
+// hot path (local disk IO only, invariant #5), this event deliberately makes ONE bounded network call:
+// the server runs LLM query-expansion + rerank, so it needs more than the capture budget but must
+// never hang the prompt. On timeout the call is abandoned and nothing is injected — the prompt is
+// already captured and proceeds regardless.
+const recallInjectTimeout = 5 * time.Second
 
 // newHookCmd builds the `agent-memory hook` command: the native lifecycle hook entry point. It
 // parses the agent's hook JSON from stdin (or --payload), canonicalizes the event kind (#7), appends
@@ -92,6 +100,15 @@ func runHook(cmd *cobra.Command, eventFlag string, raw []byte) error {
 		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, true)
 	case core.KindSessionEnd:
 		runBoundaryDrain(cmd, cfg, sp, id.Workspace, id.Project, false)
+	case core.KindUserPrompt:
+		// Proactive recall injection (#84, closing the recall-gap): pull memory relevant to THIS prompt
+		// and inject it as additional-context. The prompt text is the captured body. Bounded + advisory
+		// — it never blocks or fails the prompt.
+		var prompt string
+		if p.Body != nil {
+			prompt = *p.Body
+		}
+		runRecallInjection(cmd, cfg, id.Workspace, id.Project, prompt)
 	default:
 		// Regular event: no network on the hot path.
 	}
@@ -138,6 +155,34 @@ func runBoundaryDrain(
 		fmt.Fprintf(cmd.ErrOrStderr(),
 			"agent-memory: quarantined %d corrupt spool entr%s\n",
 			res.Quarantined, plural(res.Quarantined))
+	}
+}
+
+// runRecallInjection performs proactive recall injection for a user prompt (#84). It POSTs the prompt
+// to /recall/inject and, when the server returns a non-empty curated block, prints it to STDOUT as
+// Claude Code UserPromptSubmit additional-context so the agent sees relevant memory before it answers.
+//
+// Everything is advisory: an empty prompt, an empty result (low-signal prompt), a timeout, an
+// unwired/missing server, or any transport error logs to stderr (at most) and injects nothing. The
+// prompt is NEVER blocked or failed — capture (the spool append) has already happened and is durable.
+func runRecallInjection(
+	cmd *cobra.Command, cfg config.Config, workspace, project, prompt string) {
+	if strings.TrimSpace(prompt) == "" {
+		return // nothing to recall on (a prompt event with no body) — skip the network call entirely
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), recallInjectTimeout)
+	defer cancel()
+
+	client := apiclient.New(cfg.ServerURL, apiclient.WithToken(cfg.Token))
+	block, err := client.InjectRecall(ctx, workspace, project, prompt)
+	if err != nil {
+		// Advisory: a missing/unwired/slow server must not block or delay the prompt (#84).
+		fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: recall inject:", err)
+		return
+	}
+	if out, ok := hook.UserPromptSubmitAdditionalContext(block); ok {
+		// Emit the recall block on stdout for Claude Code to add to the turn's context.
+		fmt.Fprintln(cmd.OutOrStdout(), string(out))
 	}
 }
 
