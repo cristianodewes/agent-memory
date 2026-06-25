@@ -34,6 +34,11 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newMoveProjectCmd())
 	root.AddCommand(newPurgeProjectCmd())
 	root.AddCommand(newResetCmd())
+	root.AddCommand(newCheckpointsCmd())
+	root.AddCommand(newRestorePageCmd())
+	root.AddCommand(newBackupCmd())
+	root.AddCommand(newRestoreCmd())
+	root.AddCommand(newBootstrapCmd())
 	return root
 }
 
