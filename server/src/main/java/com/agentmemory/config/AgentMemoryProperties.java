@@ -1,5 +1,6 @@
 package com.agentmemory.config;
 
+import java.util.List;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -20,9 +21,10 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param server     HTTP bind + routing settings.
  * @param data       on-disk data directory root.
  * @param db         Postgres connection settings (the derived index).
- * @param llm        chat/consolidation provider stub — full wiring in #6.
- * @param embeddings embeddings provider stub (separate axis from {@link #llm}) — full wiring in #6.
- * @param auth       server auth stub — enforcement in #38.
+ * @param llm          chat/consolidation provider stub — full wiring in #6.
+ * @param embeddings   embeddings provider stub (separate axis from {@link #llm}) — full wiring in #6.
+ * @param auth         server auth stub — enforcement in #38.
+ * @param sanitization privacy-strip tuning (size cap + custom patterns) — boundary in #9.
  */
 @ConfigurationProperties(prefix = "agent-memory")
 public record AgentMemoryProperties(
@@ -31,7 +33,8 @@ public record AgentMemoryProperties(
         @DefaultValue Db db,
         @DefaultValue Llm llm,
         @DefaultValue Embeddings embeddings,
-        @DefaultValue Auth auth) {
+        @DefaultValue Auth auth,
+        @DefaultValue Sanitization sanitization) {
 
     /**
      * HTTP server surface.
@@ -121,6 +124,48 @@ public record AgentMemoryProperties(
         @Override
         public String toString() {
             return "Auth[enabled=" + enabled + ", token=" + (hasToken() ? "***" : "<none>") + "]";
+        }
+    }
+
+    /**
+     * Privacy sanitization tuning (issue #9 / DD-010 / invariant #6). The built-in redactors
+     * (keys/tokens, emails, home-dir paths) are always on; these settings add a size cap and any
+     * site-specific patterns on top.
+     *
+     * @param maxPayloadChars hard cap on a stored observation payload; longer payloads are truncated
+     *     deterministically with a marker. Must be {@code > 0}; defaults to 64 KiB.
+     * @param customPatterns  extra Java regexes whose matches are redacted (e.g. an internal
+     *     employee-id or ticket format). Each must compile; applied after the built-ins.
+     */
+    public record Sanitization(
+            @DefaultValue("65536") int maxPayloadChars,
+            @DefaultValue List<CustomPattern> customPatterns) {
+
+        public Sanitization {
+            if (maxPayloadChars <= 0) {
+                throw new IllegalArgumentException(
+                        "agent-memory.sanitization.max-payload-chars must be > 0, was " + maxPayloadChars);
+            }
+            customPatterns = customPatterns == null ? List.of() : List.copyOf(customPatterns);
+        }
+
+        /**
+         * One configurable redaction pattern.
+         *
+         * @param regex a valid Java regex; every match is replaced. Never null/blank.
+         * @param label short marker label, e.g. {@code "ticket"} → {@code [REDACTED:ticket]};
+         *     defaults to {@code custom}.
+         */
+        public record CustomPattern(String regex, @DefaultValue("custom") String label) {
+            public CustomPattern {
+                if (regex == null || regex.isBlank()) {
+                    throw new IllegalArgumentException(
+                            "agent-memory.sanitization.custom-patterns[].regex must not be blank");
+                }
+                if (label == null || label.isBlank()) {
+                    label = "custom";
+                }
+            }
         }
     }
 }
