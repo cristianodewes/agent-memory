@@ -8,3 +8,4 @@ com.agentmemory.lifecycle.LifecycleConfiguration
 com.agentmemory.web.WebConfiguration
 com.agentmemory.consolidate.ConsolidateConfiguration
 com.agentmemory.links.LinksConfiguration
+com.agentmemory.graph.GraphConfiguration

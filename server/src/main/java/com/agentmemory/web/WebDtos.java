@@ -144,6 +144,7 @@ public final class WebDtos {
             long observations,
             long sessions,
             long links,
+            long dependents,
             long observationsLast7Days,
             long observationsLast30Days,
             List<String> rules,
@@ -156,13 +157,13 @@ public final class WebDtos {
                 List<String> rules, List<String> slots, List<PageSummary> recent) {
             return new BriefingView(
                     ScopeView.of(scope), c.pages(), c.observations(), c.sessions(), c.links(),
-                    last7, last30, rules, slots, recent);
+                    c.dependents(), last7, last30, rules, slots, recent);
         }
     }
 
     /** Memory-health rollup for {@code overview} (lifetime counts + recent activity). */
     public record HealthView(
-            long pages, long observations, long sessions, long links,
+            long pages, long observations, long sessions, long links, long dependents,
             long observationsLast7Days, long observationsLast30Days) {}
 
     /**
@@ -177,18 +178,77 @@ public final class WebDtos {
     public record OverviewView(
             ScopeView scope, Object handoff, BriefingView briefing, HealthView health) {}
 
+    /** One node (a latest page) in the {@code GET /api/v1/graph} response. */
+    public record GraphNodeView(String id, String workspace, String project, String path, String title) {
+        static GraphNodeView of(com.agentmemory.graph.GraphNode n) {
+            return new GraphNodeView(n.id(), n.workspace(), n.project(), n.path(), n.title());
+        }
+    }
+
+    /** One resolved directed edge (a wikilink between two existing pages) in {@code GET /api/v1/graph}. */
+    public record GraphEdgeView(String from, String to, String anchor, boolean crossProject) {
+        static GraphEdgeView of(com.agentmemory.graph.GraphEdge e) {
+            return new GraphEdgeView(e.from(), e.to(), e.anchor(), e.crossProject());
+        }
+    }
+
     /**
-     * The dependency graph for {@code GET /api/v1/graph} — a documented seam for #28. Until the
-     * unified graph endpoint is implemented the API returns an empty, well-typed graph (not a 404) so
-     * a frontend can render "no graph yet" rather than handle a missing route.
-     *
-     * @param nodes the graph nodes (empty until #28).
-     * @param edges the graph edges (empty until #28).
-     * @param note  a human-readable marker that the graph endpoint is a pending seam (#28).
+     * One unresolved wikilink in {@code GET /api/v1/graph} — a forward reference whose target does not
+     * (yet) exist — classified {@code dangling} (stale, a lint signal) vs deferred (recent).
      */
-    public record GraphView(List<Object> nodes, List<Object> edges, String note) {
-        static GraphView pendingSeam() {
-            return new GraphView(List.of(), List.of(), "graph endpoint pending (#28)");
+    public record DanglingRefView(
+            String from, String fromWorkspace, String fromProject, String fromPath,
+            String target, String anchor, long ageSeconds, boolean dangling) {
+        static DanglingRefView of(com.agentmemory.graph.DanglingRef d) {
+            return new DanglingRefView(
+                    d.fromId(), d.fromWorkspace(), d.fromProject(), d.fromPath(),
+                    d.targetId(), d.anchor(), d.ageSeconds(), d.dangling());
+        }
+    }
+
+    /**
+     * The unified dependency graph for {@code GET /api/v1/graph} (issue #28). Edges are the
+     * <strong>resolved</strong> wikilinks in the requested page (so every endpoint is a real node);
+     * unresolved links are reported separately under {@code dangling} (classified stale vs deferred),
+     * the dangling-reference lint. {@code scope} echoes the project filter, or is {@code null} for the
+     * full cross-project graph. The graph is paged by edges: {@code limit}/{@code offset}/
+     * {@code totalEdges} let a client page through a large store, and {@code danglingCount}/
+     * {@code deferredCount} report the unresolved-link totals for the scope independent of the
+     * (capped) {@code dangling} sample.
+     *
+     * @param scope         the project filter echoed back, or {@code null} for cross-project.
+     * @param nodes         the distinct page nodes referenced by {@code edges}.
+     * @param edges         the resolved edges in this page, deterministically ordered.
+     * @param dangling      a capped sample of unresolved links (most stale first), the lint output.
+     * @param limit         the edge page size applied.
+     * @param offset        the zero-based offset of the first edge in this page.
+     * @param totalEdges    the total resolved edges matching the query, across all pages.
+     * @param danglingCount the total stale unresolved links for the scope.
+     * @param deferredCount the total recent (still-deferred) unresolved links for the scope.
+     */
+    public record GraphView(
+            ScopeView scope,
+            List<GraphNodeView> nodes,
+            List<GraphEdgeView> edges,
+            List<DanglingRefView> dangling,
+            int limit,
+            int offset,
+            long totalEdges,
+            long danglingCount,
+            long deferredCount) {
+
+        static GraphView of(
+                Scope scope,
+                com.agentmemory.graph.DependencyGraph g,
+                List<com.agentmemory.graph.DanglingRef> dangling,
+                com.agentmemory.graph.GraphService.Unresolved unresolved) {
+            return new GraphView(
+                    scope == null ? null : ScopeView.of(scope),
+                    g.nodes().stream().map(GraphNodeView::of).toList(),
+                    g.edges().stream().map(GraphEdgeView::of).toList(),
+                    dangling.stream().map(DanglingRefView::of).toList(),
+                    g.limit(), g.offset(), g.totalEdges(),
+                    unresolved.dangling(), unresolved.deferred());
         }
     }
 }

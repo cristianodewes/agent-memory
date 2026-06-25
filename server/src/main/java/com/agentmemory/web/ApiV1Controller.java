@@ -3,6 +3,9 @@ package com.agentmemory.web;
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.PageId;
 import com.agentmemory.core.PagePath;
+import com.agentmemory.graph.DependencyGraph;
+import com.agentmemory.graph.GraphQuery;
+import com.agentmemory.graph.GraphService;
 import com.agentmemory.mcp.McpReadRepository;
 import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
@@ -57,21 +60,26 @@ public class ApiV1Controller {
 
     static final int DEFAULT_LIMIT = 20;
     static final int MAX_LIMIT = 100;
+    static final int DEFAULT_DANGLING_LIMIT = 50;
+    static final int MAX_DANGLING_LIMIT = 500;
 
     private final ObjectProvider<RecallService> recall;
     private final ObjectProvider<PageRepository> pages;
     private final ObjectProvider<McpReadRepository> reads;
     private final ObjectProvider<WebReadRepository> webReads;
+    private final ObjectProvider<GraphService> graphs;
 
     public ApiV1Controller(
             ObjectProvider<RecallService> recall,
             ObjectProvider<PageRepository> pages,
             ObjectProvider<McpReadRepository> reads,
-            ObjectProvider<WebReadRepository> webReads) {
+            ObjectProvider<WebReadRepository> webReads,
+            ObjectProvider<GraphService> graphs) {
         this.recall = recall;
         this.pages = pages;
         this.reads = reads;
         this.webReads = webReads;
+        this.graphs = graphs;
     }
 
     // --- directory: workspaces / projects ------------------------------------------------------
@@ -203,6 +211,7 @@ public class ApiV1Controller {
         WebDtos.BriefingView briefing = buildBriefing(scope, lim);
         WebDtos.HealthView health = new WebDtos.HealthView(
                 briefing.pages(), briefing.observations(), briefing.sessions(), briefing.links(),
+                briefing.dependents(),
                 briefing.observationsLast7Days(), briefing.observationsLast30Days());
         // handoff is a seam (#22): no open handoff is modeled yet, so null until handoffs land.
         return ResponseEntity.ok(new WebDtos.OverviewView(
@@ -242,16 +251,46 @@ public class ApiV1Controller {
         return ResponseEntity.ok(runSearch(Scope.of(s.workspace(), s.project()), body.q(), lim));
     }
 
-    // --- graph (seam for #28) ------------------------------------------------------------------
+    // --- graph (unified cross-project dependency graph, #28) -----------------------------------
 
+    /**
+     * The unified dependency graph (issue #28): the resolved wikilink edges and the page nodes they
+     * touch, plus the dangling-reference lint (unresolved links classified stale vs deferred).
+     *
+     * <p>Cross-project by default; pass <em>both</em> {@code workspace} and {@code project} to narrow
+     * to the edges touching that project (its cross-project edges in or out included). The graph is
+     * paged by edges ({@code limit}/{@code offset}); {@code danglingLimit} caps the lint sample
+     * (default {@value #DEFAULT_DANGLING_LIMIT}, max {@value #MAX_DANGLING_LIMIT}), while the response's
+     * {@code danglingCount}/{@code deferredCount} report the full unresolved totals for the scope.
+     */
     @GetMapping("/graph")
-    public ResponseEntity<?> graph() {
+    public ResponseEntity<?> graph(
+            @RequestParam(required = false) String workspace,
+            @RequestParam(required = false) String project,
+            @RequestParam(required = false) Integer limit,
+            @RequestParam(required = false) Integer offset,
+            @RequestParam(required = false) Integer danglingLimit) {
         if (notWired()) {
             return unavailable();
         }
-        // The unified dependency graph is #28; until then return an empty, well-typed graph rather
-        // than a 404 so a frontend renders "no graph yet" instead of handling a missing route.
-        return ResponseEntity.ok(WebDtos.GraphView.pendingSeam());
+        boolean hasWs = workspace != null && !workspace.isBlank();
+        boolean hasProj = project != null && !project.isBlank();
+        if (hasWs != hasProj) {
+            return ResponseEntity.badRequest().body(error(
+                    "workspace and project must be given together (omit both for the cross-project graph)"));
+        }
+        Scope scope = hasWs ? Scope.of(workspace, project) : null;
+        int lim = clampLimit(limit);
+        int off = clampOffset(offset);
+        int dLim = clampDangling(danglingLimit);
+
+        GraphService gs = graphs.getObject();
+        GraphQuery query = scope == null
+                ? GraphQuery.crossProject(lim, off)
+                : GraphQuery.scoped(scope, lim, off);
+        DependencyGraph g = gs.graph(query);
+        return ResponseEntity.ok(WebDtos.GraphView.of(
+                scope, g, gs.danglingReport(scope, dLim), gs.unresolvedCounts(scope)));
     }
 
     // --- shared helpers ------------------------------------------------------------------------
@@ -281,7 +320,8 @@ public class ApiV1Controller {
         return recall.getIfAvailable() == null
                 || pages.getIfAvailable() == null
                 || reads.getIfAvailable() == null
-                || webReads.getIfAvailable() == null;
+                || webReads.getIfAvailable() == null
+                || graphs.getIfAvailable() == null;
     }
 
     private static ResponseEntity<Object> unavailable() {
@@ -310,5 +350,15 @@ public class ApiV1Controller {
             throw new IllegalArgumentException("offset must be >= 0");
         }
         return offset;
+    }
+
+    private static int clampDangling(Integer limit) {
+        if (limit == null) {
+            return DEFAULT_DANGLING_LIMIT;
+        }
+        if (limit <= 0) {
+            throw new IllegalArgumentException("danglingLimit must be > 0");
+        }
+        return Math.min(limit, MAX_DANGLING_LIMIT);
     }
 }

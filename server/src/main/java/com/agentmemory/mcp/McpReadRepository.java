@@ -61,7 +61,12 @@ public class McpReadRepository {
                 "SELECT count(*) FROM sessions WHERE workspace = ? AND project = ?", ws, proj);
         long links = count(
                 "SELECT count(*) FROM links WHERE source_workspace = ? AND source_project = ?", ws, proj);
-        return new Counts(pages, observations, sessions, links);
+        // Inbound dependents (#28): resolved links from any project pointing AT this project's pages —
+        // how much other memory depends on this project (the complement of the outgoing `links` count).
+        long dependents = count(
+                "SELECT count(*) FROM links WHERE target_resolved AND to_page_id IS NOT NULL "
+                        + "AND target_workspace = ? AND target_project = ?", ws, proj);
+        return new Counts(pages, observations, sessions, links, dependents);
     }
 
     /**
@@ -115,6 +120,8 @@ public class McpReadRepository {
      * @param observations captured observations.
      * @param sessions     capture sessions.
      * @param links        outgoing links from this project's pages.
+     * @param dependents   resolved inbound links targeting this project's pages — how much other
+     *                     memory depends on this project (#28; the complement of {@code links}).
      */
-    public record Counts(long pages, long observations, long sessions, long links) {}
+    public record Counts(long pages, long observations, long sessions, long links, long dependents) {}
 }

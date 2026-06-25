@@ -2,6 +2,13 @@ package com.agentmemory.web;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.core.Identity;
+import com.agentmemory.core.PagePath;
+import com.agentmemory.core.ProjectId;
+import com.agentmemory.core.WorkspaceId;
+import com.agentmemory.links.WikiLinkService;
+import com.agentmemory.store.PageRecord;
+import com.agentmemory.store.PageRepository;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
@@ -51,6 +58,8 @@ class ApiV1ControllerTest {
 
     @LocalServerPort int port;
     @Autowired DataSource dataSource;
+    @Autowired PageRepository pages;
+    @Autowired WikiLinkService links;
 
     private HttpTestClient http;
 
@@ -173,6 +182,7 @@ class ApiV1ControllerTest {
         assertThat(r.get("pages").asLong()).isEqualTo(2);
         assertThat(r.get("observationsLast7Days").asLong()).isEqualTo(1);
         assertThat(r.get("observationsLast30Days").asLong()).isEqualTo(1);
+        assertThat(r.get("dependents").asLong()).isEqualTo(0); // no inbound links seeded (#28)
         assertThat(r.get("rules").isArray()).isTrue();
         assertThat(r.get("rules")).anySatisfy(n -> assertThat(n.asString()).isEqualTo("_rules/no-secrets.md"));
         assertThat(r.get("recent")).isNotEmpty();
@@ -240,15 +250,148 @@ class ApiV1ControllerTest {
         assertThat(r.status()).isEqualTo(400);
     }
 
-    // --- graph seam (#28) --------------------------------------------------------------------------
+    // --- unified dependency graph (#28) ------------------------------------------------------------
+
+    /** A page written through the real writer path with its links maintained, exactly as production. */
+    private PageRecord writeLinked(WorkspaceId ws, String project, String path, String title, String body) {
+        PageRecord rec = pages.create(
+                Identity.ofPage(ws, ProjectId.of(project), PagePath.of(path)), title, body);
+        links.syncPageLinks(rec);
+        return rec;
+    }
+
+    private static WorkspaceId freshWorkspace() {
+        return WorkspaceId.of("ws" + UUID.randomUUID().toString().replace("-", ""));
+    }
+
+    /**
+     * Seed a small two-project corpus in one fresh workspace and return it:
+     * <pre>
+     *   app/concepts/index.md   --[[concepts/recall]]-->     app/concepts/recall.md      (same-project)
+     *   app/concepts/index.md   --[[platform:concepts/auth]]--> platform/concepts/auth.md (cross-project)
+     *   platform/concepts/auth.md --[[concepts/missing]]-->   (unresolved: deferred)
+     * </pre>
+     * Three resolved-edge candidates? No — index has two outgoing resolved edges; auth has one
+     * unresolved (dangling/deferred) link. So 2 resolved edges, 3 nodes, 1 unresolved link.
+     */
+    private WorkspaceId seedGraphCorpus() {
+        WorkspaceId ws = freshWorkspace();
+        // Targets first so the same-project + cross-project links resolve immediately on index's write.
+        writeLinked(ws, "app", "concepts/recall.md", "Recall", "the recall page");
+        writeLinked(ws, "platform", "concepts/auth.md",
+                "Auth", "platform auth; refers to [[concepts/missing]] which does not exist");
+        writeLinked(ws, "app", "concepts/index.md", "Index",
+                "see [[concepts/recall]] and depends on [[platform:concepts/auth]]");
+        return ws;
+    }
 
     @Test
-    void graphIsAnEmptyWellTypedSeam() {
-        JsonNode r = getJson("/api/v1/graph");
-        assertThat(r.get("nodes").isArray()).isTrue();
-        assertThat(r.get("edges").isArray()).isTrue();
-        assertThat(r.get("nodes")).isEmpty();
-        assertThat(r.get("note").asString()).contains("#28");
+    void graphReturnsResolvedEdgesAndNodesAcrossProjects() {
+        WorkspaceId ws = seedGraphCorpus();
+        String w = ws.value();
+        // Scope to this workspace's app project so the shared container's other rows don't leak in.
+        JsonNode r = getJson("/api/v1/graph?workspace=" + w + "&project=app&limit=100");
+
+        // Edges are resolved links only. app/index -> app/recall (same-project) and
+        // app/index -> platform/auth (cross-project). The unresolved [[concepts/missing]] is NOT here.
+        JsonNode edges = r.get("edges");
+        assertThat(edges).hasSize(2);
+        String idx = w + "/app/concepts/index.md";
+        String recall = w + "/app/concepts/recall.md";
+        String auth = w + "/platform/concepts/auth.md";
+        assertThat(edges).anySatisfy(e -> {
+            assertThat(e.get("from").asString()).isEqualTo(idx);
+            assertThat(e.get("to").asString()).isEqualTo(recall);
+            assertThat(e.get("crossProject").asBoolean()).isFalse();
+        });
+        assertThat(edges).anySatisfy(e -> {
+            assertThat(e.get("from").asString()).isEqualTo(idx);
+            assertThat(e.get("to").asString()).isEqualTo(auth);
+            assertThat(e.get("crossProject").asBoolean()).isTrue();
+        });
+
+        // Nodes are exactly the distinct endpoints of those edges (self-contained subgraph).
+        assertThat(r.get("nodes")).extracting(n -> n.get("id").asString())
+                .containsExactlyInAnyOrder(idx, recall, auth);
+        // A node carries its title (hydrated from the latest page).
+        assertThat(r.get("nodes")).anySatisfy(n -> {
+            if (n.get("id").asString().equals(recall)) {
+                assertThat(n.get("title").asString()).isEqualTo("Recall");
+            }
+        });
+        assertThat(r.get("totalEdges").asLong()).isEqualTo(2);
+        assertThat(r.get("scope").get("project").asString()).isEqualTo("app");
+    }
+
+    @Test
+    void graphScopedToProjectIncludesItsCrossProjectEdges() {
+        WorkspaceId ws = seedGraphCorpus();
+        String w = ws.value();
+        // Scoping to "platform" must include the inbound cross-project edge app/index -> platform/auth
+        // (an edge that *touches* the project, even though its source is in app).
+        JsonNode r = getJson("/api/v1/graph?workspace=" + w + "&project=platform&limit=100");
+        String idx = w + "/app/concepts/index.md";
+        String auth = w + "/platform/concepts/auth.md";
+        assertThat(r.get("edges")).singleElement().satisfies(e -> {
+            assertThat(e.get("from").asString()).isEqualTo(idx);
+            assertThat(e.get("to").asString()).isEqualTo(auth);
+            assertThat(e.get("crossProject").asBoolean()).isTrue();
+        });
+        assertThat(r.get("totalEdges").asLong()).isEqualTo(1);
+    }
+
+    @Test
+    void danglingReferenceLintClassifiesStaleVersusDeferred() {
+        WorkspaceId ws = seedGraphCorpus();
+        String w = ws.value();
+        // The corpus has one unresolved link: platform/auth -> concepts/missing. Fresh => deferred.
+        JsonNode fresh = getJson("/api/v1/graph?workspace=" + w + "&project=platform");
+        assertThat(fresh.get("deferredCount").asLong()).isEqualTo(1);
+        assertThat(fresh.get("danglingCount").asLong()).isEqualTo(0);
+        assertThat(fresh.get("dangling")).singleElement().satisfies(d -> {
+            assertThat(d.get("from").asString()).isEqualTo(w + "/platform/concepts/auth.md");
+            assertThat(d.get("target").asString()).isEqualTo(w + "/platform/concepts/missing.md");
+            assertThat(d.get("dangling").asBoolean()).isFalse(); // recent -> deferred
+        });
+
+        // Age the unresolved link past the 7-day staleness cutoff -> it must reclassify as dangling.
+        jdbc().update(
+                "UPDATE links SET created_at = now() - interval '30 days' "
+                        + "WHERE source_workspace = ? AND source_path = ? AND NOT target_resolved",
+                w, "concepts/auth.md");
+        JsonNode stale = getJson("/api/v1/graph?workspace=" + w + "&project=platform");
+        assertThat(stale.get("danglingCount").asLong()).isEqualTo(1);
+        assertThat(stale.get("deferredCount").asLong()).isEqualTo(0);
+        assertThat(stale.get("dangling")).singleElement().satisfies(d ->
+                assertThat(d.get("dangling").asBoolean()).isTrue());
+    }
+
+    @Test
+    void graphEdgesArePaginated() {
+        WorkspaceId ws = seedGraphCorpus(); // 2 resolved edges in app's neighborhood
+        String w = ws.value();
+        String base = "/api/v1/graph?workspace=" + w + "&project=app";
+
+        JsonNode page1 = getJson(base + "&limit=1&offset=0");
+        assertThat(page1.get("edges")).hasSize(1);
+        assertThat(page1.get("limit").asInt()).isEqualTo(1);
+        assertThat(page1.get("totalEdges").asLong()).isEqualTo(2); // full count regardless of page
+
+        JsonNode page2 = getJson(base + "&limit=1&offset=1");
+        assertThat(page2.get("edges")).hasSize(1);
+        assertThat(page2.get("offset").asInt()).isEqualTo(1);
+
+        // Deterministic order => the two pages are disjoint edges.
+        String e1 = page1.get("edges").get(0).get("to").asString();
+        String e2 = page2.get("edges").get(0).get("to").asString();
+        assertThat(e1).isNotEqualTo(e2);
+    }
+
+    @Test
+    void graphWorkspaceWithoutProjectIs400() {
+        // workspace and project must travel together; one without the other is a client error.
+        HttpTestClient.Response r = http.get("/api/v1/graph?workspace=onlythis");
+        assertThat(r.status()).isEqualTo(400);
     }
 
     // --- pagination --------------------------------------------------------------------------------
