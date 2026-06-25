@@ -204,6 +204,15 @@ vector). To switch to a different embedding model/width: set the embeddings mode
 config, then add a **new** Flyway migration that recreates the column at the new width and rebuilds
 the HNSW index — migrations are append-only, so a released migration is never edited in place.
 
+**Vector arm (#16).** The semantic arm ranks latest pages by **cosine distance** using the pgvector
+`<=>` operator against the HNSW `vector_cosine_ops` index, restricted to the active
+`(provider, model)` so vectors from different models never compete. Pages are embedded on the write
+path and via the reindex backfill seam (`recall.PageEmbeddingService`; the seam #14 calls), and the
+ranking is folded into the same RRF fusion as FTS + graph (`recall.VectorArm`). Per DD-005 the arm is
+strictly optional: with no embedder, an unreachable embedder, or a width mismatch, it contributes an
+empty arm and recall degrades to FTS + graph (a one-time degraded-recall warning is logged) — recall
+never fails on embeddings availability.
+
 The FTS arm (`pages_fts`, `observations_fts` above) is implemented as a **generated `tsvector`
 column** (`search_vector`) on `pages` and `observations` plus a GIN index of that name, rather than
 a side table: a generated column is recomputed by Postgres in lockstep with the row, so the index
