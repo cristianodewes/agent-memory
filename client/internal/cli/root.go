@@ -30,6 +30,10 @@ func newRootCmd() *cobra.Command {
 	})
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newReindexCmd())
+	root.AddCommand(newRenameProjectCmd())
+	root.AddCommand(newMoveProjectCmd())
+	root.AddCommand(newPurgeProjectCmd())
+	root.AddCommand(newResetCmd())
 	return root
 }
 

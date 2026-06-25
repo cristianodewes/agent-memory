@@ -3,6 +3,8 @@ package com.agentmemory.store;
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.Link;
 import com.agentmemory.core.PageId;
+import com.agentmemory.core.ProjectId;
+import com.agentmemory.core.WorkspaceId;
 
 /**
  * Writer/maintenance side of the {@code links} table (ARCHITECTURE §4.2; V5). The graph-neighborhood
@@ -77,4 +79,24 @@ public interface LinkRepository {
      * @return the number of link rows whose source identity equals {@code source}.
      */
     long countFrom(Identity source);
+
+    /**
+     * Re-point the denormalized {@code (workspace, project)} slugs of every link that references a
+     * project being renamed or moved (issue #33). Both link endpoints are updated: rows whose
+     * <em>source</em> is in {@code (oldWs, oldProj)} get their {@code source_workspace}/
+     * {@code source_project} rewritten, and rows whose <em>target</em> is in {@code (oldWs, oldProj)}
+     * (cross-project links pointing at the renamed project) get {@code target_workspace}/
+     * {@code target_project} rewritten — so links survive the identity change.
+     *
+     * <p>Only the denormalized slug columns change; {@code from_page_id}/{@code to_page_id} (and thus
+     * {@code target_resolved}) are unaffected because the page-version rows keep their surrogate ids
+     * across a rename/move. Idempotent: re-running with the same new identity is a no-op.
+     *
+     * @param oldWs   the project's current workspace; never null.
+     * @param oldProj the project's current slug; never null.
+     * @param newWs   the project's new workspace (same as old for a pure rename); never null.
+     * @param newProj the project's new slug (same as old for a pure move); never null.
+     * @return the number of link rows updated (source + target rewrites).
+     */
+    int repointProject(WorkspaceId oldWs, ProjectId oldProj, WorkspaceId newWs, ProjectId newProj);
 }
