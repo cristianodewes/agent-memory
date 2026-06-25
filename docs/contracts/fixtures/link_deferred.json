@@ -1,0 +1,14 @@
+{
+  "id": "0190b3e2-1f00-7a00-8000-0000000000c4",
+  "source": {
+    "workspace": "acme",
+    "project": "agent-memory",
+    "path": "concepts/recall.md"
+  },
+  "target": {
+    "workspace": "acme",
+    "project": "agent-memory",
+    "path": "concepts/embeddings.md"
+  },
+  "targetResolved": false
+}
