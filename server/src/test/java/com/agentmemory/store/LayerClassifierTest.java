@@ -14,12 +14,17 @@ import org.junit.jupiter.api.Test;
 class LayerClassifierTest {
 
     @Test
-    void conceptsAndDecisionsAndRulesAreSemantic() {
+    void conceptsDecisionsRulesAndSlotsAreSemantic() {
         assertThat(LayerClassifier.classify(PagePath.of("concepts/recall.md")))
                 .isEqualTo(MemoryLayer.SEMANTIC);
         assertThat(LayerClassifier.classify(PagePath.of("decisions/storage.md")))
                 .isEqualTo(MemoryLayer.SEMANTIC);
         assertThat(LayerClassifier.classify(PagePath.of("_rules/no-secrets.md")))
+                .isEqualTo(MemoryLayer.SEMANTIC);
+        // _slots/ pages are auto-pinned and sweep-exempt (#26): they must be SEMANTIC, never WORKING,
+        // so the session-end working-drop (dropWorkingFromLatest) cannot remove a slot from latest.
+        assertThat(LayerClassifier.classify(PagePath.of("_slots/identity.md")))
+                .as("_slots/ must not be WORKING (auto-pinned, never swept)")
                 .isEqualTo(MemoryLayer.SEMANTIC);
     }
 
