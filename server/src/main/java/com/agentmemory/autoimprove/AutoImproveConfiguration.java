@@ -2,7 +2,10 @@ package com.agentmemory.autoimprove;
 
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.PagePath;
+import com.agentmemory.curate.CuratorService;
+import com.agentmemory.eval.EvalGate;
 import com.agentmemory.mcp.MemoryWriteService;
+import com.agentmemory.store.PageRepository;
 import java.util.List;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
@@ -15,19 +18,25 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Wires the auto-improve loop (issue #30): the {@code pending_writes} repository, the scheduler-state
- * repository (watermark + claims), the approval {@link AutoImproveGate}, and the {@link ProposalApplier}
- * that applies approved proposals through the #19/#20 {@link MemoryWriteService}.
+ * Wires the auto-improve loop (issue #30) end-to-end: the {@code pending_writes} repository, the
+ * scheduler-state repository (watermark + claims), the approval {@link AutoImproveGate} (gated by the #31
+ * {@link EvalGate}), the {@link ProposalApplier} that applies approved proposals through the #19/#20
+ * {@link MemoryWriteService}, and the production {@link ProposalSource} — the #29 {@link CuratorService}
+ * adapter ({@link CuratorProposalSource}).
  *
  * <p>DB-backed beans are gated on a {@link DataSource} ({@link ConditionalOnSingleCandidate}, like the
- * store/MCP modules) so the DB-less smoke context still loads. Ordered after the JDBC and MCP
- * auto-configs so the {@link JdbcTemplate} and {@link MemoryWriteService} exist when the conditions are
- * evaluated. The scheduler tick and the {@code memory_auto_improve} MCP tool are added on top of these
- * beans.
+ * store/MCP modules) so the DB-less smoke context still loads. Ordered after the JDBC, MCP, curator and
+ * eval auto-configs so the {@link JdbcTemplate}, {@link MemoryWriteService}, {@link CuratorService} and
+ * {@link EvalGate} exist when the conditions are evaluated. The scheduler tick and the
+ * {@code memory_auto_improve} MCP tool are added on top of these beans.
  */
 @AutoConfiguration(
         after = JdbcTemplateAutoConfiguration.class,
-        afterName = "com.agentmemory.mcp.McpConfiguration")
+        afterName = {
+            "com.agentmemory.mcp.McpConfiguration",
+            "com.agentmemory.curate.CuratorConfiguration",
+            "com.agentmemory.eval.EvalGateConfiguration"
+        })
 @EnableConfigurationProperties(AutoImproveProperties.class)
 public class AutoImproveConfiguration {
 
@@ -62,10 +71,24 @@ public class AutoImproveConfiguration {
 
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    @ConditionalOnBean({JdbcPendingWriteRepository.class, ProposalApplier.class})
+    @ConditionalOnBean({JdbcPendingWriteRepository.class, ProposalApplier.class, EvalGate.class})
     public AutoImproveGate autoImproveGate(
-            JdbcPendingWriteRepository pending, ProposalApplier applier, AutoImproveProperties props) {
-        return new AutoImproveGate(pending, applier, props);
+            JdbcPendingWriteRepository pending, ProposalApplier applier, AutoImproveProperties props,
+            EvalGate evalGate) {
+        return new AutoImproveGate(pending, applier, props, evalGate);
+    }
+
+    /**
+     * The production {@link ProposalSource}: the #29 {@link CuratorService} adapter ({@link
+     * CuratorProposalSource}). Present only when the curator is wired (its rule engine needs the store +
+     * the #28 graph); otherwise the scheduler has no source and stays inert. Unit tests supply a fake
+     * source directly, so this bean is the only production wiring of the seam.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean({CuratorService.class, PageRepository.class})
+    public ProposalSource curatorProposalSource(CuratorService curator, PageRepository pages) {
+        return new CuratorProposalSource(curator, pages);
     }
 
     /**

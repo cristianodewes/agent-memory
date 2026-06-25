@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.agentmemory.core.SessionId;
+import com.agentmemory.eval.EvalGate;
+import com.agentmemory.eval.EvalGateProperties;
 import com.agentmemory.recall.Scope;
 import java.nio.file.Path;
 import java.time.Instant;
@@ -77,7 +79,13 @@ class AutoImproveGateIntegrationTest {
     private AutoImproveGate gate(boolean requireApproval) {
         AutoImproveProperties props = new AutoImproveProperties(
                 requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null));
-        return new AutoImproveGate(pending, (scope, write) -> applied.add(write), props);
+        return new AutoImproveGate(
+                pending, (scope, write) -> applied.add(write), props, disabledEvalGate());
+    }
+
+    /** An eval gate that is off (no command) — every proposal is SKIPPED, so it never blocks an apply. */
+    private static EvalGate disabledEvalGate() {
+        return new EvalGate(new EvalGateProperties(false, null, null, null, 0, null));
     }
 
     private static Scope freshScope() {
