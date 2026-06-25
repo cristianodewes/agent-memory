@@ -1,8 +1,10 @@
 package com.agentmemory.mcp;
 
+import com.agentmemory.recall.CrossProjectRecallResult;
 import com.agentmemory.recall.RecallHit;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.Scope;
+import com.agentmemory.recall.ScopedRecallHit;
 import com.agentmemory.store.PageRecord;
 import com.agentmemory.wiki.SlotsReader;
 import java.util.List;
@@ -41,6 +43,47 @@ final class McpDtos {
             return new QueryResult(
                     ScopeView.of(scope), r.rawFallback(), r.hits().size(),
                     r.hits().stream().map(QueryHit::of).toList());
+        }
+    }
+
+    /**
+     * One hit in a cross-project {@code memory_query} response (#29): a {@link QueryHit} annotated with
+     * the {@code workspace} + {@code project} it came from, so a caller searching several projects can
+     * tell each hit's origin.
+     */
+    record ScopedQueryHit(
+            String workspace, String project,
+            String source, String id, String path, String title, String kind,
+            double score, int rank, String snippet) {
+        static ScopedQueryHit of(ScopedRecallHit s) {
+            RecallHit h = s.hit();
+            return new ScopedQueryHit(
+                    s.workspace(), s.project(),
+                    h.source().name(), h.id(), h.path(), h.title(), h.kind(),
+                    h.score(), h.rank(), h.snippet());
+        }
+    }
+
+    /**
+     * Cross-project {@code memory_query} result (#29): the scopes searched ({@code global} = every
+     * project), whether the raw fallback fired, and the merged, globally-ranked scope-annotated hits.
+     */
+    record CrossQueryResult(
+            List<ScopeView> scopes, boolean global, boolean rawFallback, int count,
+            List<ScopedQueryHit> hits) {
+        static CrossQueryResult of(CrossProjectRecallResult r) {
+            return build(r, false);
+        }
+
+        static CrossQueryResult global(CrossProjectRecallResult r) {
+            return build(r, true);
+        }
+
+        private static CrossQueryResult build(CrossProjectRecallResult r, boolean global) {
+            return new CrossQueryResult(
+                    r.scopes().stream().map(ScopeView::of).toList(),
+                    global, r.rawFallback(), r.hits().size(),
+                    r.hits().stream().map(ScopedQueryHit::of).toList());
         }
     }
 

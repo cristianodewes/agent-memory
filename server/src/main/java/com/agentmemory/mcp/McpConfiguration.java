@@ -7,6 +7,7 @@ import com.agentmemory.core.ActorResolver;
 import com.agentmemory.handoff.HandoffService;
 import com.agentmemory.hooks.Sanitizer;
 import com.agentmemory.links.WikiLinkService;
+import com.agentmemory.recall.CrossProjectRecallService;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.store.PageRepository;
 import com.agentmemory.wiki.SlotsReader;
@@ -76,10 +77,11 @@ public class McpConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public MemoryTools memoryTools(
-            RecallService recall, PageRepository pages, McpReadRepository reads, ScopeResolver scopes,
-            SlotsReader slots) {
+            RecallService recall, CrossProjectRecallService crossRecall, PageRepository pages,
+            McpReadRepository reads, ScopeResolver scopes, SlotsReader slots) {
         return new MemoryTools(
-                recall, pages, reads, scopes, slots, new McpJson(JsonMapper.builder().build()));
+                recall, crossRecall, pages, reads, scopes, slots,
+                new McpJson(JsonMapper.builder().build()));
     }
 
     /**
@@ -159,6 +161,21 @@ public class McpConfiguration {
     }
 
     /**
+     * The {@code memory_lint} tool (issue #29) over the {@link com.agentmemory.curate.MemoryLintService}
+     * bean wired by {@code CuratorConfiguration}. DataSource-gated and injecting the service directly —
+     * the same shape as {@code memorySweepTools} over the cross-configuration
+     * {@link com.agentmemory.forget.ForgetSweepService} — so it is present in every wired context (the
+     * lint service exists whenever a DataSource + the required LLM do) and absent in the DB-less smoke
+     * context. (A cross-configuration {@code @ConditionalOnBean} would be auto-config-ordering fragile.)
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public LintTools lintTools(
+            com.agentmemory.curate.MemoryLintService lint, ScopeResolver scopes) {
+        return new LintTools(lint, scopes, new McpJson(JsonMapper.builder().build()));
+    }
+
+    /**
      * The Streamable-HTTP transport provider (a Jakarta servlet). Built with the Jackson-3 JSON
      * mapper and the {@code /mcp} endpoint.
      */
@@ -200,7 +217,8 @@ public class McpConfiguration {
             MemoryWriteTools writeTools,
             MemorySweepTools sweepTools,
             ObjectProvider<HandoffTools> handoffTools,
-            ObjectProvider<ConsolidationTools> consolidationTools) {
+            ObjectProvider<ConsolidationTools> consolidationTools,
+            ObjectProvider<LintTools> lintTools) {
         List<SyncToolSpecification> specs = new ArrayList<>(tools.all());
         specs.addAll(writeTools.all());
         specs.addAll(sweepTools.all());
@@ -212,12 +230,18 @@ public class McpConfiguration {
         if (consolidation != null) {
             specs.addAll(consolidation.all());
         }
+        LintTools lints = lintTools.getIfAvailable();
+        if (lints != null) {
+            specs.addAll(lints.all());
+        }
         return McpServer.sync(transportProvider)
                 .serverInfo("agent-memory", "0.0.1")
                 .capabilities(ServerCapabilities.builder().tools(true).build())
                 .instructions(
                         "agent-memory: recall over and curation of this project's compiled memory, "
-                                + "plus session handoffs. Read: memory_query for hybrid search, "
+                                + "plus session handoffs. Read: memory_query for hybrid search (pass "
+                                + "scopes or global=true to search across projects, each hit tagged "
+                                + "with its origin), "
                                 + "memory_read_page for full bodies, memory_recent for latest pages, "
                                 + "memory_status/memory_briefing for a project snapshot, memory_explore "
                                 + "for a prose digest. Write (only when the user explicitly asks to "
@@ -225,7 +249,12 @@ public class McpConfiguration {
                                 + "page, memory_delete_page removes one by path, memory_consolidate "
                                 + "compiles a session's durable knowledge into pages (multi_page fans "
                                 + "out atomically). Maintenance: memory_forget_sweep evicts cold pages "
-                                + "(soft-delete then purge; pass dry_run=true to preview). Handoffs: "
+                                + "(soft-delete then purge; pass dry_run=true to preview), "
+                                + "memory_lint audits a project for rule-based maintenance issues "
+                                + "(cold episodic pages, stale slots, duplicate titles, dangling "
+                                + "cross-project links) plus LLM-found contradictions, and stages a "
+                                + "_lint/ report (dry_run defaults true; contradictions=false for a "
+                                + "zero-cost rule-only run). Handoffs: "
                                 + "memory_handoff_accept picks up where the previous agent left off "
                                 + "(single-use), memory_handoff_begin opens one explicitly, "
                                 + "memory_handoff_cancel expires a mistaken one. Setup: "

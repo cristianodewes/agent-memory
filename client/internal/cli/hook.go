@@ -17,6 +17,7 @@ import (
 	"github.com/cristianodewes/agent-memory/client/internal/hook"
 	"github.com/cristianodewes/agent-memory/client/internal/identity"
 	"github.com/cristianodewes/agent-memory/client/internal/oidc"
+	"github.com/cristianodewes/agent-memory/client/internal/orientation"
 	"github.com/cristianodewes/agent-memory/client/internal/spool"
 	"github.com/spf13/cobra"
 )
@@ -148,9 +149,20 @@ func runBoundaryDrain(
 		res, drainErr, handoffErr = d.OnSessionStart(ctx, fetcher)
 		if handoffErr != nil {
 			// Advisory: a missing/unwired server must not break session start (#23: server-down
-			// resilience). Log and continue with no injection.
+			// resilience). Log and still attempt the orientation sections below.
 			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: handoff fetch:", handoffErr)
-		} else if out, ok := hook.SessionStartAdditionalContext(fetcher.Rendered()); ok {
+		}
+		// Assemble the SessionStart orientation block (#85): the handoff (first, most actionable) plus a
+		// bounded project briefing snapshot so the agent knows what memory it can recall. The briefing is
+		// read-only and advisory — any error omits just that section; each section is optional, and an
+		// empty block emits nothing (a clean no-op).
+		briefing, briefErr := client.GetBriefing(ctx, workspace, project, orientation.RecentLimit)
+		if briefErr != nil {
+			fmt.Fprintln(cmd.ErrOrStderr(), "agent-memory: briefing:", briefErr)
+			briefing = nil
+		}
+		if out, ok := hook.SessionStartAdditionalContext(
+			orientation.Render(fetcher.Rendered(), briefing)); ok {
 			// Emit the injected context on stdout for Claude Code to add to the session.
 			fmt.Fprintln(cmd.OutOrStdout(), string(out))
 		}

@@ -2,6 +2,7 @@ package com.agentmemory.mcp;
 
 import com.agentmemory.core.Identity;
 import com.agentmemory.core.PagePath;
+import com.agentmemory.recall.CrossProjectRecallService;
 import com.agentmemory.recall.RecallHit;
 import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
@@ -36,6 +37,7 @@ import java.util.Optional;
 public final class MemoryTools {
 
     private final RecallService recall;
+    private final CrossProjectRecallService crossRecall;
     private final PageRepository pages;
     private final McpReadRepository reads;
     private final ScopeResolver scopes;
@@ -44,12 +46,14 @@ public final class MemoryTools {
 
     public MemoryTools(
             RecallService recall,
+            CrossProjectRecallService crossRecall,
             PageRepository pages,
             McpReadRepository reads,
             ScopeResolver scopes,
             SlotsReader slots,
             McpJson json) {
         this.recall = recall;
+        this.crossRecall = crossRecall;
         this.pages = pages;
         this.reads = reads;
         this.scopes = scopes;
@@ -136,22 +140,97 @@ public final class MemoryTools {
     // --- memory_query ------------------------------------------------------------------------------
 
     private SyncToolSpecification memoryQuery() {
+        var props = new java.util.LinkedHashMap<String, Object>();
+        props.put("query", McpJson.stringProp("The search text."));
+        props.put("limit", McpJson.intProp("Max hits to return (default 10, max 100)."));
+        props.put("scopes", scopesArrayProp());
+        props.put("global", McpJson.boolProp(
+                "Search EVERY project in the store (cross-project). Overrides workspace/project/scopes; "
+                        + "each hit is annotated with its origin workspace + project."));
         Tool tool = readTool(
                 "memory_query",
-                "Hybrid recall over the project's memory: full-text + link-graph neighborhood fused "
-                        + "with Reciprocal Rank Fusion, with a bounded raw-observation fallback when no "
-                        + "compiled page matches. Returns ranked hits (path, score, rank, snippet).",
-                withScope(Map.of(
-                        "query", McpJson.stringProp("The search text."),
-                        "limit", McpJson.intProp("Max hits to return (default 10, max 100)."))),
+                "Hybrid recall over memory: full-text + link-graph neighborhood fused with Reciprocal "
+                        + "Rank Fusion, with a bounded raw-observation fallback when no compiled page "
+                        + "matches. Returns ranked hits (path, score, rank, snippet). Searches the "
+                        + "current project by default; pass `scopes` (named sibling projects) or "
+                        + "`global=true` (all projects) to search wider — each hit is then annotated "
+                        + "with its origin workspace + project.",
+                withScope(props),
                 List.of("query"));
         return spec(tool, request -> {
             Map<String, Object> args = request.arguments();
             String text = requiredStr(args, "query");
+            int limit = limitArg(args);
+
+            // Cross-project (#29): global wins over an explicit scopes list, which wins over the
+            // single-project default. Isolation is structural — only the requested scopes are searched.
+            if (boolArg(args, "global")) {
+                return json.ok(McpDtos.CrossQueryResult.global(crossRecall.searchGlobal(text, limit)));
+            }
+            List<Scope> requested = parseScopes(args.get("scopes"));
+            if (!requested.isEmpty()) {
+                return json.ok(McpDtos.CrossQueryResult.of(crossRecall.search(text, requested, limit)));
+            }
+
+            // Single-project: explicit workspace+project, or the most-recently-active default (DD-003).
             Scope scope = scopes.resolve(args);
-            RecallResult result = recall.search(new RecallQuery(text, scope, limitArg(args)));
+            RecallResult result = recall.search(new RecallQuery(text, scope, limit));
             return json.ok(McpDtos.QueryResult.of(scope, result));
         });
+    }
+
+    /** JSON-Schema for the {@code scopes} param: an array of {@code { workspace, project }} objects. */
+    private static Map<String, Object> scopesArrayProp() {
+        Map<String, Object> item = McpJson.objectSchema(
+                Map.of(
+                        "workspace", McpJson.stringProp("Workspace slug."),
+                        "project", McpJson.stringProp("Project slug.")),
+                List.of("workspace", "project"));
+        var arr = new java.util.LinkedHashMap<String, Object>();
+        arr.put("type", "array");
+        arr.put("description",
+                "Named sibling projects to search instead of just the current one; each hit is "
+                        + "annotated with its origin workspace + project.");
+        arr.put("items", item);
+        return arr;
+    }
+
+    /** Parse the optional {@code scopes} argument into typed scopes (empty when absent). */
+    private static List<Scope> parseScopes(Object raw) {
+        if (raw == null) {
+            return List.of();
+        }
+        if (!(raw instanceof List<?> list)) {
+            throw new IllegalArgumentException("'scopes' must be an array of { workspace, project }");
+        }
+        List<Scope> out = new java.util.ArrayList<>(list.size());
+        for (Object o : list) {
+            if (!(o instanceof Map<?, ?> m)) {
+                throw new IllegalArgumentException(
+                        "each 'scopes' entry must be an object { workspace, project }");
+            }
+            Object ws = m.get("workspace");
+            Object pr = m.get("project");
+            if (ws == null || pr == null || ws.toString().isBlank() || pr.toString().isBlank()) {
+                throw new IllegalArgumentException(
+                        "each 'scopes' entry needs non-blank 'workspace' and 'project'");
+            }
+            try {
+                out.add(Scope.of(ws.toString(), pr.toString()));
+            } catch (IllegalArgumentException e) {
+                throw new IllegalArgumentException("invalid scope in 'scopes': " + e.getMessage());
+            }
+        }
+        return out;
+    }
+
+    /** Read a boolean tool argument, defaulting to {@code false} when absent. */
+    private static boolean boolArg(Map<String, Object> args, String key) {
+        Object v = args.get(key);
+        if (v == null) {
+            return false;
+        }
+        return (v instanceof Boolean b) ? b : Boolean.parseBoolean(v.toString());
     }
 
     // --- memory_recent -----------------------------------------------------------------------------
