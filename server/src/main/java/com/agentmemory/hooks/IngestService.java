@@ -113,9 +113,24 @@ public final class IngestService implements AutoCloseable {
      *     storable observation.
      */
     public IngestStatus ingest(HookPayload payload) {
+        return ingest(payload, null);
+    }
+
+    /**
+     * Validate, sanitize, and enqueue one hook event, attributing it to {@code actor} (issue #39).
+     *
+     * <p>The actor MUST be resolved by the caller on the request thread (the controller reads the
+     * authenticated principal); the async write worker has no security context. {@code null} is an
+     * unattributed capture (single-user/loopback mode). Everything else matches {@link #ingest(HookPayload)}.
+     *
+     * @param payload the parsed hook payload; never null.
+     * @param actor   the authenticated user who produced the event, or {@code null} if unattributed.
+     * @return the enqueue outcome (see {@link #ingest(HookPayload)}).
+     */
+    public IngestStatus ingest(HookPayload payload, String actor) {
         Sanitized<NewObservation> sanitized;
         try {
-            NewObservation raw = toNewObservation(payload);
+            NewObservation raw = toNewObservation(payload, actor);
             sanitized = sanitizer.sanitize(raw); // privacy strip on the synchronous path (DD-010)
         } catch (RuntimeException e) {
             // Malformed/unassemblable event: reject this item only. In a batch the caller keeps going.
@@ -197,7 +212,7 @@ public final class IngestService implements AutoCloseable {
      * input/response JSON is preserved verbatim (an array {@code toolResponse} is kept intact — the
      * prior-art "Bug A") so nothing is lost before sanitization.
      */
-    private NewObservation toNewObservation(HookPayload p) {
+    private NewObservation toNewObservation(HookPayload p, String actor) {
         Identity identity = Identity.ofProject(p.workspace(), p.project());
         String payloadText = HookPayloadText.flatten(p);
         return new NewObservation(
@@ -208,7 +223,8 @@ public final class IngestService implements AutoCloseable {
                 p.extension(),
                 p.clientEventId(),
                 payloadText,
-                p.timestamp());
+                p.timestamp(),
+                actor);
     }
 
     /**
