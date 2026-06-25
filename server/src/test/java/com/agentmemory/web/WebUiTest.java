@@ -55,6 +55,18 @@ class WebUiTest {
     }
 
     @Test
+    void servedUiUsesNoRawNulSentinel() {
+        // #75: the markdown renderer stashes inline code spans behind a sentinel while it transforms the
+        // rest of the line. That sentinel must be an HTML-safe Private Use Area char (U+E000), never a
+        // raw NUL: the HTML parser maps U+0000 to U+FFFD and may drop it, so a code span that failed to
+        // restore would corrupt the rendered panel. Guard the shipped/served UI against a regression to
+        // a raw control char ((char) 0 is the NUL code point).
+        HttpTestClient.Response r = http.get("/web/index.html");
+        assertThat(r.status()).isEqualTo(200);
+        assertThat(r.body()).doesNotContain(Character.toString((char) 0));
+    }
+
+    @Test
     void bareWebRedirectsToTrailingSlash() {
         // 3xx with Location /web/ so the page's relative "../api/v1" resolves against /web/, not /.
         HttpTestClient.Response r = http.get("/web");

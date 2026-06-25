@@ -453,7 +453,7 @@
     // s is already HTML-escaped. Order matters: code spans first so their contents are literal.
     var codes = [];
     s = s.replace(/`([^`]+)`/g, function (_, c) {
-      codes.push(c); return " " + (codes.length - 1) + " ";
+      codes.push(c); return "\uE000" + (codes.length - 1) + "\uE000";
     });
     s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
          .replace(/(^|[^*])\*([^*]+)\*/g, "$1<em>$2</em>")
@@ -467,7 +467,7 @@
       safe = safe.replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/`/g, "&#96;");
       return '<a href="' + safe + '" rel="noopener noreferrer">' + t + "</a>";
     });
-    s = s.replace(/ (\d+) /g, function (_, i) { return "<code>" + codes[+i] + "</code>"; });
+    s = s.replace(/\uE000(\d+)\uE000/g, function (_, i) { return "<code>" + codes[+i] + "</code>"; });
     return s;
   }
   function renderMarkdown(md) {
