@@ -54,13 +54,15 @@ public final class IngestService implements AutoCloseable {
     private final AtomicLong inFlight = new AtomicLong();
 
     /**
-     * Optional post-write hook (issue #22): invoked on the single worker thread after each observation
-     * is durably written, off the HTTP hot path and outside the write transaction. The handoff trigger
-     * uses it to synthesize a handoff when a {@code session-end} lands. {@code volatile} because it is
-     * set from another thread after construction; a throwing listener is caught so it never stalls the
-     * worker.
+     * Post-write listeners (issue #22): each is invoked on the single worker thread after every
+     * observation is durably written, off the HTTP hot path and outside the write transaction. The
+     * handoff trigger uses one to synthesize a handoff when a {@code session-end} lands; session
+     * consolidation (#18/#32) attaches another to the same fan-out. A {@link CopyOnWriteArrayList}
+     * because listeners are registered from other threads at startup and iterated on the worker; a
+     * throwing listener is caught per-listener so one never stalls the worker or the others.
      */
-    private volatile java.util.function.Consumer<com.agentmemory.core.Observation> postWriteListener;
+    private final java.util.List<java.util.function.Consumer<com.agentmemory.core.Observation>>
+            postWriteListeners = new java.util.concurrent.CopyOnWriteArrayList<>();
 
     /**
      * Spring entry point.
@@ -157,31 +159,36 @@ public final class IngestService implements AutoCloseable {
         }
     }
 
-    /** Fire the optional post-write listener; a listener failure is logged, never propagated. */
+    /** Fire each post-write listener; a listener failure is logged, never propagated to the others. */
     private void notifyPostWrite(com.agentmemory.core.Observation persisted) {
-        java.util.function.Consumer<com.agentmemory.core.Observation> listener = this.postWriteListener;
-        if (listener == null || persisted == null) {
+        if (persisted == null || postWriteListeners.isEmpty()) {
             return;
         }
-        try {
-            listener.accept(persisted);
-        } catch (RuntimeException e) {
-            // The capture already succeeded and is durable; a downstream reaction (e.g. handoff
-            // synthesis) failing must not affect ingest. Log and move on.
-            log.warn("post-write listener failed for observation {}: {}",
-                    persisted.id().value(), e.toString());
+        for (java.util.function.Consumer<com.agentmemory.core.Observation> listener : postWriteListeners) {
+            try {
+                listener.accept(persisted);
+            } catch (RuntimeException e) {
+                // The capture already succeeded and is durable; a downstream reaction (e.g. handoff
+                // synthesis or session consolidation) failing must not affect ingest or the other
+                // listeners. Log and move on.
+                log.warn("post-write listener {} failed for observation {}: {}",
+                        listener.getClass().getName(), persisted.id().value(), e.toString());
+            }
         }
     }
 
     /**
-     * Register the optional post-write listener (issue #22). Invoked on the single worker thread after
-     * each successful write, off the HTTP path and outside the write transaction. At most one listener
-     * is held; a {@code null} clears it.
+     * Register a post-write listener (issue #22). Each is invoked on the single worker thread after
+     * every successful write, off the HTTP path and outside the write transaction. Multiple listeners
+     * fan out independently (e.g. handoff synthesis and session consolidation), in registration order;
+     * a {@code null} is ignored.
      *
-     * @param listener the post-write reaction, or {@code null} to clear.
+     * @param listener the post-write reaction to add.
      */
-    public void setPostWriteListener(java.util.function.Consumer<com.agentmemory.core.Observation> listener) {
-        this.postWriteListener = listener;
+    public void addPostWriteListener(java.util.function.Consumer<com.agentmemory.core.Observation> listener) {
+        if (listener != null) {
+            postWriteListeners.add(listener);
+        }
     }
 
     /**

@@ -21,8 +21,9 @@ import org.springframework.context.annotation.Bean;
  * {@code META-INF/spring/.../AutoConfiguration.imports}) so the repository bean exists when the
  * condition is evaluated.
  *
- * <p>The session-end trigger is attached to the {@link IngestService} as its post-write listener at
- * startup via {@link #handoffSessionEndRegistration}; it fires on the ingest worker thread after a
+ * <p>The session-end trigger is added to the {@link IngestService} as a post-write listener at
+ * startup via {@link #handoffSessionEndRegistration} (the listeners fan out, so it coexists with
+ * session consolidation's trigger, #18/#32); it fires on the ingest worker thread after a
  * {@code session-end} event is captured. The registration depends on an {@code ObjectProvider} so it
  * is a no-op when ingest is absent (DB-less context).
  */
@@ -56,7 +57,7 @@ public class HandoffConfiguration {
             ObjectProvider<IngestService> ingest, SessionEndHandoffTrigger trigger) {
         IngestService service = ingest.getIfAvailable();
         if (service != null) {
-            service.setPostWriteListener(trigger);
+            service.addPostWriteListener(trigger);
         }
         return new HandoffTriggerRegistration(service != null);
     }
