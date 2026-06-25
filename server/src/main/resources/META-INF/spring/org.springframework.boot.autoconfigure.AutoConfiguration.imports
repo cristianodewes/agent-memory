@@ -1,2 +1,3 @@
 com.agentmemory.store.StoreConfiguration
 com.agentmemory.wiki.WikiConfiguration
+com.agentmemory.recall.RecallConfiguration
