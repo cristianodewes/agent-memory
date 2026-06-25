@@ -14,9 +14,10 @@
  *       (single-use consume), {@code cancel} (expire), and {@code peekOpen}.</li>
  *   <li>{@link com.agentmemory.handoff.SessionEndHandoffTrigger} — a {@code Consumer<Observation>}
  *       attached as the ingest pipeline's post-write listener; on a {@code session-end} observation it
- *       calls {@code begin}, so the (slower) LLM call runs on the ingest worker thread, off the HTTP
- *       hot path and outside the write transaction. A generation failure is swallowed: capture is
- *       already durable and a client can still open a handoff explicitly.</li>
+ *       dispatches {@code begin} to its own dedicated single-thread daemon executor (issue #78) so the
+ *       blocking LLM call runs off the ingest worker — off the HTTP hot path, outside the write
+ *       transaction, and without stalling the ingest drain (invariant #5). A generation failure is
+ *       swallowed: capture is already durable and a client can still open a handoff explicitly.</li>
  *   <li>{@link com.agentmemory.handoff.HandoffConfiguration} — wires the service and attaches the
  *       trigger; gated on a {@code DataSource} (like the other store-coupled modules) and ordered
  *       after {@code StoreConfiguration} so the {@link com.agentmemory.store.HandoffRepository} exists.
