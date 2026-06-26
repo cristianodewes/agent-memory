@@ -336,6 +336,33 @@ agent-memory setup-agent --server-url http://127.0.0.1:8080
 Use `agent-memory upgrade` para atualizar a fiação ao binário/config atuais e
 `agent-memory uninstall` para remover tudo.
 
+#### Multi-agente (`--agent` / `--client`)
+
+Por padrão os instaladores miram o **Claude Code**. Passe `--agent <id>` (ou o alias
+`--client <id>`) para mirar outro cliente: cada um recebe o *shape* de hook/MCP que espera, mas
+todos apontam para o **mesmo binário nativo** (`agent-memory hook --event <kind>`) e o **mesmo
+endpoint Streamable-HTTP** em `/mcp` com Bearer — só o que é gravado em cada config muda.
+
+```bash
+agent-memory setup-agent  --agent codex --server-url http://127.0.0.1:8080
+agent-memory install-mcp   --agent cursor
+agent-memory install-hooks --agent gemini-cli
+```
+
+| Cliente (`--agent`) | Hooks | MCP | Instruções |
+|---|---|---|---|
+| `claude-code` (padrão) | `<repo>/.claude/settings.json` (nested) | `<repo>/.mcp.json` — `mcpServers`, `type:http` + `headersHelper` (#87) | `CLAUDE.md` |
+| `codex` | — | `~/.codex/config.toml` — `[mcp_servers.*]` (TOML) | `AGENTS.md` |
+| `cursor` | `~/.cursor/hooks.json` (flat, camelCase) | `~/.cursor/mcp.json` — `mcpServers`, `url` | `AGENTS.md` |
+| `gemini-cli` | `~/.gemini/settings.json` (nested: `BeforeTool`/`AfterTool`/`PreCompress`) | `~/.gemini/settings.json` — `mcpServers`, `httpUrl` | `GEMINI.md` |
+| `vscode-copilot` | — | `<repo>/.vscode/mcp.json` — `servers`, `type:http` | — |
+| `claude-desktop` | — | config global do app — `mcpServers` via `mcp-remote` (stdio) | — |
+
+`setup-agent --agent X` faz hooks + MCP + instruções para `X` numa tacada; uma *surface* que o
+cliente não suporta (ex.: hooks no Codex) é reportada como *unsupported* e ignorada — não é erro.
+Todo merge é idempotente, preserva entradas de terceiros e usa escrita atômica. Plugins TypeScript
+(opencode/omp/openclaw) são fase 2.
+
 > **Em rollout:** um **instalador nativo para Windows** (winget + EXE) e **imagens Docker
 > publicadas no GHCR** via CD em cada *merge* na `main` estão planejados — ver [Roadmap](#roadmap).
 
@@ -504,14 +531,17 @@ acontece pelas **tools MCP** e pela **injeção automática nos hooks** — não
 
 **Instalação / fiação do agente**
 
+Todos aceitam `--agent <id>` / `--client <id>` (default `claude-code`) — ver
+[Multi-agente](#multi-agente---agent----client).
+
 | Comando | Descrição |
 |---|---|
-| `setup-agent` | Instala tudo para o Claude Code: hooks + MCP + instruções (idempotente). |
-| `install-hooks` | Conecta o hook de captura no `.claude/settings.json`. |
-| `install-mcp` | Registra o server MCP no `.mcp.json`. |
-| `install-instructions` | Escreve o *snippet* de *self-routing* no `CLAUDE.md` / `AGENTS.md`. |
+| `setup-agent` | Instala tudo para o agente: hooks + MCP + instruções (idempotente; default Claude Code). |
+| `install-hooks` | Conecta o hook de captura na config de hooks do agente (default `.claude/settings.json`). |
+| `install-mcp` | Registra o server MCP na config de MCP do agente (default `.mcp.json`). |
+| `install-instructions` | Escreve o *snippet* de *self-routing* nas instruções do agente (`CLAUDE.md` / `AGENTS.md` / `GEMINI.md`). |
 | `upgrade` | Atualiza hooks/MCP/instruções para o binário/config atuais. |
-| `uninstall` | Remove hooks, MCP e instruções. |
+| `uninstall` | Remove hooks, MCP e instruções (do agente selecionado). |
 
 **Captura (invocados pelos hooks, normalmente não manuais)**
 
