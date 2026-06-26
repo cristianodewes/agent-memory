@@ -120,10 +120,17 @@ func urlHeadersMCPEntry(serverURL, token string) map[string]any {
 	return entry
 }
 
-// geminiMCPEntry is the Gemini CLI MCP entry: the streamable-HTTP endpoint under httpUrl plus an
-// optional Bearer header.
+// geminiMCPTimeoutMs is the connection timeout Gemini CLI MCP entries carry, mirroring ai-memory's
+// GEMINI_MCP_TIMEOUT_MS (install_mcp.rs).
+const geminiMCPTimeoutMs = 5000
+
+// geminiMCPEntry is the Gemini CLI MCP entry: the streamable-HTTP endpoint under httpUrl, a timeout, plus
+// an optional Bearer header (ai-memory build_mcp_entry McpClient::GeminiCli).
 func geminiMCPEntry(serverURL, token string) map[string]any {
-	entry := map[string]any{"httpUrl": mcpEndpoint(serverURL)}
+	entry := map[string]any{
+		"httpUrl": mcpEndpoint(serverURL),
+		"timeout": geminiMCPTimeoutMs,
+	}
 	if h := bearerHeaders(token); h != nil {
 		entry["headers"] = h
 	}
@@ -143,18 +150,24 @@ func vscodeMCPEntry(serverURL, token string) map[string]any {
 	return entry
 }
 
+// mcpRemoteAuthEnvVar is the environment variable the mcp-remote bridge interpolates into its
+// Authorization header. Carrying the credential in env (not in args) keeps it out of the process
+// command line, mirroring ai-memory's AI_MEMORY_AUTH_HEADER indirection (install_mcp.rs ClaudeDesktop).
+const mcpRemoteAuthEnvVar = "AGENT_MEMORY_AUTH_HEADER"
+
 // mcpRemoteEntry is the Claude Desktop MCP entry: Claude Desktop speaks stdio only, so it bridges to the
-// Streamable-HTTP server via `npx -y mcp-remote <url>`, passing the Bearer token as an HTTP header when
-// present.
+// Streamable-HTTP server via `npx -y mcp-remote <url>`. When a token is present the Authorization header
+// is passed by env-var indirection (`--header Authorization:${VAR}` + an `env` block holding
+// "Bearer <token>"), so the secret never lands in the args/command line.
 func mcpRemoteEntry(serverURL, token string) map[string]any {
 	args := []any{"-y", "mcp-remote", mcpEndpoint(serverURL)}
+	entry := map[string]any{"command": "npx"}
 	if token != "" {
-		args = append(args, "--header", "Authorization: Bearer "+token)
+		args = append(args, "--header", "Authorization:${"+mcpRemoteAuthEnvVar+"}")
+		entry["env"] = map[string]any{mcpRemoteAuthEnvVar: "Bearer " + token}
 	}
-	return map[string]any{
-		"command": "npx",
-		"args":    args,
-	}
+	entry["args"] = args
+	return entry
 }
 
 // upsertMCPJSON idempotently sets root[containerKey][McpServerName] = entry in the JSON file at path,

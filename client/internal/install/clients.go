@@ -103,8 +103,9 @@ type Client struct {
 	Hooks *HookProfile // nil when the client has no hook surface
 	MCP   *MCPProfile  // nil when the client has no MCP surface
 
-	// InstrFile is the agent-instructions filename the self-routing block is written into (e.g.
-	// "CLAUDE.md", "AGENTS.md", "GEMINI.md"), resolved at the project root. Empty when unsupported.
+	// InstrFile is the agent-instructions filename the self-routing block is written into, resolved at
+	// the project root: "CLAUDE.md" for Claude Code and "AGENTS.md" for every other agent (the
+	// convention ai-memory's install_instructions.rs documents). Empty when unsupported.
 	InstrFile string
 }
 
@@ -121,8 +122,15 @@ func (c *Client) InstrPath(ctx PathContext) (string, bool) {
 // MUST stay claude-code so the historical behavior is the default.
 const DefaultClientID = "claude-code"
 
-// claudeCodeHookEvents are the six Claude Code lifecycle events agent-memory wires (the canonical set;
-// client name == canonical --event value).
+// All per-client event vocabularies below mirror ai-memory's *_EVENTS constants
+// (crates/ai-memory-cli/src/commands/render_shared.rs). Each entry is {client-config-event-name,
+// canonical --event arg}: the client fires under its own lifecycle name, and the command always passes
+// the canonical kind (agent-memory's hook canonicalizes it identically — internal/hook). agent-memory
+// renders the canonical arg as the Claude Code PascalCase name rather than ai-memory's kebab script stem
+// (functionally identical via ParseEvent), so Claude Code's default command is byte-for-byte unchanged.
+
+// claudeCodeHookEvents are the seven Claude Code events (CLAUDE_CODE_EVENTS; client name == canonical
+// --event value).
 var claudeCodeHookEvents = func() []hookEvent {
 	evs := make([]hookEvent, len(ManagedHookEvents))
 	for i, e := range ManagedHookEvents {
@@ -131,19 +139,36 @@ var claudeCodeHookEvents = func() []hookEvent {
 	return evs
 }()
 
-// cursorHookEvents are Cursor's camelCase lifecycle names mapped to the canonical --event values.
-var cursorHookEvents = []hookEvent{
-	{"sessionStart", "SessionStart"},
-	{"userPromptSubmit", "UserPromptSubmit"},
-	{"preToolUse", "PreToolUse"},
-	{"postToolUse", "PostToolUse"},
-	{"stop", "Stop"},
-	{"sessionEnd", "SessionEnd"},
+// codexHookEvents mirror ai-memory's CODEX_EVENTS: the six common events with NO SessionEnd (Codex uses
+// Stop for both turn-end and session-end). Codex keys are the Claude Code PascalCase names.
+var codexHookEvents = []hookEvent{
+	{"SessionStart", "SessionStart"},
+	{"UserPromptSubmit", "UserPromptSubmit"},
+	{"PreToolUse", "PreToolUse"},
+	{"PostToolUse", "PostToolUse"},
+	{"PreCompact", "PreCompact"},
+	{"Stop", "Stop"},
 }
 
-// geminiHookEvents are Gemini CLI's event names mapped to the canonical --event values. Gemini exposes
-// tool and compaction lifecycle moments under BeforeTool/AfterTool/PreCompress.
+// cursorHookEvents mirror ai-memory's CURSOR_EVENTS: camelCase names, a FLAT shape, and two extras over
+// the common set — beforeSubmitPrompt is Cursor's user-prompt concept (no userPromptSubmit event), and
+// postToolUseFailure is a second post-tool signal. Both map to the canonical kind their script implies.
+var cursorHookEvents = []hookEvent{
+	{"sessionStart", "SessionStart"},
+	{"sessionEnd", "SessionEnd"},
+	{"beforeSubmitPrompt", "UserPromptSubmit"},
+	{"preToolUse", "PreToolUse"},
+	{"postToolUse", "PostToolUse"},
+	{"postToolUseFailure", "PostToolUse"},
+	{"preCompact", "PreCompact"},
+	{"stop", "Stop"},
+}
+
+// geminiHookEvents mirror ai-memory's GEMINI_EVENTS: SessionStart/SessionEnd plus BeforeTool/AfterTool/
+// PreCompress (Gemini's names for pre-/post-tool and compaction). No UserPromptSubmit or Stop equivalent.
 var geminiHookEvents = []hookEvent{
+	{"SessionStart", "SessionStart"},
+	{"SessionEnd", "SessionEnd"},
 	{"BeforeTool", "PreToolUse"},
 	{"AfterTool", "PostToolUse"},
 	{"PreCompress", "PreCompact"},
@@ -170,7 +195,13 @@ var clients = []*Client{
 		ID:      "codex",
 		Name:    "OpenAI Codex CLI",
 		Aliases: []string{"openai-codex"},
-		// Codex has no lifecycle-hook surface; only MCP + AGENTS.md instructions.
+		Hooks: &HookProfile{
+			// Codex hooks are JSON in ~/.codex/hooks.json, nested shape (ai-memory codex_hooks_path /
+			// CODEX_PROFILE). Separate from the TOML config.toml that holds MCP.
+			Shape:  HookShapeNested,
+			Events: codexHookEvents,
+			Path:   func(ctx PathContext) string { return filepath.Join(ctx.Home, ".codex", "hooks.json") },
+		},
 		MCP: &MCPProfile{
 			Shape: MCPShapeCodexTOML,
 			Path:  func(ctx PathContext) string { return filepath.Join(ctx.Home, ".codex", "config.toml") },
@@ -205,12 +236,14 @@ var clients = []*Client{
 			Shape: MCPShapeGeminiHTTP,
 			Path:  func(ctx PathContext) string { return geminiSettingsPath(ctx) },
 		},
-		InstrFile: "GEMINI.md",
+		// ai-memory writes the self-routing block to AGENTS.md for every non-Claude agent (Gemini CLI
+		// reads AGENTS.md), not GEMINI.md — see install_instructions.rs.
+		InstrFile: "AGENTS.md",
 	},
 	{
 		ID:      "vscode-copilot",
 		Name:    "VS Code (Copilot)",
-		Aliases: []string{"vscode", "copilot"},
+		Aliases: []string{"vscode", "copilot", "github-copilot"},
 		// VS Code wires MCP only; hooks and self-routing instructions are not part of its model here.
 		MCP: &MCPProfile{
 			Shape: MCPShapeVSCodeServers,

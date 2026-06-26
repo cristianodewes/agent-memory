@@ -5,16 +5,18 @@ import (
 	"strings"
 )
 
-// ManagedHookEvents are the Claude Code lifecycle events agent-memory wires its capture hook onto. The
-// hook spools every event; SessionStart/SessionEnd also drain (and SessionStart injects the handoff +
-// orientation), and UserPromptSubmit also injects proactive recall. PreToolUse/PostToolUse/Stop round
-// out the observation stream. Other clients wire their own event names (see clients.go) but always
-// invoke the SAME canonical `hook --event <kind>` command.
+// ManagedHookEvents are the seven Claude Code lifecycle events agent-memory wires its capture hook onto,
+// mirroring ai-memory's CLAUDE_CODE_EVENTS (crates/ai-memory-cli/src/commands/render_shared.rs) order +
+// vocabulary. The hook spools every event; SessionStart/SessionEnd also drain (and SessionStart injects
+// the handoff + orientation), and UserPromptSubmit also injects proactive recall. PreToolUse/PostToolUse/
+// PreCompact/Stop round out the observation stream. Other clients wire their own event names (see
+// clients.go) but always invoke the SAME canonical `hook --event <kind>` command.
 var ManagedHookEvents = []string{
 	"SessionStart",
 	"UserPromptSubmit",
 	"PreToolUse",
 	"PostToolUse",
+	"PreCompact",
 	"Stop",
 	"SessionEnd",
 }
@@ -245,17 +247,24 @@ func addManagedHooks(root map[string]any, h *HookProfile, binPath string) {
 		root["hooks"] = hooks
 	}
 	for _, ev := range h.Events {
+		cmd := managedHookCommand(binPath, ev.eventArg)
 		var entry map[string]any
 		switch h.Shape {
 		case HookShapeFlat:
-			entry = map[string]any{"command": managedHookCommand(binPath, ev.eventArg)}
+			// Cursor's flat shape: a direct {type, command, matcher} entry with NO inner hooks array,
+			// mirroring ai-memory's HookShape::Flat (render_shared.rs build_hook_payload_for_platform).
+			entry = map[string]any{
+				"type":    "command",
+				"command": cmd,
+				"matcher": "",
+			}
 		default: // HookShapeNested
 			entry = map[string]any{
 				"matcher": "",
 				"hooks": []any{
 					map[string]any{
 						"type":    "command",
-						"command": managedHookCommand(binPath, ev.eventArg),
+						"command": cmd,
 					},
 				},
 			}
