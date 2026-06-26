@@ -336,6 +336,26 @@ agent-memory setup-agent --server-url http://127.0.0.1:8080
 Use `agent-memory upgrade` para atualizar a fiação ao binário/config atuais e
 `agent-memory uninstall` para remover tudo.
 
+#### Escopo: projeto vs usuário — `--scope` / `--global`
+
+Por padrão a fiação é **por projeto** (`--scope project`): grava em `<repo>/.claude/settings.json`
+e `<repo>/.mcp.json`, então **cada repositório precisa do seu próprio install**. Para o Claude Code
+você pode instalar **uma vez no escopo do usuário** (`--scope user`, ou o atalho `--global`) — a
+fiação vai para `~/.claude/settings.json` (hooks), a config global `~/.claude.json` (MCP) e
+`~/.claude/CLAUDE.md` (instruções), valendo para **todos** os repositórios:
+
+```bash
+agent-memory setup-agent --global --server-url http://127.0.0.1:8080   # recomendado
+agent-memory uninstall   --global                                       # remove a fiação global
+```
+
+A identidade `(workspace, project)` continua sendo **resolvida em runtime**: os hooks derivam do
+diretório de trabalho (git root / `.agent-memory.toml`) a cada evento, e no modo global o
+`headersHelper` do MCP é gravado **sem** `--workspace`/`--project` fixos — o `mcp-session-header`
+deriva por *cwd*/sessão. Quando o projeto não pode ser determinado, o server **falha fechado** (nada
+de vazamento entre sessões; ver #87). Default permanece `project` (compatível); `user` é o caminho
+**recomendado** e *opt-in*. (Escopo global para os demais agentes é fase 2.)
+
 #### Multi-agente (`--agent` / `--client`)
 
 Por padrão os instaladores miram o **Claude Code**. Passe `--agent <id>` (ou o alias
@@ -532,7 +552,9 @@ acontece pelas **tools MCP** e pela **injeção automática nos hooks** — não
 **Instalação / fiação do agente**
 
 Todos aceitam `--agent <id>` / `--client <id>` (default `claude-code`) — ver
-[Multi-agente](#multi-agente---agent----client).
+[Multi-agente](#multi-agente---agent----client) — e `--scope project|user` / `--global`
+(default `project`; `user` recomendado) — ver
+[Escopo](#escopo-projeto-vs-usuário----scope----global).
 
 | Comando | Descrição |
 |---|---|

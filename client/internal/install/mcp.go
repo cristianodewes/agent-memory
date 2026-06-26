@@ -27,6 +27,19 @@ func McpSessionHeaderCommand(binPath, workspace, project string) string {
 	return `"` + binPath + `" mcp-session-header --workspace ` + workspace + ` --project ` + project
 }
 
+// McpSessionHeaderCommandGlobal builds the headersHelper command for a USER-SCOPE (global) install
+// (issue #116). A single global MCP wiring serves every repository, so no fixed workspace/project can be
+// baked: the command is invoked with NO identity flags and `mcp-session-header` derives (workspace,
+// project) from its cwd at runtime, reading back that project's recorded capture session. When the
+// helper cannot determine a project it prints "{}" and the server fails closed (no cross-session leak),
+// exactly the #87 guarantee. Returns "" only when binPath is empty.
+func McpSessionHeaderCommandGlobal(binPath string) string {
+	if binPath == "" {
+		return ""
+	}
+	return `"` + binPath + `" mcp-session-header`
+}
+
 // mcpEndpoint is the Streamable-HTTP MCP URL: the server base with a single trailing /mcp.
 func mcpEndpoint(serverURL string) string {
 	return strings.TrimRight(serverURL, "/") + "/mcp"
