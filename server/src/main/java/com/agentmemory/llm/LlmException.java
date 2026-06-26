@@ -14,27 +14,47 @@ package com.agentmemory.llm;
  * <p>The startup health gate ({@code LlmHealthGate}) turns an exception from the configured,
  * <em>required</em> chat provider into a fail-fast abort (invariant #13); an exception from the
  * optional embeddings probe is logged as a degraded-recall warning instead (DD-005).
+ *
+ * <p>When the failure came from a non-2xx HTTP response, {@link #httpStatus()} carries that status
+ * code (otherwise {@code 0}). The OAuth chat path (issue #113) reads it to recognize a {@code 401}
+ * and trigger a one-shot token refresh + retry before giving up.
  */
 public class LlmException extends RuntimeException {
 
     private final boolean retryable;
+    private final int httpStatus;
 
     public LlmException(String message) {
-        this(message, null, false);
+        this(message, null, false, 0);
     }
 
     public LlmException(String message, Throwable cause) {
-        this(message, cause, false);
+        this(message, cause, false, 0);
     }
 
     public LlmException(String message, Throwable cause, boolean retryable) {
+        this(message, cause, retryable, 0);
+    }
+
+    public LlmException(String message, Throwable cause, boolean retryable, int httpStatus) {
         super(message, cause);
         this.retryable = retryable;
+        this.httpStatus = httpStatus;
     }
 
     /** A transient, retryable failure (timeout, {@code 429}, {@code 5xx}) versus a permanent one. */
     public boolean isRetryable() {
         return retryable;
+    }
+
+    /**
+     * The HTTP status code that produced this failure, or {@code 0} when it did not originate from a
+     * non-2xx HTTP response (a transport error, a parse failure, a validation failure, …). Lets a
+     * caller distinguish, e.g., a {@code 401} (refresh the OAuth token and retry once) from a generic
+     * permanent failure.
+     */
+    public int httpStatus() {
+        return httpStatus;
     }
 
     /** Factory for a transient failure the caller may retry. */

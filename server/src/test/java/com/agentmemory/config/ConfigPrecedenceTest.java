@@ -87,6 +87,33 @@ class ConfigPrecedenceTest {
     }
 
     @Test
+    void bindsOpenAiOAuthBlock(@TempDir Path tmp) throws IOException {
+        // The nested oauth sub-block binds via relaxed binding (token-file -> tokenFile), issue #113.
+        Path file = writeConfig(tmp, """
+                agent-memory:
+                  llm:
+                    auth:
+                      provider: openai-oauth
+                      base-url: https://chatgpt.example/backend/codex/responses
+                      model: gpt-5.5
+                      oauth:
+                        token-file: /etc/agent-memory/auth.json
+                """);
+
+        AgentMemoryProperties props = boot(tmp.resolve("data"), "spring.config.import=" + importOf(file));
+
+        ProviderAuth auth = props.llm().auth();
+        assertThat(auth.providerKey()).isEqualTo("openai-oauth");
+        assertThat(auth.baseUrl()).isEqualTo("https://chatgpt.example/backend/codex/responses");
+        assertThat(auth.model()).isEqualTo("gpt-5.5");
+
+        ProviderAuth.OAuth oauth = auth.oauth();
+        assertThat(oauth.isConfigured()).isTrue();
+        assertThat(oauth.hasTokenFile()).isTrue();
+        assertThat(oauth.tokenFile()).isEqualTo("/etc/agent-memory/auth.json");
+    }
+
+    @Test
     void environmentTierOverridesFile(@TempDir Path tmp) throws IOException {
         Path file = writeConfig(tmp, """
                 agent-memory:

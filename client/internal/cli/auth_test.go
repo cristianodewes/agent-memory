@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cristianodewes/agent-memory/client/internal/oidc"
+	"github.com/cristianodewes/agent-memory/client/internal/openaioauth"
 	"github.com/spf13/cobra"
 )
 
@@ -32,6 +33,84 @@ func TestRootHasAuthCommand(t *testing.T) {
 	if findSubcommand(login, "oidc-device") == nil {
 		t.Fatal("expected `auth login oidc-device`")
 	}
+	if findSubcommand(login, "openai-oauth") == nil {
+		t.Fatal("expected `auth login openai-oauth`")
+	}
+}
+
+// TestAuthLoginOpenAIOAuthEndToEnd runs the ChatGPT/Codex device login through the cobra command
+// against a stub OpenAI auth host and proves the token file the server reads (<data-dir>/auth.json)
+// was written with the obtained credential.
+func TestAuthLoginOpenAIOAuthEndToEnd(t *testing.T) {
+	idp := startMockOpenAIAuth(t)
+	dir := t.TempDir()
+
+	prev := newOpenAIOAuthClient
+	newOpenAIOAuthClient = func(opts ...openaioauth.Option) *openaioauth.Client {
+		return openaioauth.NewClient(append(opts,
+			openaioauth.WithBaseURL(idp.URL),
+			openaioauth.WithHTTPClient(idp.Client()),
+			openaioauth.WithSleeper(func(ctx context.Context, _ time.Duration) error { return ctx.Err() }),
+		)...)
+	}
+	t.Cleanup(func() { newOpenAIOAuthClient = prev })
+
+	var out bytes.Buffer
+	cmd := newAuthLoginOpenAIOAuthCmd()
+	cmd.SetArgs([]string{"--data-dir", dir})
+	cmd.SetOut(&out)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("openai-oauth login errored: %v", err)
+	}
+	if !strings.Contains(out.String(), "logged in") || !strings.Contains(out.String(), "acct-7") {
+		t.Fatalf("unexpected confirmation: %q", out.String())
+	}
+
+	// The token the server reads + refreshes is the one just obtained.
+	tok, ok, err := openaioauth.Load(dir)
+	if err != nil || !ok {
+		t.Fatalf("expected a persisted token: ok=%v err=%v", ok, err)
+	}
+	if tok.Refresh != "refresh-tok" || tok.AccountID != "acct-7" {
+		t.Fatalf("unexpected stored token: %+v", tok)
+	}
+}
+
+// startMockOpenAIAuth serves OpenAI's device-authorization + token endpoints, issuing a refresh token
+// and an id_token carrying a ChatGPT account id on the first poll.
+func startMockOpenAIAuth(t *testing.T) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/accounts/deviceauth/usercode", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"device_auth_id": "dev-1", "user_code": "ABCD-1234", "interval": "1",
+		})
+	})
+	mux.HandleFunc("/api/accounts/deviceauth/token", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"authorization_code": "code-1", "code_verifier": "verifier-1",
+		})
+	})
+	mux.HandleFunc("/oauth/token", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"access_token":  "access-tok",
+			"refresh_token": "refresh-tok",
+			"id_token":      accountJWT("acct-7"),
+			"expires_in":    3600,
+		})
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// accountJWT builds a display-only JWT carrying a chatgpt_account_id claim (the client never verifies it).
+func accountJWT(accountID string) string {
+	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	payload := base64.RawURLEncoding.EncodeToString(
+		[]byte(fmt.Sprintf(`{"chatgpt_account_id":%q}`, accountID)))
+	return header + "." + payload + ".sig"
 }
 
 // findSubcommand returns the direct child command with the given name, or nil.
