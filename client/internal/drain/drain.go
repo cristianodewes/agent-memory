@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"time"
 
 	"github.com/cristianodewes/agent-memory/client/internal/apiclient"
@@ -48,6 +50,9 @@ type Options struct {
 	// Sleep is the backoff sleeper; injectable so tests don't actually wait. Default time.Sleep-like
 	// but context-aware.
 	Sleep func(ctx context.Context, d time.Duration) error
+	// Logger records per-batch ship outcomes and quarantine events at debug (#117). It is advisory —
+	// nil falls back to a discard logger, so the drain behaves identically with or without it.
+	Logger *slog.Logger
 }
 
 func (o Options) withDefaults() Options {
@@ -68,6 +73,9 @@ func (o Options) withDefaults() Options {
 	}
 	if o.Sleep == nil {
 		o.Sleep = sleepContext
+	}
+	if o.Logger == nil {
+		o.Logger = slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
 	}
 	return o
 }
@@ -141,6 +149,7 @@ func (d *Drainer) Drain(ctx context.Context) (Result, error) {
 				return res, fmt.Errorf("drain: quarantine %q: %w", e.Name, qErr)
 			}
 			res.Quarantined++
+			d.opts.Logger.Warn("quarantined corrupt spool entry", "entry", e.Name, "err", readErr.Error())
 			continue
 		}
 		batch = append(batch, p)
@@ -185,13 +194,18 @@ func (d *Drainer) shipBatch(
 				}
 			}
 			res.Sent += len(batch)
+			d.opts.Logger.Debug("batch shipped", "count", len(batch), "status", result.Status)
 			return true, nil
 		case apiclient.BatchThrottled:
 			if attempt >= d.opts.MaxRetries {
 				// Out of budget: stop, leave the spool intact (nothing dropped).
 				res.Throttled = true
+				d.opts.Logger.Warn("drain throttled after retries; spool left intact",
+					"count", len(batch), "attempts", attempt+1)
 				return false, ErrThrottled
 			}
+			d.opts.Logger.Debug("batch throttled; backing off",
+				"count", len(batch), "attempt", attempt+1, "backoffMs", backoff.Milliseconds())
 			if err := d.opts.Sleep(ctx, backoff); err != nil {
 				return false, err
 			}

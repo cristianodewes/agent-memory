@@ -21,6 +21,11 @@ func newRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
+	// --verbose/-v is a persistent (global) flag so any subcommand can raise log verbosity. It is a
+	// count: each -v bumps it; ≥1 selects debug. It composes with AGENT_MEMORY_LOG_LEVEL /
+	// AGENT_MEMORY_DEBUG via internal/log.Resolve (the flag wins). (#117)
+	root.PersistentFlags().CountP("verbose", "v",
+		"increase log verbosity (-v ⇒ debug); also AGENT_MEMORY_LOG_LEVEL / AGENT_MEMORY_DEBUG")
 	root.AddCommand(&cobra.Command{
 		Use:   "version",
 		Short: "Print the client version",
@@ -29,6 +34,8 @@ func newRootCmd() *cobra.Command {
 		},
 	})
 	root.AddCommand(newHookCmd())
+	root.AddCommand(newLogsCmd())
+	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newMcpSessionHeaderCmd())
 	root.AddCommand(newReindexCmd())
 	root.AddCommand(newRenameProjectCmd())
@@ -58,4 +65,14 @@ func Execute() {
 		fmt.Fprintln(os.Stderr, "agent-memory:", err)
 		os.Exit(1)
 	}
+}
+
+// verbosity reads the inherited persistent -v/--verbose count (0 when absent or on any lookup error),
+// so a subcommand can fold the flag into internal/log.Resolve without re-declaring it. (#117)
+func verbosity(cmd *cobra.Command) int {
+	n, err := cmd.Flags().GetCount("verbose")
+	if err != nil {
+		return 0
+	}
+	return n
 }

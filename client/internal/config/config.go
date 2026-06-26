@@ -19,12 +19,21 @@ const (
 	EnvToken = "AGENT_MEMORY_TOKEN"
 	// EnvDataDir overrides the on-disk data directory root.
 	EnvDataDir = "AGENT_MEMORY_DATA_DIR"
+	// EnvLogLevel sets the client log level (debug|info|warn|error). See internal/log.Resolve for how
+	// it composes with the -v/--verbose flag and EnvDebug (#117).
+	EnvLogLevel = "AGENT_MEMORY_LOG_LEVEL"
+	// EnvDebug, when truthy (1|true|yes|on), forces debug-level logging — a shorthand for
+	// EnvLogLevel=debug (#117).
+	EnvDebug = "AGENT_MEMORY_DEBUG"
 
 	defaultServerURL   = "http://127.0.0.1:8080"
 	defaultDataDirName = ".agent-memory"
 	// spoolSubdir is the spool's location under the data dir (ARCHITECTURE §4.1 keeps client spool
 	// state under the data root).
 	spoolSubdir = "spool"
+	// logsSubdir is the client log's location under the data dir, mirroring the server's rotating
+	// tracing dir (ARCHITECTURE §4.1: `<data_dir>/logs`) on the client side (#117).
+	logsSubdir = "logs"
 )
 
 // Config is the resolved client configuration.
@@ -35,6 +44,11 @@ type Config struct {
 	Token string
 	// DataDir is the canonical absolute data directory root.
 	DataDir string
+	// LogLevel is the raw AGENT_MEMORY_LOG_LEVEL value ("" when unset). It is resolved to an effective
+	// slog level by internal/log.Resolve, which also weighs the -v/--verbose flag and Debug (#117).
+	LogLevel string
+	// Debug is AGENT_MEMORY_DEBUG read as a boolean: a shorthand that forces debug-level logging.
+	Debug bool
 }
 
 // Load resolves the client configuration from the environment, applying defaults. It performs no IO
@@ -49,12 +63,31 @@ func Load() Config {
 		ServerURL: server,
 		Token:     strings.TrimSpace(os.Getenv(EnvToken)),
 		DataDir:   resolveDataDir(os.Getenv(EnvDataDir)),
+		LogLevel:  strings.TrimSpace(os.Getenv(EnvLogLevel)),
+		Debug:     truthy(os.Getenv(EnvDebug)),
 	}
 }
 
 // SpoolDir returns the spool directory under the data dir (<data_dir>/spool).
 func (c Config) SpoolDir() string {
 	return filepath.Join(c.DataDir, spoolSubdir)
+}
+
+// LogsDir returns the client log directory under the data dir (<data_dir>/logs), where the rotating
+// client.log lives (#117). It mirrors the server's tracing dir location on the client side.
+func (c Config) LogsDir() string {
+	return filepath.Join(c.DataDir, logsSubdir)
+}
+
+// truthy reports whether an env value reads as "on": 1|true|yes|on (case-insensitive). Anything else
+// — including "", "0", "false" — is false, so AGENT_MEMORY_DEBUG must be set deliberately to engage.
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // WithIdentityOverrides returns a copy of c with the server URL and/or token replaced by the

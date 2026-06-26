@@ -491,10 +491,34 @@ ancestral mais próximo) → raiz do repositório git → diretório atual. O *m
 | `AGENT_MEMORY_SERVER_URL` | captura/drain e instaladores (`setup-agent`, `install-*`, flag `--server-url`) | `http://127.0.0.1:8080` |
 | `AGENT_MEMORY_SERVER` | comandos administrativos/ops (`reindex`, `checkpoints`, `backup`, `user`, lifecycle; flag `--server`) | `http://127.0.0.1:8080` |
 | `AGENT_MEMORY_TOKEN` | *bearer token* (captura, MCP e ops admin via `--token`) | — |
-| `AGENT_MEMORY_DATA_DIR` | raiz do *data dir* local (spool, credencial OIDC) | `~/.agent-memory` |
+| `AGENT_MEMORY_DATA_DIR` | raiz do *data dir* local (spool, credencial OIDC, **logs**) | `~/.agent-memory` |
+| `AGENT_MEMORY_LOG_LEVEL` | nível do log do client (`debug`\|`info`\|`warn`\|`error`) | `info` |
+| `AGENT_MEMORY_DEBUG` | atalho que força nível `debug` quando *truthy* (`1`/`true`/`yes`/`on`) | — |
 
 > Atenção ao par de nomes: o caminho de captura/instaladores lê `AGENT_MEMORY_SERVER_URL`,
 > enquanto os comandos administrativos leem `AGENT_MEMORY_SERVER` (sem o sufixo `_URL`).
+
+#### Logs e modo *debug* do client
+
+O client mantém um **log estruturado e rotativo** (JSON, um registro por linha) em
+**`<data_dir>/logs/client.log`** — o equivalente, no client, ao *tracing* do server. Cada hook
+registra o ciclo completo: evento capturado (kind, workspace/project), *append* no *spool*,
+resultado do *drain* (quantos enviados, latência, status) e o *fetch* de handoff/briefing/recall —
+além dos erros que antes só apareciam no `stderr` (visíveis apenas sob `claude --debug`). A escrita
+é *fire-and-forget* (bufferizada, fora do *hot path*), então **não** afeta o orçamento de captura
+(≤200 ms, invariante #5), e o `stdout` dos hooks continua limpo (a *additional-context* é preservada).
+
+- **Nível**: `info` por *default*. Para ligar o *debug*, use a flag global `-v`/`--verbose`, ou
+  `AGENT_MEMORY_LOG_LEVEL=debug`, ou `AGENT_MEMORY_DEBUG=1` (precedência: flag → `LOG_LEVEL` →
+  `DEBUG` → `info`).
+- **Segredos redigidos**: `token`/`Authorization` **nunca** são gravados; *payload* potencialmente
+  sensível só aparece em `debug` e ainda passa pela redação (alinhado à sanitização do server —
+  invariante #6 / DD-010).
+- **Rotação**: por tamanho (~5 MiB) com retenção limitada (`client.log.1`…`client.log.3`); o
+  diretório é criado se faltar e respeita `AGENT_MEMORY_DATA_DIR`.
+- **Inspeção**: `agent-memory logs [--tail N] [--follow]` imprime/segue o arquivo;
+  `agent-memory doctor` mostra *data dir*, nível efetivo, caminho do log, contagem de *spool* +
+  quarentena e as últimas linhas — sem precisar de `cat`/`tail` manual.
 
 ## Uso e referência da CLI
 
@@ -519,6 +543,13 @@ acontece pelas **tools MCP** e pela **injeção automática nos hooks** — não
 |---|---|
 | `hook --event <kind> [--payload -]` | Captura um evento de ciclo de vida no *spool* local (*fire-and-forget*). |
 | `mcp-session-header` | Emite o header `X-Agent-Memory-Session` (para `auto_scope=session_aware`). |
+
+**Observabilidade**
+
+| Comando | Descrição |
+|---|---|
+| `logs [--tail N] [--follow]` | Imprime (ou segue) o log do client em `<data-dir>/logs/client.log`. |
+| `doctor [--tail N]` | Saúde do client: *data dir*, nível de log, caminho do log, *spool* + quarentena e últimas linhas. |
 
 **Índice**
 
