@@ -3,12 +3,22 @@ package log
 import (
 	"io"
 	"sync/atomic"
+	"time"
 )
 
 // defaultBufferSize is how many formatted log records the async buffer holds before the hot path
 // starts dropping. A capture process emits a handful of records, so this is never reached in normal
 // use; the bound exists only so a stalled disk can never apply backpressure to the agent's hot path.
 const defaultBufferSize = 1024
+
+// closeFlushTimeout bounds how long Close waits for the background goroutine to flush buffered records
+// before giving up. A healthy sink flushes in well under this; a WEDGED sink (full/stalled disk, hung
+// network FS) would otherwise make Close — which runs on the hook's SYNCHRONOUS exit path
+// (`defer logger.Close()`) — block the process on the way out, applying backpressure on the exit path
+// and violating the fire-and-forget budget (ARCHITECTURE invariant #5). When it expires we abandon the
+// flush; the goroutine still owns and will close the sink if it ever unblocks, and the process is
+// exiting regardless.
+const closeFlushTimeout = 250 * time.Millisecond
 
 // asyncWriter decouples the (hot-path) act of logging from the (slow) act of writing to disk. It is
 // the io.Writer slog's JSON handler writes each finished record to: Write copies the record and does
@@ -17,11 +27,16 @@ const defaultBufferSize = 1024
 // is on a stalled/full disk. A single background goroutine owns the sink and drains the channel, so
 // the sink (and its rotation) is never touched concurrently.
 //
+// Shutdown is likewise bounded: Close signals a separate `quit` channel and waits at most
+// closeFlushTimeout for the goroutine to flush and close the sink, so a wedged disk can never block
+// the exit path either. The record channel is deliberately NEVER closed — Close uses `quit` instead —
+// so a late Write racing Close can never panic on a closed channel (no recover needed).
+//
 // When the buffer is full the record is dropped and counted (Dropped): observability is best-effort
-// and must yield to the hot-path budget, never the other way around. Close drains and flushes what is
-// buffered before returning, which is what makes the short-lived `hook` process durable on exit.
+// and must yield to the hot-path budget, never the other way around.
 type asyncWriter struct {
 	ch      chan []byte
+	quit    chan struct{}
 	done    chan struct{}
 	sink    io.WriteCloser
 	dropped atomic.Uint64
@@ -35,6 +50,7 @@ func newAsyncWriter(sink io.WriteCloser, bufferSize int) *asyncWriter {
 	}
 	a := &asyncWriter{
 		ch:   make(chan []byte, bufferSize),
+		quit: make(chan struct{}),
 		done: make(chan struct{}),
 		sink: sink,
 	}
@@ -47,7 +63,8 @@ func newAsyncWriter(sink io.WriteCloser, bufferSize int) *asyncWriter {
 // len(p) with a nil error so slog treats the write as successful and never retries on the hot path.
 func (a *asyncWriter) Write(p []byte) (int, error) {
 	if a.closed.Load() {
-		// After Close the channel is closed; sending would panic. Drop silently — nothing is reading.
+		// After Close, nothing will drain new records; drop rather than enqueue a record that would
+		// never be flushed. (The channel is never closed, so even a racing send here cannot panic.)
 		a.dropped.Add(1)
 		return len(p), nil
 	}
@@ -62,25 +79,53 @@ func (a *asyncWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// run is the single owner of the sink: it serializes every write (and thus every rotation) so the
-// sink needs no internal locking. A per-record write error is swallowed — logging is advisory and
-// must never surface on the capture path.
+// run is the SINGLE owner of the sink: it serializes every write (and thus every rotation) AND is the
+// ONLY closer of the sink, so Close never races a write/rotation on it. It drains the record channel
+// until Close signals quit, then flushes whatever is already buffered (non-blocking) and closes the
+// sink. A per-record write error is swallowed — logging is advisory and must never surface on the
+// capture path.
 func (a *asyncWriter) run() {
 	defer close(a.done)
-	for b := range a.ch {
-		_, _ = a.sink.Write(b)
+	for {
+		select {
+		case b := <-a.ch:
+			_, _ = a.sink.Write(b)
+		case <-a.quit:
+			a.drainBuffered()
+			_ = a.sink.Close()
+			return
+		}
 	}
 }
 
-// Close stops accepting records, lets the background goroutine drain what is buffered, then closes
-// the sink. It is safe to call once; subsequent Writes are dropped. Returns the sink's close error.
+// drainBuffered writes whatever records are already queued, without waiting for new ones. If the sink
+// is wedged it blocks here on the first write — exactly the case Close bounds with closeFlushTimeout.
+func (a *asyncWriter) drainBuffered() {
+	for {
+		select {
+		case b := <-a.ch:
+			_, _ = a.sink.Write(b)
+		default:
+			return
+		}
+	}
+}
+
+// Close stops accepting records and waits — UP TO closeFlushTimeout — for the background goroutine to
+// flush the buffer and close the sink. The bound is deliberate: a wedged sink must never block the
+// hook's exit path (invariant #5). Safe to call more than once. The sink's close error is
+// intentionally not propagated (logging is advisory and the process is exiting); Close returns nil.
 func (a *asyncWriter) Close() error {
 	if a.closed.Swap(true) {
 		return nil
 	}
-	close(a.ch)
-	<-a.done
-	return a.sink.Close()
+	close(a.quit)
+	select {
+	case <-a.done:
+	case <-time.After(closeFlushTimeout):
+		// Sink wedged: abandon the flush so the (synchronous) caller can exit.
+	}
+	return nil
 }
 
 // Dropped reports how many records were dropped because the buffer was full (a stalled sink) or

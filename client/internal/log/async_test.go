@@ -94,11 +94,43 @@ func TestAsyncWriterCloseFlushes(t *testing.T) {
 	if !sink.closed {
 		t.Fatal("Close did not close the sink")
 	}
-	// A Write after Close must not panic (channel is closed); it is dropped.
+	// A Write after Close must not panic (the channel is never closed); it is dropped.
 	if _, err := aw.Write([]byte("late\n")); err != nil {
 		t.Fatalf("post-Close Write errored: %v", err)
 	}
 	if err := aw.Close(); err != nil {
 		t.Fatalf("second Close should be a no-op: %v", err)
 	}
+}
+
+// TestAsyncWriterCloseIsBoundedWhenSinkWedged is the regression for the review's blocking finding:
+// Close() must return within ~closeFlushTimeout even when the sink's Write is wedged forever, so the
+// hook's synchronous exit path (defer logger.Close()) can never be blocked by a stalled disk
+// (ARCHITECTURE invariant #5). Unlike TestAsyncWriterNeverBlocksHotPath, the sink is NOT released
+// before Close — that is the scenario the old unbounded `<-done` would have hung on.
+func TestAsyncWriterCloseIsBoundedWhenSinkWedged(t *testing.T) {
+	sink := &blockingSink{release: make(chan struct{})}
+	aw := newAsyncWriter(sink, 4)
+
+	// Fill the buffer so the drain goroutine is stuck inside sink.Write with records still queued.
+	for i := 0; i < 100; i++ {
+		if _, err := aw.Write([]byte("x\n")); err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+	}
+
+	start := time.Now()
+	if err := aw.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	elapsed := time.Since(start)
+
+	// Generous upper bound: catches an UNBOUNDED wait (which would otherwise hang the test) while
+	// tolerating scheduling slack over the 250ms budget.
+	if elapsed > 2*time.Second {
+		t.Fatalf("Close blocked %v on a wedged sink; it must be bounded (~%v)", elapsed, closeFlushTimeout)
+	}
+
+	// Release the wedged sink so the abandoned goroutine drains and exits cleanly (no leak).
+	close(sink.release)
 }

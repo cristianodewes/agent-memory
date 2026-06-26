@@ -47,6 +47,13 @@ var secretPatterns = []*regexp.Regexp{
 // maskSecrets returns s with any embedded secret replaced by Redacted, and whether it changed
 // anything. A cheap keyword pre-check keeps the regex work off strings that obviously hold no secret
 // (the common case), so this stays inexpensive even though it runs per string attribute.
+//
+// RESIDUAL RISK (accepted): masking is KEYWORD-anchored (`token=`, `Bearer …`, `password:` …). A
+// "bare" credential carried with no surrounding keyword — e.g. a raw API key sitting alone in a body
+// preview — would NOT be matched and could pass through. This is bounded by design: such a value is
+// only ever logged at DEBUG (never the default), and it mirrors the server's sanitization, which is
+// likewise pattern-based. The non-negotiable guarantee — `token`/`Authorization`-keyed ATTRS are
+// dropped wholesale (see replaceAttr / sensitiveKeys) — does not depend on this heuristic.
 func maskSecrets(s string) (string, bool) {
 	if !mightContainSecret(s) {
 		return s, false
