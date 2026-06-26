@@ -361,7 +361,9 @@ de vazamento entre sessões; ver #87). Default permanece `project` (compatível)
 Por padrão os instaladores miram o **Claude Code**. Passe `--agent <id>` (ou o alias
 `--client <id>`) para mirar outro cliente: cada um recebe o *shape* de hook/MCP que espera, mas
 todos apontam para o **mesmo binário nativo** (`agent-memory hook --event <kind>`) e o **mesmo
-endpoint Streamable-HTTP** em `/mcp` com Bearer — só o que é gravado em cada config muda.
+endpoint Streamable-HTTP** em `/mcp` com Bearer — só o que é gravado em cada config muda. Os
+*shapes*, caminhos e nomes de evento por cliente **espelham a prior art ai-memory** (adaptados ao
+binário nativo do agent-memory; sem scripts shell).
 
 ```bash
 agent-memory setup-agent  --agent codex --server-url http://127.0.0.1:8080
@@ -371,17 +373,17 @@ agent-memory install-hooks --agent gemini-cli
 
 | Cliente (`--agent`) | Hooks | MCP | Instruções |
 |---|---|---|---|
-| `claude-code` (padrão) | `<repo>/.claude/settings.json` (nested) | `<repo>/.mcp.json` — `mcpServers`, `type:http` + `headersHelper` (#87) | `CLAUDE.md` |
-| `codex` | — | `~/.codex/config.toml` — `[mcp_servers.*]` (TOML) | `AGENTS.md` |
-| `cursor` | `~/.cursor/hooks.json` (flat, camelCase) | `~/.cursor/mcp.json` — `mcpServers`, `url` | `AGENTS.md` |
-| `gemini-cli` | `~/.gemini/settings.json` (nested: `BeforeTool`/`AfterTool`/`PreCompress`) | `~/.gemini/settings.json` — `mcpServers`, `httpUrl` | `GEMINI.md` |
+| `claude-code` (padrão) | `<repo>/.claude/settings.json` — nested, 7 eventos (`SessionStart`…`PreCompact`…`SessionEnd`) | `<repo>/.mcp.json` — `mcpServers`, `type:http` + `headersHelper` (#87) | `CLAUDE.md` |
+| `codex` | `~/.codex/hooks.json` — nested, 6 eventos (sem `SessionEnd`) | `~/.codex/config.toml` — `[mcp_servers.*]` (TOML, `http_headers` + `default_tools_approval_mode`) | `AGENTS.md` |
+| `cursor` | `~/.cursor/hooks.json` — flat camelCase (`beforeSubmitPrompt`/`postToolUseFailure`/…) + `version:1` | `~/.cursor/mcp.json` — `mcpServers`, `url` | `AGENTS.md` |
+| `gemini-cli` | `~/.gemini/settings.json` — nested (`SessionStart`/`SessionEnd`/`BeforeTool`/`AfterTool`/`PreCompress`) | `~/.gemini/settings.json` — `mcpServers`, `httpUrl` + `timeout` | `AGENTS.md` |
 | `vscode-copilot` | — | `<repo>/.vscode/mcp.json` — `servers`, `type:http` | — |
-| `claude-desktop` | — | config global do app — `mcpServers` via `mcp-remote` (stdio) | — |
+| `claude-desktop` | — | config global do app — `mcpServers` via `mcp-remote` (stdio, header por env) | — |
 
 `setup-agent --agent X` faz hooks + MCP + instruções para `X` numa tacada; uma *surface* que o
-cliente não suporta (ex.: hooks no Codex) é reportada como *unsupported* e ignorada — não é erro.
-Todo merge é idempotente, preserva entradas de terceiros e usa escrita atômica. Plugins TypeScript
-(opencode/omp/openclaw) são fase 2.
+cliente não suporta (ex.: hooks no VS Code/Claude Desktop) é reportada como *unsupported* e
+ignorada — não é erro. Todo merge é idempotente, preserva entradas de terceiros e usa escrita
+atômica. Plugins TypeScript (opencode/omp/openclaw) e demais agentes (grok/antigravity) são fase 2.
 
 > **Em rollout:** um **instalador nativo para Windows** (winget + EXE) e **imagens Docker
 > publicadas no GHCR** via CD em cada *merge* na `main` estão planejados — ver [Roadmap](#roadmap).

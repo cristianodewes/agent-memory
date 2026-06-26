@@ -20,41 +20,58 @@ func redirectHome(t *testing.T) string {
 	return home
 }
 
-// TestSetupAgentCodexMCPOnly drives setup-agent for Codex: MCP (TOML, home) + AGENTS.md instructions
-// (project), with hooks reported unsupported. Idempotent on a second run; uninstall removes.
-func TestSetupAgentCodexMCPOnly(t *testing.T) {
+// TestSetupAgentCodex drives setup-agent for Codex: nested hooks in ~/.codex/hooks.json, MCP in
+// ~/.codex/config.toml (TOML, http_headers + approve mode), and AGENTS.md instructions (project).
+// Idempotent on a second run; uninstall removes.
+func TestSetupAgentCodex(t *testing.T) {
 	home := redirectHome(t)
 	proj := t.TempDir()
+	bin := filepath.Join(proj, "agent-memory")
 	args := []string{"setup-agent", "--agent", "codex", "--dir", proj,
-		"--bin", filepath.Join(proj, "agent-memory"), "--server-url", "http://127.0.0.1:8080", "--token", "tok"}
+		"--bin", bin, "--server-url", "http://127.0.0.1:8080", "--token", "tok"}
 
 	out, err := runCLI(t, args...)
 	if err != nil {
 		t.Fatalf("setup-agent codex: %v\n%s", err, out)
 	}
-	if !strings.Contains(out, "hooks: unsupported by codex") {
-		t.Errorf("expected hooks unsupported line:\n%s", out)
-	}
-	for _, want := range []string{"mcp: created", "instructions: created"} {
+	for _, want := range []string{"hooks: created", "mcp: created", "instructions: created"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q:\n%s", want, out)
 		}
 	}
+	// Codex hooks: nested JSON in ~/.codex/hooks.json (NOT the config.toml).
+	hooks, err := os.ReadFile(filepath.Join(home, ".codex", "hooks.json"))
+	if err != nil {
+		t.Fatalf("codex hooks.json not written: %v", err)
+	}
+	if !strings.Contains(string(hooks), "hook --event SessionStart") {
+		t.Errorf("codex hooks not wired:\n%s", hooks)
+	}
+	if strings.Contains(string(hooks), "SessionEnd") {
+		t.Errorf("codex must not wire SessionEnd:\n%s", hooks)
+	}
+	// Codex MCP: streamable-HTTP under [mcp_servers.agent-memory] with http_headers (NOT bearer_token,
+	// which Codex rejects) + the auto-approve mode.
 	toml, err := os.ReadFile(filepath.Join(home, ".codex", "config.toml"))
 	if err != nil {
 		t.Fatalf("codex config.toml not written: %v", err)
 	}
-	if !strings.Contains(string(toml), "[mcp_servers.agent-memory]") ||
-		!strings.Contains(string(toml), "http://127.0.0.1:8080/mcp") ||
-		!strings.Contains(string(toml), `bearer_token = "tok"`) {
-		t.Errorf("codex toml content wrong:\n%s", toml)
+	ts := string(toml)
+	if !strings.Contains(ts, "[mcp_servers.agent-memory]") ||
+		!strings.Contains(ts, "http://127.0.0.1:8080/mcp") ||
+		!strings.Contains(ts, `default_tools_approval_mode = "approve"`) ||
+		!strings.Contains(ts, `Authorization = "Bearer tok"`) {
+		t.Errorf("codex toml content wrong:\n%s", ts)
+	}
+	if strings.Contains(ts, "bearer_token") {
+		t.Errorf("codex must use http_headers, never bearer_token:\n%s", ts)
 	}
 	if _, err := os.Stat(filepath.Join(proj, "AGENTS.md")); err != nil {
 		t.Errorf("AGENTS.md not written: %v", err)
 	}
 
 	out2, _ := runCLI(t, args...)
-	for _, want := range []string{"mcp: unchanged", "instructions: unchanged"} {
+	for _, want := range []string{"hooks: unchanged", "mcp: unchanged", "instructions: unchanged"} {
 		if !strings.Contains(out2, want) {
 			t.Errorf("second run not unchanged, missing %q:\n%s", want, out2)
 		}
@@ -64,8 +81,10 @@ func TestSetupAgentCodexMCPOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("uninstall: %v\n%s", err, out3)
 	}
-	if !strings.Contains(out3, "mcp: removed") {
-		t.Errorf("uninstall did not remove mcp:\n%s", out3)
+	for _, want := range []string{"hooks: removed", "mcp: removed"} {
+		if !strings.Contains(out3, want) {
+			t.Errorf("uninstall missing %q:\n%s", want, out3)
+		}
 	}
 }
 
