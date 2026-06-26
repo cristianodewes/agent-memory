@@ -1,0 +1,164 @@
+name: CD
+
+# Continuous delivery: on every merge to `main`, publish the freshly-built artifacts.
+#
+# This workflow is intentionally SEPARATE from the other two and only ever PUBLISHES:
+#   - ci.yml      — the path-filtered PR gate ("CI / ci") that branch protection requires.
+#                   CD must never interfere with it, so it lives in its own file.
+#   - release.yml — tag-driven (`v*`) goreleaser run that cuts the stable semver Releases.
+#                   CD leaves it untouched and reuses the same `.goreleaser.yaml` config.
+#
+# What a merge to `main` publishes (see docs/PR for the user-facing pull/download docs):
+#   1. Docker — the server image to GHCR (ghcr.io/cristianodewes/agent-memory) tagged
+#      `edge` + `latest` + `sha-<short>` + a git-describe version, refreshed every merge.
+#   2. Binaries — the multi-OS Go client, rebuilt via goreleaser and attached to a single
+#      rolling `edge` prerelease (recreated each merge, so it always mirrors `main`).
+#
+# Versioning scheme (continuous `edge` + semver-by-tag):
+#   - `main` is a moving target, so it feeds the rolling `edge` Docker tag and the `edge`
+#     prerelease. Pinned, stable artifacts come from pushing a `v*` tag, which release.yml
+#     turns into a normal semver Release (and you can `docker pull ...:<git-describe>`).
+#
+# NOTE: the CI webhook quirk (release/CD is push-triggered, not path-filtered like ci.yml)
+# is intentional — every merge must publish, regardless of which tree changed.
+
+on:
+  push:
+    branches: [main]
+  # Allow re-publishing the current `main` on demand (idempotent).
+  workflow_dispatch: {}
+
+# Serialize CD runs so two quick merges don't race on the shared `edge` tag/release.
+# Do NOT cancel in progress: a half-published release is worse than a queued one.
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: false
+
+# Least privilege at the top; each job opts into only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  # --------------------------------------------------------------------------
+  # Server Docker image -> GHCR.
+  #
+  # Builds docker/Dockerfile.server (repo root as context, matching compose.yml's
+  # `context: ..`) and pushes it to GHCR, logging in with the workflow's own
+  # GITHUB_TOKEN. Postgres is the upstream pgvector image, so the server is the only
+  # first-party container to publish.
+  # --------------------------------------------------------------------------
+  docker:
+    name: server image (ghcr)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # A traceable, human-readable version tag for the image. With no `v*` tag yet,
+      # fall back to a clearly-marked edge version derived from the short commit.
+      - name: compute version tag
+        id: version
+        run: |
+          set -euo pipefail
+          if git describe --tags --match 'v*' >/dev/null 2>&1; then
+            version="$(git describe --tags --match 'v*')"
+          else
+            version="0.0.0-edge.$(git rev-parse --short HEAD)"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "resolved image version: ${version}"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/cristianodewes/agent-memory
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=edge,enable={{is_default_branch}}
+            type=sha,prefix=sha-,format=short
+            type=raw,value=${{ steps.version.outputs.version }}
+
+      - name: build and push server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile.server
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # Buildx layer cache, scoped to this workflow, keeps the Maven build fast.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # --------------------------------------------------------------------------
+  # Client binaries -> rolling `edge` prerelease.
+  #
+  # Reuses the existing .goreleaser.yaml (no edits) in SNAPSHOT mode, which builds the
+  # three-OS archives + checksums into dist/ without publishing, then (re)creates a
+  # single `edge` GitHub prerelease pointing at this commit. Idempotent: the previous
+  # `edge` release+tag is dropped first so stale assets never linger.
+  # --------------------------------------------------------------------------
+  binaries:
+    name: client binaries (edge release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # goreleaser derives the version/changelog from full history + tags.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: client/go.mod
+          cache-dependency-path: client/go.sum
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          version: "~> v2"
+          install-only: true
+
+      - name: goreleaser check (validate config)
+        run: goreleaser check
+
+      - name: build snapshot binaries (no publish)
+        run: goreleaser release --snapshot --clean
+
+      - name: refresh rolling `edge` prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          # Whatever goreleaser produced (the Windows installer from #105 will flow in
+          # automatically once it's added to .goreleaser.yaml).
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt dist/*.exe dist/*.msi)
+          if [ ${#assets[@]} -eq 0 ]; then
+            echo "::error::goreleaser produced no publishable artifacts in dist/"
+            exit 1
+          fi
+          short="${GITHUB_SHA:0:7}"
+          notes="Rolling client build from main @ ${short}. Prerelease — for stable, pinned binaries push a v* tag (release.yml). Server image: docker pull ghcr.io/cristianodewes/agent-memory:edge"
+          # Idempotent: remove the previous edge release+tag, then recreate at this commit.
+          gh release delete edge --yes --cleanup-tag || true
+          gh release create edge \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "edge (rolling build)" \
+            --notes "$notes" \
+            "${assets[@]}"
+          echo "published edge prerelease with ${#assets[@]} asset(s):"
+          printf '  %s\n' "${assets[@]}"
