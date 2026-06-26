@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/cristianodewes/agent-memory/client/internal/config"
 	"github.com/cristianodewes/agent-memory/client/internal/core"
@@ -18,27 +19,74 @@ type installFlags struct {
 	bin       string // agent-memory binary path for hook commands; default = os.Executable()
 	serverURL string // MCP server base URL; default = config/identity
 	token     string // MCP bearer token; default = config/identity
-	file      string // instructions filename; default = CLAUDE.md
+	file      string // instructions filename override; default = the client's instructions file
+	agent     string // target agent/client id (--agent); default claude-code
+	client    string // target agent/client id (--client alias); wins over --agent when set
 }
 
-// resolved holds the concrete paths/values the install ops act on.
+// resolved holds the concrete values the install ops act on, plus the selected client profile and the
+// path context its per-surface files resolve against.
 type resolved struct {
-	root         string
-	bin          string
-	serverURL    string
-	token        string
-	workspace    string // normalized identity slug, for the per-session MCP header (#87)
-	project      string // normalized identity slug, for the per-session MCP header (#87)
-	settingsPath string
-	mcpPath      string
-	instrPath    string
+	client    *install.Client
+	ctx       install.PathContext
+	bin       string
+	serverURL string
+	token     string
+	workspace string // normalized identity slug, for the per-session MCP header (#87)
+	project   string // normalized identity slug, for the per-session MCP header (#87)
+	instrFile string // instructions filename to use (override or client default; "" if none)
 }
 
-// sessionHeaderCommand is the headersHelper command baked into this project's .mcp.json so Claude Code
-// emits the per-session X-Agent-Memory-Session header (#87). Empty when identity did not normalize, so
-// the MCP entry is still written (just without the header).
+// sessionHeaderCommand is the headersHelper command baked into Claude Code's .mcp.json so it emits the
+// per-session X-Agent-Memory-Session header (#87). Empty when identity did not normalize (the MCP entry
+// is still written, just without the header) or for clients whose MCP shape does not support it.
 func (r resolved) sessionHeaderCommand() string {
 	return install.McpSessionHeaderCommand(r.bin, r.workspace, r.project)
+}
+
+// hooksTarget returns the absolute hooks file and true when the selected client has a hook surface.
+func (r resolved) hooksTarget() (string, bool, error) {
+	if r.client.Hooks == nil {
+		return "", false, nil
+	}
+	return requireAbs(r.client.Hooks.Path(r.ctx))
+}
+
+// mcpTarget returns the absolute MCP file and true when the selected client has an MCP surface.
+func (r resolved) mcpTarget() (string, bool, error) {
+	if r.client.MCP == nil {
+		return "", false, nil
+	}
+	return requireAbs(r.client.MCP.Path(r.ctx))
+}
+
+// instrTarget returns the absolute instructions file and true when the client has an instructions
+// surface (or the user supplied an explicit --file).
+func (r resolved) instrTarget() (string, bool, error) {
+	if r.instrFile == "" {
+		return "", false, nil
+	}
+	return requireAbs(filepath.Join(r.ctx.ProjectRoot, r.instrFile))
+}
+
+// requireAbs guards against a path that did not absolutize — which happens for a home-based client when
+// the user home directory could not be resolved (rare/sandboxed). Writing such a relative path would
+// land config under the cwd, so it is an actionable error instead.
+func requireAbs(path string) (string, bool, error) {
+	if !filepath.IsAbs(path) {
+		return "", true, fmt.Errorf("could not resolve an absolute config path %q "+
+			"(is the user home directory available?)", path)
+	}
+	return path, true, nil
+}
+
+// agentID returns the selected client id: --client wins over --agent when both are set, else --agent,
+// else the default (resolved downstream by LookupClient).
+func (f installFlags) agentID() string {
+	if strings.TrimSpace(f.client) != "" {
+		return f.client
+	}
+	return f.agent
 }
 
 func (f installFlags) resolve() (resolved, error) {
@@ -77,21 +125,27 @@ func (f installFlags) resolve() (resolved, error) {
 	// a derived basename) leaves the slugs empty, and the MCP entry is written without the header.
 	workspace, project := normalizedIdentity(id)
 
-	file := f.file
-	if file == "" {
-		file = "CLAUDE.md"
+	client, err := install.LookupClient(f.agentID())
+	if err != nil {
+		return resolved{}, err
+	}
+
+	// The instructions file: an explicit --file wins; otherwise the client's conventional file
+	// (CLAUDE.md / AGENTS.md / GEMINI.md). Empty means the client has no instructions surface.
+	instrFile := strings.TrimSpace(f.file)
+	if instrFile == "" {
+		instrFile = client.InstrFile
 	}
 
 	return resolved{
-		root:         root,
-		bin:          bin,
-		serverURL:    serverURL,
-		token:        token,
-		workspace:    workspace,
-		project:      project,
-		settingsPath: install.SettingsPath(root),
-		mcpPath:      install.McpPath(root),
-		instrPath:    filepath.Join(root, file),
+		client:    client,
+		ctx:       install.PathContext{ProjectRoot: root, Home: install.ResolveHome()},
+		bin:       bin,
+		serverURL: serverURL,
+		token:     token,
+		workspace: workspace,
+		project:   project,
+		instrFile: instrFile,
 	}, nil
 }
 
@@ -113,16 +167,85 @@ func report(cmd *cobra.Command, label string, change install.Change, path string
 	fmt.Fprintf(cmd.OutOrStdout(), "%s: %s (%s)\n", label, change, path)
 }
 
+// reportUnsupported prints a clear, non-fatal line when the selected client lacks a surface (e.g. Codex
+// has no hooks). The command continues / exits 0 — an unsupported surface is a no-op, not an error.
+func reportUnsupported(cmd *cobra.Command, label string, client *install.Client) {
+	fmt.Fprintf(cmd.OutOrStdout(), "%s: unsupported by %s\n", label, client.ID)
+}
+
 func (f *installFlags) addDir(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.dir, "dir", "",
 		"project root to install into (default: the git repository root, else the current directory)")
+}
+
+// addAgent registers the --agent/--client selector on a command.
+func (f *installFlags) addAgent(cmd *cobra.Command) {
+	cmd.Flags().StringVar(&f.agent, "agent", install.DefaultClientID,
+		"target agent/client: "+strings.Join(install.ClientIDs(), ", "))
+	cmd.Flags().StringVar(&f.client, "client", "",
+		"alias for --agent (target agent/client id)")
+}
+
+// doHooks installs the hook surface for the resolved client, reporting unsupported as a no-op.
+func doHooks(cmd *cobra.Command, r resolved) error {
+	path, ok, err := r.hooksTarget()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		reportUnsupported(cmd, "hooks", r.client)
+		return nil
+	}
+	change, err := install.HooksProfile(path, r.client.Hooks, r.bin)
+	if err != nil {
+		return err
+	}
+	report(cmd, "hooks", change, path)
+	return nil
+}
+
+// doMcp installs the MCP surface for the resolved client, reporting unsupported as a no-op.
+func doMcp(cmd *cobra.Command, r resolved) error {
+	path, ok, err := r.mcpTarget()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		reportUnsupported(cmd, "mcp", r.client)
+		return nil
+	}
+	change, err := install.McpProfile(path, r.client.MCP, r.serverURL, r.token, r.sessionHeaderCommand())
+	if err != nil {
+		return err
+	}
+	report(cmd, "mcp", change, path)
+	return nil
+}
+
+// doInstructions installs the self-routing block for the resolved client, reporting unsupported as a
+// no-op.
+func doInstructions(cmd *cobra.Command, r resolved) error {
+	path, ok, err := r.instrTarget()
+	if err != nil {
+		return err
+	}
+	if !ok {
+		reportUnsupported(cmd, "instructions", r.client)
+		return nil
+	}
+	change, err := install.Instructions(path)
+	if err != nil {
+		return err
+	}
+	report(cmd, "instructions", change, path)
+	return nil
 }
 
 func newInstallHooksCmd() *cobra.Command {
 	var f installFlags
 	cmd := &cobra.Command{
 		Use:           "install-hooks",
-		Short:         "Wire the agent-memory capture hook into Claude Code (.claude/settings.json)",
+		Short:         "Wire the agent-memory capture hook into an agent's config (default: Claude Code)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -130,15 +253,11 @@ func newInstallHooksCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			change, err := install.Hooks(r.settingsPath, r.bin)
-			if err != nil {
-				return err
-			}
-			report(cmd, "hooks", change, r.settingsPath)
-			return nil
+			return doHooks(cmd, r)
 		},
 	}
 	f.addDir(cmd)
+	f.addAgent(cmd)
 	cmd.Flags().StringVar(&f.bin, "bin", "",
 		"path to the agent-memory binary used in the hook command (default: this executable)")
 	return cmd
@@ -148,7 +267,7 @@ func newInstallMcpCmd() *cobra.Command {
 	var f installFlags
 	cmd := &cobra.Command{
 		Use:           "install-mcp",
-		Short:         "Register the agent-memory MCP server with Claude Code (.mcp.json)",
+		Short:         "Register the agent-memory MCP server with an agent (default: Claude Code)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -156,15 +275,11 @@ func newInstallMcpCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			change, err := install.Mcp(r.mcpPath, r.serverURL, r.token, r.sessionHeaderCommand())
-			if err != nil {
-				return err
-			}
-			report(cmd, "mcp", change, r.mcpPath)
-			return nil
+			return doMcp(cmd, r)
 		},
 	}
 	f.addDir(cmd)
+	f.addAgent(cmd)
 	cmd.Flags().StringVar(&f.serverURL, "server-url", "",
 		"agent-memory server base URL (default: AGENT_MEMORY_SERVER_URL or the marker / built-in default)")
 	cmd.Flags().StringVar(&f.token, "token", "",
@@ -176,7 +291,7 @@ func newInstallInstructionsCmd() *cobra.Command {
 	var f installFlags
 	cmd := &cobra.Command{
 		Use:           "install-instructions",
-		Short:         "Write the self-routing snippet into the agent instructions (CLAUDE.md / AGENTS.md)",
+		Short:         "Write the self-routing snippet into the agent instructions (CLAUDE.md / AGENTS.md / GEMINI.md)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -184,57 +299,45 @@ func newInstallInstructionsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			change, err := install.Instructions(r.instrPath)
-			if err != nil {
-				return err
-			}
-			report(cmd, "instructions", change, r.instrPath)
-			return nil
+			return doInstructions(cmd, r)
 		},
 	}
 	f.addDir(cmd)
-	cmd.Flags().StringVar(&f.file, "file", "CLAUDE.md",
-		"instructions file to write the self-routing block into")
+	f.addAgent(cmd)
+	cmd.Flags().StringVar(&f.file, "file", "",
+		"instructions file to write the self-routing block into (default: the client's file)")
 	return cmd
 }
 
-// runSetup installs all three surfaces (hooks + MCP + instructions). Shared by setup-agent and upgrade
-// (both are idempotent refreshes — upgrade just re-runs with the current binary/URL).
+// runSetup installs all supported surfaces (hooks + MCP + instructions) for the resolved client. Shared
+// by setup-agent and upgrade (both are idempotent refreshes — upgrade just re-runs with the current
+// binary/URL). Surfaces the client does not support are reported as no-ops, not errors.
 func runSetup(cmd *cobra.Command, r resolved) error {
-	hooks, err := install.Hooks(r.settingsPath, r.bin)
-	if err != nil {
+	if err := doHooks(cmd, r); err != nil {
 		return err
 	}
-	report(cmd, "hooks", hooks, r.settingsPath)
-
-	mcp, err := install.Mcp(r.mcpPath, r.serverURL, r.token, r.sessionHeaderCommand())
-	if err != nil {
+	if err := doMcp(cmd, r); err != nil {
 		return err
 	}
-	report(cmd, "mcp", mcp, r.mcpPath)
-
-	instr, err := install.Instructions(r.instrPath)
-	if err != nil {
-		return err
-	}
-	report(cmd, "instructions", instr, r.instrPath)
-	return nil
+	return doInstructions(cmd, r)
 }
 
 func (f *installFlags) addSetupFlags(cmd *cobra.Command) {
 	f.addDir(cmd)
+	f.addAgent(cmd)
 	cmd.Flags().StringVar(&f.bin, "bin", "", "path to the agent-memory binary (default: this executable)")
 	cmd.Flags().StringVar(&f.serverURL, "server-url", "", "agent-memory server base URL")
 	cmd.Flags().StringVar(&f.token, "token", "", "bearer token for the MCP server")
-	cmd.Flags().StringVar(&f.file, "file", "CLAUDE.md", "instructions file for the self-routing block")
+	cmd.Flags().StringVar(&f.file, "file", "",
+		"instructions file for the self-routing block (default: the client's file)")
 }
 
 func newSetupAgentCmd() *cobra.Command {
 	var f installFlags
 	cmd := &cobra.Command{
 		Use: "setup-agent",
-		Short: "Install everything for Claude Code: hooks + MCP server + self-routing instructions " +
-			"(idempotent)",
+		Short: "Install everything for an agent: hooks + MCP server + self-routing instructions " +
+			"(idempotent; default: Claude Code)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -281,27 +384,48 @@ func newUninstallCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			hooks, err := install.UninstallHooks(r.settingsPath)
-			if err != nil {
-				return err
-			}
-			report(cmd, "hooks", hooks, r.settingsPath)
 
-			mcp, err := install.UninstallMcp(r.mcpPath)
-			if err != nil {
+			if path, ok, err := r.hooksTarget(); err != nil {
 				return err
+			} else if !ok {
+				reportUnsupported(cmd, "hooks", r.client)
+			} else {
+				change, err := install.UninstallHooksProfile(path, r.client.Hooks)
+				if err != nil {
+					return err
+				}
+				report(cmd, "hooks", change, path)
 			}
-			report(cmd, "mcp", mcp, r.mcpPath)
 
-			instr, err := install.UninstallInstructions(r.instrPath)
-			if err != nil {
+			if path, ok, err := r.mcpTarget(); err != nil {
 				return err
+			} else if !ok {
+				reportUnsupported(cmd, "mcp", r.client)
+			} else {
+				change, err := install.UninstallMcpProfile(path, r.client.MCP)
+				if err != nil {
+					return err
+				}
+				report(cmd, "mcp", change, path)
 			}
-			report(cmd, "instructions", instr, r.instrPath)
+
+			if path, ok, err := r.instrTarget(); err != nil {
+				return err
+			} else if !ok {
+				reportUnsupported(cmd, "instructions", r.client)
+			} else {
+				change, err := install.UninstallInstructions(path)
+				if err != nil {
+					return err
+				}
+				report(cmd, "instructions", change, path)
+			}
 			return nil
 		},
 	}
 	f.addDir(cmd)
-	cmd.Flags().StringVar(&f.file, "file", "CLAUDE.md", "instructions file to remove the block from")
+	f.addAgent(cmd)
+	cmd.Flags().StringVar(&f.file, "file", "",
+		"instructions file to remove the block from (default: the client's file)")
 	return cmd
 }
