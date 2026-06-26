@@ -1,33 +1,64 @@
 package com.agentmemory.config;
 
+import org.springframework.boot.context.properties.bind.ConstructorBinding;
+import org.springframework.boot.context.properties.bind.DefaultValue;
+
 /**
  * Typed credentials for an LLM / embeddings provider, resolved from configuration <em>before</em>
  * any provider client is constructed (invariant #14; DD-005).
  *
  * <p>This is the placeholder the LLM wiring in issue #6 slots into without touching call sites:
  * configuration already hands subsystems a {@code ProviderAuth} instead of letting them read raw
- * environment variables. The four fields below are the resolved boundary; #6 adds the helpers
- * ({@link #providerKey()}, {@link #modelOr(String)}, {@link #requireApiKey()}) that the
+ * environment variables. The fields below are the resolved boundary; #6 adds the helpers
+ * ({@link #providerKey()}, {@link #modelOr(String)}, {@link #requireApiKey(String)}) that the
  * {@code com.agentmemory.llm} factory uses to build provider clients <em>after</em> auth is
  * resolved (invariant #14), keeping the contract "auth is a resolved, typed value, never an ad-hoc
  * {@code System.getenv} read" intact.
  *
- * <p>All fields are nullable at this stage: the configuration surface for #2 only needs to
- * <em>carry</em> credentials, not validate provider reachability (that is #6, explicitly out of
- * scope here). {@code apiKey} is held as a {@code char[]}-free {@link String} for binding
- * simplicity; redaction in {@link #toString()} keeps it out of logs.
+ * <p>Most fields are nullable at this stage: the configuration surface only needs to <em>carry</em>
+ * credentials, not validate provider reachability (that is #6). {@code apiKey} is held as a
+ * {@code char[]}-free {@link String} for binding simplicity; redaction in {@link #toString()} keeps
+ * it out of logs.
+ *
+ * <p>The nested {@link OAuth} block (issue #113) points the {@code openai-oauth} provider at the
+ * <em>token file</em> holding its ChatGPT/Codex OAuth credential. Unlike a static {@link #apiKey},
+ * that long-lived secret is not pasted into YAML: it is written by {@code agent-memory auth login
+ * openai-oauth} and refreshed/rewritten by the server, so the config only carries the file path
+ * (defaulted under the data dir when unset).
  *
  * @param provider provider key (e.g. {@code anthropic}, {@code openai}, {@code openai-compat},
- *                 {@code gemini}); {@code null} until configured.
- * @param apiKey   secret API key; {@code null} when the provider needs none (e.g. a local model).
- * @param baseUrl  override base URL for OpenAI-compatible / self-hosted endpoints; {@code null}
- *                 to use the provider default.
+ *                 {@code openai-oauth}, {@code gemini}); {@code null} until configured.
+ * @param apiKey   secret API key; {@code null} when the provider needs none (e.g. a local model, or
+ *                 the OAuth provider, which uses {@link #oauth} + a token file instead).
+ * @param baseUrl  override base URL for OpenAI-compatible / self-hosted endpoints (and the Codex
+ *                 Responses endpoint for {@code openai-oauth}); {@code null} to use the default.
  * @param model    model identifier to use for this axis; {@code null} until configured.
+ * @param oauth    OAuth token-file pointer for the {@code openai-oauth} provider; {@link OAuth#NONE}
+ *                 (the default) for every static-key provider.
  */
-public record ProviderAuth(String provider, String apiKey, String baseUrl, String model) {
+public record ProviderAuth(String provider, String apiKey, String baseUrl, String model,
+        @DefaultValue OAuth oauth) {
 
-    /** An empty, unconfigured placeholder — the default until #6 wires real providers. */
-    public static final ProviderAuth NONE = new ProviderAuth(null, null, null, null);
+    /** An empty, unconfigured placeholder. */
+    public static final ProviderAuth NONE = new ProviderAuth(null, null, null, null, OAuth.NONE);
+
+    // The canonical constructor is the one Spring binds @ConfigurationProperties through; mark it
+    // explicitly because the convenience 4-arg constructor below would otherwise make the binding
+    // constructor ambiguous (issue #113 added the 5th OAuth field — mirrors AgentMemoryProperties.Auth).
+    @ConstructorBinding
+    public ProviderAuth {
+        if (oauth == null) {
+            oauth = OAuth.NONE;
+        }
+    }
+
+    /**
+     * Backwards-compatible constructor without the OAuth sub-block (issue #113 added the 5th field).
+     * The many call sites and tests predating OAuth use this 4-arg form; it defaults to {@link OAuth#NONE}.
+     */
+    public ProviderAuth(String provider, String apiKey, String baseUrl, String model) {
+        this(provider, apiKey, baseUrl, model, OAuth.NONE);
+    }
 
     /** @return {@code true} when at least a provider key has been configured. */
     public boolean isConfigured() {
@@ -80,6 +111,37 @@ public record ProviderAuth(String provider, String apiKey, String baseUrl, Strin
         return "ProviderAuth[provider=" + provider
                 + ", apiKey=" + (hasApiKey() ? "***" : "<none>")
                 + ", baseUrl=" + baseUrl
-                + ", model=" + model + "]";
+                + ", model=" + model
+                + ", oauth=" + oauth + "]";
+    }
+
+    /**
+     * Token-file pointer for the {@code openai-oauth} chat provider (issue #113). The provider's
+     * long-lived ChatGPT/Codex refresh token is not configured here — it lives in the token file the
+     * {@code agent-memory auth login openai-oauth} flow writes (DD-001 — the server holds and refreshes
+     * the credential). This block only carries the path; when {@link #tokenFile} is blank the wiring
+     * defaults it to {@code <data-dir>/auth.json}. The path is not a secret, so it is logged plainly.
+     *
+     * @param tokenFile filesystem path of the shared OAuth token file; blank ⇒ default under the data dir.
+     */
+    public record OAuth(@DefaultValue("") String tokenFile) {
+
+        /** The disabled default — no token-file override (every static-key provider uses this). */
+        public static final OAuth NONE = new OAuth("");
+
+        /** @return whether a non-blank token-file path was configured. */
+        public boolean hasTokenFile() {
+            return tokenFile != null && !tokenFile.isBlank();
+        }
+
+        /** @return whether anything meaningful was configured in this block. */
+        public boolean isConfigured() {
+            return hasTokenFile();
+        }
+
+        @Override
+        public String toString() {
+            return "OAuth[tokenFile=" + (hasTokenFile() ? tokenFile : "<default>") + "]";
+        }
     }
 }

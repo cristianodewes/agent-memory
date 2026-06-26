@@ -111,6 +111,37 @@ class ProviderFactoryTest {
     }
 
     @Test
+    void selectsOpenAiOAuthForChatAxis(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tmp)
+            throws java.io.IOException {
+        // 'openai-oauth' is registered and selectable purely by config (issue #113); construction loads
+        // the token file, so we write a minimal one (the format `auth login openai-oauth` produces).
+        assertThat(factory.llmProviderKeys()).contains("openai-oauth");
+        java.nio.file.Path tokenFile = tmp.resolve("auth.json");
+        java.nio.file.Files.writeString(tokenFile,
+                "{\"openai\":{\"type\":\"oauth\",\"access\":\"a\",\"refresh\":\"r\",\"expires\":9999999999999}}");
+
+        ProviderAuth auth = new ProviderAuth("openai-oauth", null, null, null,
+                new ProviderAuth.OAuth(tokenFile.toString()));
+
+        LlmProvider provider = factory.createLlmProvider(auth);
+
+        assertThat(provider).isInstanceOf(OpenAiOAuthLlmProvider.class);
+        assertThat(provider.id()).isEqualTo("openai-oauth");
+        assertThat(provider.model()).isEqualTo(OpenAiOAuthLlmProvider.DEFAULT_MODEL);
+    }
+
+    @Test
+    void openAiOAuthWithoutTokenFileFailsFast() {
+        // Selectable by config; the token file is required at construction (invariant #14). The factory
+        // receives a blank token-file path (in production the wiring defaults it under the data dir).
+        ProviderAuth noToken = new ProviderAuth("openai-oauth", null, null, null);
+
+        assertThatThrownBy(() -> factory.createLlmProvider(noToken))
+                .isInstanceOf(LlmException.class)
+                .hasMessageContaining("token file");
+    }
+
+    @Test
     void selectsOpenAiCompatAndFailsFastWithoutBaseUrl() {
         // 'openai-compat' is registered and requires an explicit base_url — fail fast at construction.
         assertThat(factory.llmProviderKeys()).contains("openai-compat");

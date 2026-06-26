@@ -27,10 +27,12 @@ agent-memory:
   # fails fast if it is unreachable. Pick ONE provider below.
   llm:
     auth:
-      provider: ""       # anthropic | openai | openai-compat | gemini
+      provider: ""       # anthropic | openai | openai-compat | openai-oauth | gemini
       api-key: ""        # secret key; LEAVE EMPTY for keyless local engines (see openai-compat)
       base-url: ""       # override endpoint; REQUIRED for openai-compat, optional otherwise
       model: ""          # model id; required for openai-compat / local engines (no universal default)
+      # oauth:           # only for provider=openai-oauth (the credential lives in a token file)
+      #   token-file: "" # optional; default <data-dir>/auth.json (written by `auth login openai-oauth`)
 
     # --- worked examples (copy one into `auth:` above) -------------------------------------------
     #
@@ -52,6 +54,19 @@ agent-memory:
     #     provider: openai-compat
     #     base-url: http://localhost:11434/v1
     #     model: llama3.1
+    #
+    # OpenAI via OAuth (ChatGPT subscription login, no per-token API key): requests go to the Codex
+    # Responses backend (chatgpt.com/backend-api/codex/responses), NOT api.openai.com. Sign in ONCE
+    # with the client — it writes the token to <data-dir>/auth.json — then the server reads + refreshes
+    # it. The credential is NOT pasted here; config only selects the provider:
+    #   $ agent-memory auth login openai-oauth   # --data-dir = the SERVER's data dir
+    #   auth:
+    #     provider: openai-oauth
+    #     model: gpt-5.5                # optional (default gpt-5.5)
+    #     # oauth:
+    #     #   token-file: ""            # optional; default <data-dir>/auth.json
+    #     # base-url: ""                # optional; overrides the Codex Responses endpoint
+    # The Codex client id / login + refresh endpoints are fixed in code (unofficial, may change).
     #
     # Any other OpenAI-compatible engine (vLLM, LM Studio, llama.cpp server, Groq, Together,
     # DeepSeek, Mistral, Gemini's OpenAI-compatible endpoint) works the same way: set

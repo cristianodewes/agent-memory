@@ -38,10 +38,27 @@ public class LlmModule {
      */
     @Bean
     public LlmProvider llmProvider(ProviderFactory factory, AgentMemoryConfig config) {
-        ProviderAuth auth = config.llm().auth();
+        ProviderAuth auth = resolveLlmAuth(config);
         LlmProvider provider = factory.createLlmProvider(auth);
         log.info("LLM provider configured: id={}, model={}", provider.id(), provider.model());
         return provider;
+    }
+
+    /**
+     * Resolve the chat-axis auth, defaulting the {@code openai-oauth} token-file path to
+     * {@code <data-dir>/auth.json} when it is left unset (issue #113). The data dir is known only here
+     * in the wiring layer, so the default is applied before the (data-dir-agnostic) factory builds the
+     * provider — keeping the factory seam a pure {@code ProviderAuth -> provider} mapping.
+     */
+    private static ProviderAuth resolveLlmAuth(AgentMemoryConfig config) {
+        ProviderAuth auth = config.llm().auth();
+        if (!OpenAiOAuthLlmProvider.PROVIDER_KEY.equals(auth.providerKey()) || auth.oauth().hasTokenFile()) {
+            return auth;
+        }
+        String defaultTokenFile =
+                config.dataDir().resolve(OpenAiOAuthLlmProvider.DEFAULT_TOKEN_FILE).toString();
+        return new ProviderAuth(auth.provider(), auth.apiKey(), auth.baseUrl(), auth.model(),
+                new ProviderAuth.OAuth(defaultTokenFile));
     }
 
     /**

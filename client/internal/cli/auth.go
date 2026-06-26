@@ -8,6 +8,7 @@ import (
 
 	"github.com/cristianodewes/agent-memory/client/internal/config"
 	"github.com/cristianodewes/agent-memory/client/internal/oidc"
+	"github.com/cristianodewes/agent-memory/client/internal/openaioauth"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,12 @@ const loginTimeout = 10 * time.Minute
 // IdP's HTTP client and a no-op poll sleeper; production always gets the real net/http client and
 // wall-clock sleeper from oidc.NewClient.
 var newOidcClient = func(opts ...oidc.Option) *oidc.Client { return oidc.NewClient(opts...) }
+
+// newOpenAIOAuthClient builds the ChatGPT/Codex OAuth login client. A package var only so a test can
+// inject a stub IdP's HTTP client and a no-op poll sleeper.
+var newOpenAIOAuthClient = func(opts ...openaioauth.Option) *openaioauth.Client {
+	return openaioauth.NewClient(opts...)
+}
 
 // newAuthCmd is the `agent-memory auth ...` parent command.
 func newAuthCmd() *cobra.Command {
@@ -48,7 +55,65 @@ func newAuthLoginCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
-	cmd.AddCommand(newAuthLoginDeviceCmd())
+	cmd.AddCommand(newAuthLoginDeviceCmd(), newAuthLoginOpenAIOAuthCmd())
+	return cmd
+}
+
+// newAuthLoginOpenAIOAuthCmd: agent-memory auth login openai-oauth [--data-dir DIR] [--timeout SECS]
+//
+// Signs in to a ChatGPT subscription via OpenAI's device-authorization + authorization-code flow
+// (issue #113) and writes the resulting token into the shared token file (<data-dir>/auth.json). The
+// agent-memory SERVER reads and refreshes that file — so point --data-dir at the server's data dir
+// (the default ~/.agent-memory matches the server default for a co-located single-user setup), then
+// set agent-memory.llm.auth.provider=openai-oauth.
+func newAuthLoginOpenAIOAuthCmd() *cobra.Command {
+	var dataDir, baseURL string
+	var timeoutSecs int
+	cmd := &cobra.Command{
+		Use:   "openai-oauth",
+		Short: "Sign in to ChatGPT (Codex OAuth) for the server's openai-oauth LLM provider",
+		Long: "Runs OpenAI's device-authorization flow for a ChatGPT subscription: prints a URL and code " +
+			"to approve in a browser, then writes the OAuth token to <data-dir>/auth.json. The server " +
+			"reads and refreshes that token (it is the only component that calls the LLM), so point " +
+			"--data-dir at the server's data dir. The ChatGPT subscription OAuth endpoints are unofficial.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			dir := resolveDataDir(dataDir)
+
+			// User-code instructions go to stderr so stdout carries only the final confirmation.
+			opts := []openaioauth.Option{openaioauth.WithOutput(cmd.ErrOrStderr())}
+			if b := strings.TrimSpace(baseURL); b != "" {
+				opts = append(opts, openaioauth.WithBaseURL(b))
+			}
+			client := newOpenAIOAuthClient(opts...)
+			ctx, cancel := context.WithTimeout(context.Background(), loginTimeout)
+			defer cancel()
+
+			tok, err := client.Login(ctx, time.Duration(timeoutSecs)*time.Second)
+			if err != nil {
+				return err
+			}
+			if err := openaioauth.Save(dir, tok); err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "openai-oauth: logged in")
+			if tok.AccountID != "" {
+				fmt.Fprintf(out, "account: %s\n", tok.AccountID)
+			}
+			fmt.Fprintf(out, "token file: %s\n", openaioauth.TokenPath(dir))
+			fmt.Fprintln(out, "Set agent-memory.llm.auth.provider=openai-oauth on the server; it reads and "+
+				"refreshes this file.")
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&timeoutSecs, "timeout", 600, "max seconds to wait for browser authorization")
+	cmd.Flags().StringVar(&baseURL, "base-url", "",
+		"OpenAI auth host override (advanced; for testing against a stub)")
+	_ = cmd.Flags().MarkHidden("base-url")
+	addDataDirFlag(cmd, &dataDir)
 	return cmd
 }
 

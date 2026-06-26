@@ -50,6 +50,7 @@ public final class ProviderFactory {
                 auth -> new OpenAiCompatLlmProvider(OpenAiCompatLlmProvider.PROVIDER_KEY, auth));
         registerLlm(OpenAiCompatLlmProvider.COMPAT_KEY,
                 auth -> new OpenAiCompatLlmProvider(OpenAiCompatLlmProvider.COMPAT_KEY, auth));
+        registerLlm(OpenAiOAuthLlmProvider.PROVIDER_KEY, OpenAiOAuthLlmProvider::new);
         registerLlm(GeminiLlmProvider.PROVIDER_KEY, GeminiLlmProvider::new);
         registerLlm(TestDoubleProvider.PROVIDER_KEY, auth -> sharedTestDouble);
 

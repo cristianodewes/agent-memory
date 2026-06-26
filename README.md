@@ -358,7 +358,7 @@ binding* do Spring (`agent-memory.llm.auth.api-key` → `AGENT_MEMORY_LLM_AUTH_A
 agent-memory:
   llm:
     auth:
-      provider: anthropic   # anthropic | openai | openai-compat | gemini | test
+      provider: anthropic   # anthropic | openai | openai-compat | openai-oauth | gemini | test
       api-key: ""           # via env AGENT_MEMORY_LLM_AUTH_API_KEY (nunca hard-code aqui)
       model: ""             # opcional; default do provedor se ausente
       base-url: ""          # opcional; OBRIGATÓRIO para openai-compat
@@ -369,6 +369,7 @@ agent-memory:
 | `anthropic` | `claude-opus-4-8` | `https://api.anthropic.com` |
 | `openai` | `gpt-5.5` | `https://api.openai.com/v1` |
 | `openai-compat` | (sem default — defina `model`) | (sem default — defina `base-url`) |
+| `openai-oauth` | `gpt-5.5` | `https://chatgpt.com/backend-api/codex/responses` (backend Codex) |
 | `gemini` | `gemini-2.5-flash` | `https://generativelanguage.googleapis.com` |
 | `test` | determinístico/offline | — (sem rede, sem chave) |
 
@@ -376,6 +377,46 @@ agent-memory:
 Mistral, o endpoint OpenAI-compatível do Gemini e engines locais (Ollama, vLLM, LM Studio,
 llama.cpp). Engines locais sem chave não enviam header `Authorization`. O server faz *probe*
 no provedor no startup e **aborta** se ele estiver inacessível.
+
+##### OpenAI via OAuth (`openai-oauth`) — assinatura ChatGPT em vez de API key
+
+Quem tem assinatura ChatGPT (Plus/Pro/Team) pode autenticar com a credencial de **login** (OAuth
+estilo Codex) em vez de uma chave de API paga por token. Um access token OAuth do ChatGPT **não** é
+uma chave da Platform API: as requisições vão para o **backend Codex**
+(`https://chatgpt.com/backend-api/codex/responses`, Responses API com streaming SSE) e incluem o
+`chatgpt-account-id`. O server mantém um **access token fresco** renovando-o de forma transparente a
+partir de um **refresh token** de longa duração (margem de 60 s antes do vencimento) e regrava o
+token rotacionado — o server é o único detentor de estado e o único que chama o LLM (DD-001).
+
+A credencial **não** é colada no YAML: ela vive em um **token file** (`<data-dir>/auth.json`, chave
+`openai`) que o login do client escreve e o server lê/renova. A config só seleciona o provider:
+
+```yaml
+agent-memory:
+  llm:
+    auth:
+      provider: openai-oauth
+      model: gpt-5.5            # opcional (default gpt-5.5)
+      # oauth:
+      #   token-file: ""        # opcional; default <data-dir>/auth.json
+      # base-url: ""            # opcional; sobrescreve o endpoint Codex Responses
+```
+
+O **login** é feito uma vez com o client, que roda o device flow da OpenAI (usercode → autorização no
+browser → troca por tokens) e grava o `auth.json`:
+
+```bash
+agent-memory auth login openai-oauth        # use --data-dir para apontar ao data-dir do server
+```
+
+Aponte o `--data-dir` para o **data-dir do server** (no caso single-user co-localizado, o default
+`~/.agent-memory` já coincide). O `client-id` do Codex, os endpoints de login/refresh e o backend
+Codex são fixos no código (mesmos do Codex CLI / referência ai-memory).
+
+> ⚠️ Os endpoints / `client-id` do OAuth de assinatura ChatGPT são **não-oficiais e podem mudar**;
+> revise os termos de uso da OpenAI quanto a acesso programático com credencial de assinatura.
+> Token file ausente, ou refresh token revogado/expirado, **aborta** o startup (fail-fast) com
+> mensagem acionável (`auth login openai-oauth`). O caminho de API key (`openai`) permanece inalterado.
 
 #### Embeddings (opcional, default-on)
 
