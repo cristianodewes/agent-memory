@@ -1,6 +1,55 @@
 package config
 
-import "testing"
+import (
+	"path/filepath"
+	"testing"
+)
+
+func TestLogsDir(t *testing.T) {
+	c := Config{DataDir: filepath.FromSlash("/data")}
+	want := filepath.Join(filepath.FromSlash("/data"), "logs")
+	if got := c.LogsDir(); got != want {
+		t.Fatalf("LogsDir() = %q, want %q", got, want)
+	}
+}
+
+func TestLoadReadsLogEnv(t *testing.T) {
+	t.Setenv(EnvDataDir, t.TempDir())
+	t.Setenv(EnvLogLevel, "  debug ")
+	t.Setenv(EnvDebug, "1")
+	cfg := Load()
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("LogLevel = %q, want trimmed %q", cfg.LogLevel, "debug")
+	}
+	if !cfg.Debug {
+		t.Fatalf("Debug = false, want true for AGENT_MEMORY_DEBUG=1")
+	}
+}
+
+func TestLoadDebugDefaultsFalse(t *testing.T) {
+	t.Setenv(EnvDataDir, t.TempDir())
+	// EnvDebug unset/empty ⇒ Debug false, LogLevel empty.
+	cfg := Load()
+	if cfg.Debug {
+		t.Fatal("Debug should default to false when AGENT_MEMORY_DEBUG is unset")
+	}
+	if cfg.LogLevel != "" {
+		t.Fatalf("LogLevel should default to empty, got %q", cfg.LogLevel)
+	}
+}
+
+func TestTruthy(t *testing.T) {
+	for _, v := range []string{"1", "true", "TRUE", " yes ", "on", "On"} {
+		if !truthy(v) {
+			t.Fatalf("truthy(%q) = false, want true", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "no", "off", "2", "enabled"} {
+		if truthy(v) {
+			t.Fatalf("truthy(%q) = true, want false", v)
+		}
+	}
+}
 
 func TestWithIdentityOverrides(t *testing.T) {
 	base := Config{ServerURL: "http://127.0.0.1:8080", Token: "env-token", DataDir: "/data"}
