@@ -3,6 +3,7 @@ package com.agentmemory.forget;
 import com.agentmemory.core.MemoryLayer;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -42,6 +43,27 @@ public class ForgetSweepRepository {
                         + "FROM pages "
                         + "WHERE workspace = ? AND project = ? AND is_latest AND deleted_at IS NULL",
                 ROW_MAPPER, workspace, project);
+    }
+
+    /**
+     * The one live (not soft-deleted) latest page version at an exact path — what a <em>targeted</em>
+     * forget ({@link ForgetSweepService#forgetPage} for a curator {@code COLD_EPISODIC} finding, #101)
+     * needs to soft-delete a specific page by id. Empty when no live page exists there (already forgotten
+     * or never existed), which makes the forget action idempotent.
+     *
+     * @param workspace workspace slug.
+     * @param project   project slug.
+     * @param path      the exact project-relative page path.
+     * @return the live latest row, or empty.
+     */
+    @Transactional(readOnly = true)
+    public Optional<Row> findLiveLatest(String workspace, String project, String path) {
+        return jdbc.query(
+                "SELECT id, path, layer, access_count, last_accessed_at, created_at "
+                        + "FROM pages "
+                        + "WHERE workspace = ? AND project = ? AND path = ? AND is_latest "
+                        + "  AND deleted_at IS NULL",
+                ROW_MAPPER, workspace, project, path).stream().findFirst();
     }
 
     /**

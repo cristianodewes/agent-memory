@@ -124,7 +124,7 @@ class AutoImproveSchedulerIntegrationTest {
 
     private static AutoImproveProperties props(int maxAttempts, int maxPerTick) {
         return new AutoImproveProperties(
-                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null));
+                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null), null);
     }
 
     private static ProposedWrite ruleEdit() {

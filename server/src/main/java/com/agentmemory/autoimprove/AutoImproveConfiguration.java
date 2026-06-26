@@ -1,12 +1,11 @@
 package com.agentmemory.autoimprove;
 
-import com.agentmemory.core.Identity;
-import com.agentmemory.core.PagePath;
 import com.agentmemory.curate.CuratorService;
 import com.agentmemory.eval.EvalGate;
+import com.agentmemory.forget.ForgetSweepService;
+import com.agentmemory.links.WikiLinkParser;
 import com.agentmemory.mcp.MemoryWriteService;
 import com.agentmemory.store.PageRepository;
-import java.util.List;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -35,7 +34,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
         afterName = {
             "com.agentmemory.mcp.McpConfiguration",
             "com.agentmemory.curate.CuratorConfiguration",
-            "com.agentmemory.eval.EvalGateConfiguration"
+            "com.agentmemory.eval.EvalGateConfiguration",
+            "com.agentmemory.forget.ForgetConfiguration",
+            "com.agentmemory.links.LinksConfiguration"
         })
 @EnableConfigurationProperties(AutoImproveProperties.class)
 public class AutoImproveConfiguration {
@@ -53,20 +54,27 @@ public class AutoImproveConfiguration {
     }
 
     /**
-     * Applies an approved proposal through the normal durable-write path (atomic page write + git commit
-     * + audit). Present only when the write service is wired; otherwise the gate can still hold proposals
-     * but cannot auto-apply.
+     * Applies an approved proposal by dispatching on its {@code kind} (issue #101): content
+     * {@code page.edit} through the normal durable-write path (atomic page write + git commit + audit),
+     * {@code page.forget} through the {@link ForgetSweepService forget sweep}, {@code link.fix} by pruning
+     * the dangling wikilink and re-writing the page. Present only when the write/forget/link beans are
+     * wired (always co-present with a {@link DataSource}); otherwise the gate can still hold proposals but
+     * cannot auto-apply.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    @ConditionalOnBean(MemoryWriteService.class)
-    public ProposalApplier proposalApplier(MemoryWriteService writes) {
-        return (scope, write) -> {
-            Identity id = Identity.ofPage(scope.workspace(), scope.project(), PagePath.of(write.path()));
-            writes.writePages(
-                    List.of(new MemoryWriteService.PageWrite(id, write.title(), write.body())),
-                    "auto-improve");
-        };
+    @ConditionalOnBean({
+        MemoryWriteService.class, ForgetSweepService.class, WikiLinkParser.class, PageRepository.class
+    })
+    public ProposalApplier proposalApplier(
+            MemoryWriteService writes,
+            ForgetSweepService forget,
+            WikiLinkParser parser,
+            PageRepository pages) {
+        return new DispatchingProposalApplier(
+                new ContentProposalApplier(writes),
+                new ForgetProposalApplier(forget),
+                new LinkFixProposalApplier(pages, parser, writes));
     }
 
     @Bean
@@ -106,5 +114,45 @@ public class AutoImproveConfiguration {
             ObjectProvider<ProposalSource> source,
             AutoImproveProperties props) {
         return new AutoImproveScheduler(state, gate, source::getIfAvailable, props);
+    }
+
+    // --- issue #101: scope-level curator corrective-action loop ------------------------------------
+
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public CuratorActionRepository curatorActionRepository(JdbcTemplate jdbcTemplate) {
+        return new CuratorActionRepository(jdbcTemplate);
+    }
+
+    /**
+     * The scope-level corrective-action source (issue #101): maps each actionable #29 curator finding to
+     * a {@code page.forget}/{@code link.fix} proposal. Present only when the curator is wired (same
+     * condition as the #100 content {@link CuratorProposalSource}); tests construct it directly.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean(CuratorService.class)
+    public CuratorActionProposalSource curatorActionProposalSource(CuratorService curator) {
+        return new CuratorActionProposalSource(curator);
+    }
+
+    /**
+     * The out-of-band scope-level curator-action loop. Created when its data + gate + source beans exist,
+     * but inert by default: off unless {@code agent-memory.auto-improve.curator-actions.enabled=true}.
+     * Distinct from {@link AutoImproveScheduler} (per-finished-session); this one audits whole projects.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean({
+        CuratorActionRepository.class, JdbcPendingWriteRepository.class, AutoImproveGate.class,
+        CuratorActionProposalSource.class
+    })
+    public CuratorActionScheduler curatorActionScheduler(
+            CuratorActionRepository scopes,
+            JdbcPendingWriteRepository pending,
+            AutoImproveGate gate,
+            CuratorActionProposalSource source,
+            AutoImproveProperties props) {
+        return new CuratorActionScheduler(scopes, pending, gate, source, props);
     }
 }

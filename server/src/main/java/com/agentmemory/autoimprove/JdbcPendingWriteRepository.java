@@ -6,10 +6,12 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Instant;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
@@ -81,11 +83,35 @@ public class JdbcPendingWriteRepository {
         return jdbc.query("SELECT * FROM pending_writes WHERE id = ?", MAPPER, id).stream().findFirst();
     }
 
+    /**
+     * The {@code kind|path} keys of proposals in a project that are still open or terminal-without-effect
+     * — {@code proposed}, {@code approved} or {@code rejected}. The scope-level curator-action loop (#101)
+     * uses this to stay quiescent: a finding whose corrective action is already pending (or was rejected)
+     * is not re-proposed every tick. {@code applied} proposals are deliberately excluded — a forget /
+     * link-fix that landed removes the finding, so it cannot recur; if it somehow does, re-proposing is
+     * correct.
+     *
+     * @param scope the project.
+     * @return the set of {@code kind + '|' + path} keys to skip; never null.
+     */
+    public Set<String> openActionKeys(Scope scope) {
+        List<String> rows = jdbc.query(
+                "SELECT kind, path FROM pending_writes "
+                        + "WHERE workspace = ? AND project = ? AND path IS NOT NULL "
+                        + "  AND status IN ('proposed', 'approved', 'rejected')",
+                (rs, n) -> rs.getString("kind") + '|' + rs.getString("path"),
+                scope.workspaceSlug(), scope.projectSlug());
+        return new HashSet<>(rows);
+    }
+
     private String proposalJson(ProposedWrite write) {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put("path", write.path());
         p.put("title", write.title());
         p.put("body", write.body());
+        if (!write.params().isEmpty()) {
+            p.put("params", write.params()); // action arguments (e.g. link.fix target) — #101
+        }
         return json.writeValueAsString(p);
     }
 

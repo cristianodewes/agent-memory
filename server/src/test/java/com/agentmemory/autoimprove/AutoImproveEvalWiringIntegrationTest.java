@@ -99,7 +99,7 @@ class AutoImproveEvalWiringIntegrationTest {
         EvalGate eval = new EvalGate(new EvalGateProperties(
                 true, List.of("_rules/"), probe(mode), Duration.ofSeconds(30), 65_536, null));
         AutoImproveProperties props = new AutoImproveProperties(
-                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null));
+                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null), null);
         return new AutoImproveGate(pending, (scope, write) -> applied.add(write), props, eval);
     }
 

@@ -26,10 +26,10 @@ One JSON object:
 | field     | type   | notes                                                            |
 |-----------|--------|------------------------------------------------------------------|
 | `version` | string | contract version; currently `eval-gate/v1`.                      |
-| `action`  | string | `upsert` (create/update) or `delete`.                            |
-| `path`    | string | target page path; matched the configured prefixes.              |
-| `title`   | string | proposed page title (may be empty).                             |
-| `body`    | string | proposed page body / markdown (may be empty).                   |
+| `action`  | string | the content actions `upsert` (create/update) / `delete`, or a curator corrective-action verb (#101): `page.forget` (soft-delete the page at `path`) / `link.fix` (prune a dangling link from the page at `path`). A gate keyed only on `path` can ignore the verb. |
+| `path`    | string | target/affected page path; matched against the configured prefixes. |
+| `title`   | string | proposed page title, or a short action label (may be empty).    |
+| `body`    | string | proposed page body, or a human description of the action (may be empty). |
 
 ## Output (stdout)
 

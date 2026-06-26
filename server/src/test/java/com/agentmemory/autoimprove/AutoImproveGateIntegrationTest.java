@@ -78,7 +78,7 @@ class AutoImproveGateIntegrationTest {
 
     private AutoImproveGate gate(boolean requireApproval) {
         AutoImproveProperties props = new AutoImproveProperties(
-                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null));
+                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null), null);
         return new AutoImproveGate(
                 pending, (scope, write) -> applied.add(write), props, disabledEvalGate());
     }
