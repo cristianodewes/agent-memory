@@ -22,6 +22,8 @@ type installFlags struct {
 	file      string // instructions filename override; default = the client's instructions file
 	agent     string // target agent/client id (--agent); default claude-code
 	client    string // target agent/client id (--client alias); wins over --agent when set
+	scope     string // install scope: project (default) | user (--scope)
+	global    bool   // shorthand for --scope user (--global)
 }
 
 // resolved holds the concrete values the install ops act on, plus the selected client profile and the
@@ -37,10 +39,15 @@ type resolved struct {
 	instrFile string // instructions filename to use (override or client default; "" if none)
 }
 
-// sessionHeaderCommand is the headersHelper command baked into Claude Code's .mcp.json so it emits the
-// per-session X-Agent-Memory-Session header (#87). Empty when identity did not normalize (the MCP entry
-// is still written, just without the header) or for clients whose MCP shape does not support it.
+// sessionHeaderCommand is the headersHelper command baked into Claude Code's MCP config so it emits the
+// per-session X-Agent-Memory-Session header (#87). At project scope it bakes this project's identity; at
+// user scope (#116) one global wiring serves every repo, so it bakes NO identity and the helper derives
+// it from cwd at runtime. Empty when identity did not normalize (project scope) — the MCP entry is still
+// written, just without the header; clients whose MCP shape does not support headersHelper ignore it.
 func (r resolved) sessionHeaderCommand() string {
+	if r.ctx.Scope == install.ScopeUser {
+		return install.McpSessionHeaderCommandGlobal(r.bin)
+	}
 	return install.McpSessionHeaderCommand(r.bin, r.workspace, r.project)
 }
 
@@ -61,12 +68,13 @@ func (r resolved) mcpTarget() (string, bool, error) {
 }
 
 // instrTarget returns the absolute instructions file and true when the client has an instructions
-// surface (or the user supplied an explicit --file).
+// surface (or the user supplied an explicit --file). The directory is scope-aware (Claude Code's global
+// instructions live in ~/.claude at user scope — see Client.InstrDir).
 func (r resolved) instrTarget() (string, bool, error) {
 	if r.instrFile == "" {
 		return "", false, nil
 	}
-	return requireAbs(filepath.Join(r.ctx.ProjectRoot, r.instrFile))
+	return requireAbs(filepath.Join(r.client.InstrDir(r.ctx), r.instrFile))
 }
 
 // requireAbs guards against a path that did not absolutize — which happens for a home-based client when
@@ -130,6 +138,11 @@ func (f installFlags) resolve() (resolved, error) {
 		return resolved{}, err
 	}
 
+	scope, err := f.resolveScope()
+	if err != nil {
+		return resolved{}, err
+	}
+
 	// The instructions file: an explicit --file wins; otherwise the client's conventional file
 	// (CLAUDE.md / AGENTS.md / GEMINI.md). Empty means the client has no instructions surface.
 	instrFile := strings.TrimSpace(f.file)
@@ -139,7 +152,7 @@ func (f installFlags) resolve() (resolved, error) {
 
 	return resolved{
 		client:    client,
-		ctx:       install.PathContext{ProjectRoot: root, Home: install.ResolveHome()},
+		ctx:       install.PathContext{ProjectRoot: root, Home: install.ResolveHome(), Scope: scope},
 		bin:       bin,
 		serverURL: serverURL,
 		token:     token,
@@ -147,6 +160,16 @@ func (f installFlags) resolve() (resolved, error) {
 		project:   project,
 		instrFile: instrFile,
 	}, nil
+}
+
+// resolveScope resolves the install scope from the flags: --global is shorthand for --scope user, and an
+// explicit --scope always wins. Defaults to project (backward-compatible).
+func (f installFlags) resolveScope() (install.Scope, error) {
+	s := f.scope
+	if s == "" && f.global {
+		s = string(install.ScopeUser)
+	}
+	return install.ParseScope(s)
 }
 
 // normalizedIdentity returns the (workspace, project) slugs for id, normalized exactly as the hook
@@ -178,12 +201,18 @@ func (f *installFlags) addDir(cmd *cobra.Command) {
 		"project root to install into (default: the git repository root, else the current directory)")
 }
 
-// addAgent registers the --agent/--client selector on a command.
+// addAgent registers the target selectors on a command: the --agent/--client agent picker and the
+// --scope/--global install-location picker (issue #116).
 func (f *installFlags) addAgent(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&f.agent, "agent", install.DefaultClientID,
 		"target agent/client: "+strings.Join(install.ClientIDs(), ", "))
 	cmd.Flags().StringVar(&f.client, "client", "",
 		"alias for --agent (target agent/client id)")
+	cmd.Flags().StringVar(&f.scope, "scope", "",
+		"install scope for Claude Code: 'project' (default; this repo) or 'user' (recommended: "+
+			"~/.claude, covers every repo)")
+	cmd.Flags().BoolVar(&f.global, "global", false,
+		"shorthand for --scope user (install once for every repository)")
 }
 
 // doHooks installs the hook surface for the resolved client, reporting unsupported as a no-op.

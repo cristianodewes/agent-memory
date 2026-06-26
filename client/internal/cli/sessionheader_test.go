@@ -73,6 +73,27 @@ func TestSessionHeaderEmitsRecordedSession(t *testing.T) {
 	}
 }
 
+// TestSessionHeaderDerivesIdentityFromCwd is the runtime guarantee the user-scope (global) install
+// relies on (#116): the global headersHelper command bakes NO --workspace/--project, so
+// `mcp-session-header` must derive the project from its cwd and still read back the recorded session.
+func TestSessionHeaderDerivesIdentityFromCwd(t *testing.T) {
+	dataDir := t.TempDir()
+	ws, proj := identityForTest(t)
+	const sessionID = "0190b3e2-1d00-7a00-8000-0000000000cc"
+	if err := capturesession.Write(dataDir, ws, proj, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	// No identity flags — exactly how the global wiring invokes it; identity comes from cwd.
+	out, _, err := runSessionHeaderCmd(t, dataDir)
+	if err != nil {
+		t.Fatalf("command error: %v", err)
+	}
+	want := `{"` + capturesession.HeaderName + `":"` + sessionID + `"}`
+	if out != want {
+		t.Fatalf("cwd-derived header = %q, want %q", out, want)
+	}
+}
+
 // TestSessionHeaderEmitsEmptyObjectWhenNoSession: no recorded session → an empty JSON object, so no
 // header is added and the fail-closed server rejects a no-scope session_aware call (never a leak).
 func TestSessionHeaderEmitsEmptyObjectWhenNoSession(t *testing.T) {

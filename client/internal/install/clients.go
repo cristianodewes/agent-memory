@@ -23,11 +23,42 @@ import (
 // PathContext carries the roots an installer resolves a client's config paths against. ProjectRoot is
 // the repository root (or cwd) used for project-scoped clients; Home is the user's home directory used
 // for the clients whose config is conventionally global (codex, cursor, gemini-cli, claude-desktop).
-// The user/project SCOPE toggle (issue #116) layers on top of this by parametrizing which root a
-// project-capable client like claude-code resolves against.
+// Scope (issue #116) selects, for a client that supports both, whether to wire into the per-project tree
+// or the user-global config — one global install then serves every repository.
 type PathContext struct {
 	ProjectRoot string
 	Home        string
+	Scope       Scope
+}
+
+// Scope selects project-local vs user-global install locations (issue #116).
+type Scope string
+
+const (
+	// ScopeProject wires into the repository tree (<repo>/.claude/…, <repo>/.mcp.json). The default,
+	// for backward compatibility.
+	ScopeProject Scope = "project"
+	// ScopeUser wires into the user-global config (~/.claude/settings.json + the global Claude MCP
+	// config), so a single install covers every repository. Recommended for most users.
+	ScopeUser Scope = "user"
+)
+
+// DefaultScope is the scope an install command targets when neither --scope nor --global is given. It
+// stays ScopeProject so the historical behavior is the default; ScopeUser is an opt-in.
+const DefaultScope = ScopeProject
+
+// ParseScope validates a --scope value, returning DefaultScope for "". Any other value is an error.
+func ParseScope(s string) (Scope, error) {
+	switch Scope(strings.ToLower(strings.TrimSpace(s))) {
+	case "":
+		return DefaultScope, nil
+	case ScopeProject:
+		return ScopeProject, nil
+	case ScopeUser:
+		return ScopeUser, nil
+	default:
+		return "", fmt.Errorf("unknown scope %q (use %q or %q)", s, ScopeProject, ScopeUser)
+	}
 }
 
 // HookShape is the on-disk structure a client's hooks file uses.
@@ -103,9 +134,22 @@ type Client struct {
 	Hooks *HookProfile // nil when the client has no hook surface
 	MCP   *MCPProfile  // nil when the client has no MCP surface
 
-	// InstrFile is the agent-instructions filename the self-routing block is written into (e.g.
-	// "CLAUDE.md", "AGENTS.md", "GEMINI.md"), resolved at the project root. Empty when unsupported.
+	// InstrFile is the agent-instructions filename the self-routing block is written into: "CLAUDE.md"
+	// for Claude Code and "AGENTS.md" for every other agent (the convention ai-memory's
+	// install_instructions.rs documents). Empty when unsupported. The directory it resolves in is
+	// scope-aware (see InstrDir).
 	InstrFile string
+}
+
+// InstrDir returns the directory the instructions file is written into for ctx. At user scope (#116)
+// Claude Code's self-routing belongs in the global user instructions (~/.claude), so the block applies
+// to every repository; every other case (project scope, or another client — multi-agent global is phase
+// 2) uses the project root.
+func (c *Client) InstrDir(ctx PathContext) string {
+	if c.ID == DefaultClientID && ctx.Scope == ScopeUser {
+		return filepath.Join(ctx.Home, ".claude")
+	}
+	return ctx.ProjectRoot
 }
 
 // InstrPath returns the absolute instructions file path for ctx, or ("", false) when the client has no
@@ -114,15 +158,22 @@ func (c *Client) InstrPath(ctx PathContext) (string, bool) {
 	if c.InstrFile == "" {
 		return "", false
 	}
-	return filepath.Join(ctx.ProjectRoot, c.InstrFile), true
+	return filepath.Join(c.InstrDir(ctx), c.InstrFile), true
 }
 
 // DefaultClientID is the client an install command targets when no --agent/--client flag is given. It
 // MUST stay claude-code so the historical behavior is the default.
 const DefaultClientID = "claude-code"
 
-// claudeCodeHookEvents are the six Claude Code lifecycle events agent-memory wires (the canonical set;
-// client name == canonical --event value).
+// All per-client event vocabularies below mirror ai-memory's *_EVENTS constants
+// (crates/ai-memory-cli/src/commands/render_shared.rs). Each entry is {client-config-event-name,
+// canonical --event arg}: the client fires under its own lifecycle name, and the command always passes
+// the canonical kind (agent-memory's hook canonicalizes it identically — internal/hook). agent-memory
+// renders the canonical arg as the Claude Code PascalCase name rather than ai-memory's kebab script stem
+// (functionally identical via ParseEvent), so Claude Code's default command is byte-for-byte unchanged.
+
+// claudeCodeHookEvents are the seven Claude Code events (CLAUDE_CODE_EVENTS; client name == canonical
+// --event value).
 var claudeCodeHookEvents = func() []hookEvent {
 	evs := make([]hookEvent, len(ManagedHookEvents))
 	for i, e := range ManagedHookEvents {
@@ -131,19 +182,36 @@ var claudeCodeHookEvents = func() []hookEvent {
 	return evs
 }()
 
-// cursorHookEvents are Cursor's camelCase lifecycle names mapped to the canonical --event values.
-var cursorHookEvents = []hookEvent{
-	{"sessionStart", "SessionStart"},
-	{"userPromptSubmit", "UserPromptSubmit"},
-	{"preToolUse", "PreToolUse"},
-	{"postToolUse", "PostToolUse"},
-	{"stop", "Stop"},
-	{"sessionEnd", "SessionEnd"},
+// codexHookEvents mirror ai-memory's CODEX_EVENTS: the six common events with NO SessionEnd (Codex uses
+// Stop for both turn-end and session-end). Codex keys are the Claude Code PascalCase names.
+var codexHookEvents = []hookEvent{
+	{"SessionStart", "SessionStart"},
+	{"UserPromptSubmit", "UserPromptSubmit"},
+	{"PreToolUse", "PreToolUse"},
+	{"PostToolUse", "PostToolUse"},
+	{"PreCompact", "PreCompact"},
+	{"Stop", "Stop"},
 }
 
-// geminiHookEvents are Gemini CLI's event names mapped to the canonical --event values. Gemini exposes
-// tool and compaction lifecycle moments under BeforeTool/AfterTool/PreCompress.
+// cursorHookEvents mirror ai-memory's CURSOR_EVENTS: camelCase names, a FLAT shape, and two extras over
+// the common set — beforeSubmitPrompt is Cursor's user-prompt concept (no userPromptSubmit event), and
+// postToolUseFailure is a second post-tool signal. Both map to the canonical kind their script implies.
+var cursorHookEvents = []hookEvent{
+	{"sessionStart", "SessionStart"},
+	{"sessionEnd", "SessionEnd"},
+	{"beforeSubmitPrompt", "UserPromptSubmit"},
+	{"preToolUse", "PreToolUse"},
+	{"postToolUse", "PostToolUse"},
+	{"postToolUseFailure", "PostToolUse"},
+	{"preCompact", "PreCompact"},
+	{"stop", "Stop"},
+}
+
+// geminiHookEvents mirror ai-memory's GEMINI_EVENTS: SessionStart/SessionEnd plus BeforeTool/AfterTool/
+// PreCompress (Gemini's names for pre-/post-tool and compaction). No UserPromptSubmit or Stop equivalent.
 var geminiHookEvents = []hookEvent{
+	{"SessionStart", "SessionStart"},
+	{"SessionEnd", "SessionEnd"},
 	{"BeforeTool", "PreToolUse"},
 	{"AfterTool", "PostToolUse"},
 	{"PreCompress", "PreCompact"},
@@ -158,11 +226,11 @@ var clients = []*Client{
 		Hooks: &HookProfile{
 			Shape:  HookShapeNested,
 			Events: claudeCodeHookEvents,
-			Path:   func(ctx PathContext) string { return SettingsPath(ctx.ProjectRoot) },
+			Path:   claudeSettingsPath,
 		},
 		MCP: &MCPProfile{
 			Shape: MCPShapeClaudeHTTP,
-			Path:  func(ctx PathContext) string { return McpPath(ctx.ProjectRoot) },
+			Path:  claudeMcpPath,
 		},
 		InstrFile: "CLAUDE.md",
 	},
@@ -170,7 +238,13 @@ var clients = []*Client{
 		ID:      "codex",
 		Name:    "OpenAI Codex CLI",
 		Aliases: []string{"openai-codex"},
-		// Codex has no lifecycle-hook surface; only MCP + AGENTS.md instructions.
+		Hooks: &HookProfile{
+			// Codex hooks are JSON in ~/.codex/hooks.json, nested shape (ai-memory codex_hooks_path /
+			// CODEX_PROFILE). Separate from the TOML config.toml that holds MCP.
+			Shape:  HookShapeNested,
+			Events: codexHookEvents,
+			Path:   func(ctx PathContext) string { return filepath.Join(ctx.Home, ".codex", "hooks.json") },
+		},
 		MCP: &MCPProfile{
 			Shape: MCPShapeCodexTOML,
 			Path:  func(ctx PathContext) string { return filepath.Join(ctx.Home, ".codex", "config.toml") },
@@ -205,12 +279,14 @@ var clients = []*Client{
 			Shape: MCPShapeGeminiHTTP,
 			Path:  func(ctx PathContext) string { return geminiSettingsPath(ctx) },
 		},
-		InstrFile: "GEMINI.md",
+		// ai-memory writes the self-routing block to AGENTS.md for every non-Claude agent (Gemini CLI
+		// reads AGENTS.md), not GEMINI.md — see install_instructions.rs.
+		InstrFile: "AGENTS.md",
 	},
 	{
 		ID:      "vscode-copilot",
 		Name:    "VS Code (Copilot)",
-		Aliases: []string{"vscode", "copilot"},
+		Aliases: []string{"vscode", "copilot", "github-copilot"},
 		// VS Code wires MCP only; hooks and self-routing instructions are not part of its model here.
 		MCP: &MCPProfile{
 			Shape: MCPShapeVSCodeServers,
@@ -231,6 +307,34 @@ var clients = []*Client{
 // geminiSettingsPath is the single settings.json Gemini CLI reads for both hooks and MCP.
 func geminiSettingsPath(ctx PathContext) string {
 	return filepath.Join(ctx.Home, ".gemini", "settings.json")
+}
+
+// claudeSettingsPath resolves Claude Code's hooks settings file for the scope (issue #116): the user
+// home's .claude/settings.json at user scope (one wiring for every repo), else the repo's
+// .claude/settings.json. The hook commands themselves carry no baked identity in either scope — the
+// native hook derives (workspace, project) from its cwd at runtime — so the user-scope file works
+// across all repositories unchanged.
+func claudeSettingsPath(ctx PathContext) string {
+	if ctx.Scope == ScopeUser {
+		return SettingsPath(ctx.Home)
+	}
+	return SettingsPath(ctx.ProjectRoot)
+}
+
+// claudeMcpPath resolves Claude Code's MCP config file for the scope (issue #116): the global Claude
+// config ~/.claude.json at user scope, else the project's .mcp.json. Both store the server under the
+// same mcpServers map, so the renderer is identical; only the per-session headersHelper differs (the
+// user-scope command bakes no fixed workspace/project — see the CLI's scope-aware session header).
+func claudeMcpPath(ctx PathContext) string {
+	if ctx.Scope == ScopeUser {
+		return ClaudeGlobalMcpPath(ctx.Home)
+	}
+	return McpPath(ctx.ProjectRoot)
+}
+
+// ClaudeGlobalMcpPath is Claude Code's user-global MCP registry (~/.claude.json).
+func ClaudeGlobalMcpPath(home string) string {
+	return filepath.Join(home, ".claude.json")
 }
 
 // claudeDesktopConfigPath resolves Claude Desktop's per-OS config file. Claude Desktop stores its
