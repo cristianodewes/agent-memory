@@ -1,0 +1,27 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.6.0.schema.json
+PackageIdentifier: cristianodewes.agent-memory
+PackageVersion: 0.1.0
+# The winget package wraps the Inno Setup EXE: winget gets PATH + clean uninstall for free,
+# and applies the standard inno silent switches (/VERYSILENT /SUPPRESSMSGBOXES /NORESTART).
+InstallerType: inno
+# Per-user by default (matches the installer's PrivilegesRequired=lowest) — no UAC prompt.
+Scope: user
+InstallModes:
+  - interactive
+  - silent
+  - silentWithProgress
+UpgradeBehavior: install
+# Correlates the winget package with the Inno uninstall entry ({AppId}_is1); keep the GUID
+# in lockstep with packaging/windows/agent-memory.iss (AppId).
+ProductCode: "{2DFEEE69-FF11-430B-841A-E88C6CB87DB8}_is1"
+ReleaseDate: 2026-06-25
+Installers:
+  - Architecture: x64
+    # The x64 installer also runs on ARM64 Windows via x64 emulation (ArchitecturesAllowed
+    # = x64compatible in the .iss). A native arm64 installer is a follow-up.
+    InstallerUrl: https://github.com/cristianodewes/agent-memory/releases/download/v0.1.0/agent-memory-0.1.0-setup.exe
+    # Placeholder — the release workflow (issue #106) substitutes the real SHA256 of the
+    # built setup.exe (printed by packaging/windows/build-installer.ps1).
+    InstallerSha256: 0000000000000000000000000000000000000000000000000000000000000000
+ManifestType: installer
+ManifestVersion: 1.6.0

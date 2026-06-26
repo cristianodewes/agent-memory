@@ -1,0 +1,9 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.version.1.6.0.schema.json
+# Template manifest for the agent-memory client (issue #105). The release automation
+# (issue #106) regenerates this folder per release: bump PackageVersion, the installer
+# URL/SHA and ReleaseDate, then submit to microsoft/winget-pkgs.
+PackageIdentifier: cristianodewes.agent-memory
+PackageVersion: 0.1.0
+DefaultLocale: en-US
+ManifestType: version
+ManifestVersion: 1.6.0

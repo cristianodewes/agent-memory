@@ -143,9 +143,10 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # Whatever goreleaser produced (the Windows installer from #105 will flow in
-          # automatically once it's added to .goreleaser.yaml).
-          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt dist/*.exe dist/*.msi)
+          # goreleaser's archives + checksums. The Windows installer (.exe) is built and
+          # attached to this same `edge` release by the separate `windows-installer` job
+          # below (ISCC is Windows-only, so it can't run here on ubuntu).
+          assets=(dist/*.tar.gz dist/*.zip dist/checksums.txt)
           if [ ${#assets[@]} -eq 0 ]; then
             echo "::error::goreleaser produced no publishable artifacts in dist/"
             exit 1
@@ -162,3 +163,52 @@ jobs:
             "${assets[@]}"
           echo "published edge prerelease with ${#assets[@]} asset(s):"
           printf '  %s\n' "${assets[@]}"
+
+  # --------------------------------------------------------------------------
+  # Windows installer -> attached to the same rolling `edge` prerelease (issue #105).
+  #
+  # Inno Setup's compiler (ISCC) is Windows-only, so the installer cannot be built in the
+  # ubuntu `binaries`/goreleaser job. This job REUSES the exact goreleaser-built Windows
+  # binary (downloaded from the `edge` release the `binaries` job just published), wraps it
+  # with packaging/windows/build-installer.ps1, and uploads agent-memory-<v>-setup.exe to
+  # the same release. Idempotent: --clobber replaces the asset on re-runs.
+  # --------------------------------------------------------------------------
+  windows-installer:
+    name: windows installer (edge release)
+    needs: binaries
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: compute edge version
+        id: version
+        shell: bash
+        run: echo "version=0.0.0-edge.${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - name: download goreleaser windows binary (from the edge release)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download edge --pattern '*windows_amd64.zip' --dir dist
+
+      - name: install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: build installer
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist/*windows_amd64.zip | Select-Object -First 1
+          & packaging/windows/build-installer.ps1 -Version ${{ steps.version.outputs.version }} -SourceZip $zip.FullName
+
+      - name: upload installer to the edge release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem packaging/windows/dist/*-setup.exe | Select-Object -First 1
+          gh release upload edge $exe.FullName --clobber
