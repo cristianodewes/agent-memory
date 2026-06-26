@@ -1,6 +1,8 @@
 # ---- Go (client/) ----
 /client/bin/
 /client/dist/
+# goreleaser writes its archives to ./dist at the repo root (CI runs it from there).
+/dist/
 *.exe
 *.test
 *.out

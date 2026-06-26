@@ -63,8 +63,11 @@ checksum:
   name_template: "checksums.txt"
 
 snapshot:
-  # Non-tag (PR / local) dry-runs get a clearly-marked snapshot version.
-  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+  # Snapshot/edge dry-runs are throwaway (never published as a pinned semver), so use a fixed
+  # base instead of `incpatch .Version`: the CD pipeline (#106) publishes a rolling, NON-semver
+  # `edge` git tag, and `incpatch` on a non-semver latest tag aborts goreleaser ("invalid
+  # semantic version"). ShortCommit keeps each snapshot name unique.
+  version_template: "0.0.0-snapshot-{{ .ShortCommit }}"
 
 changelog:
   use: github
