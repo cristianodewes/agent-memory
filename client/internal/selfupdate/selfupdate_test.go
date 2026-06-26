@@ -319,6 +319,58 @@ func TestEdgeChannelPicksNewestPrerelease(t *testing.T) {
 	}
 }
 
+// TestEdgeSnapshotAssetResolvedAndApplied mirrors the real CD edge release: a release
+// tagged literally "edge" whose archive carries a goreleaser SNAPSHOT version (not a
+// clean semver). The updater must resolve it by the platform suffix, extract the embedded
+// snapshot version, apply it, and treat re-running against the same build as a no-op.
+func TestEdgeSnapshotAssetResolvedAndApplied(t *testing.T) {
+	const snapVersion, content = "1.2.1-snapshot-abc1234", "EDGE-SNAPSHOT-BINARY"
+	assetName := "agent-memory_" + snapVersion + "_linux_amd64.tar.gz"
+	archive := buildTarGz(t, innerBinaryName("linux"), content)
+	sums := sha256Hex(archive) + "  " + assetName + "\n"
+	edge := fakeRelease{
+		tag:        "edge",
+		prerelease: true,
+		assets: []fakeAsset{
+			{name: assetName, data: archive},
+			{name: checksumsFileName, data: []byte(sums)},
+		},
+	}
+	srv := newReleaseServer(t, "o", "r", []fakeRelease{edge})
+	exec := stagedExec(t)
+
+	u := newTestUpdater(t, srv.URL, Options{
+		Owner: "o", Repo: "r", CurrentVersion: "1.2.0", Channel: ChannelEdge,
+		GOOS: "linux", GOARCH: "amd64", ExecPath: exec, HTTPClient: srv.Client(),
+	})
+	plan, err := u.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check (edge snapshot): %v", err)
+	}
+	if plan.UpToDate || plan.TargetVersion != snapVersion || plan.AssetName != assetName {
+		t.Fatalf("edge snapshot plan = %+v, want target %s asset %s", plan, snapVersion, assetName)
+	}
+	if err := u.Apply(context.Background(), &bytes.Buffer{}, plan); err != nil {
+		t.Fatalf("Apply (edge snapshot): %v", err)
+	}
+	if got := readFile(t, exec); got != content {
+		t.Fatalf("edge snapshot not applied, got %q", got)
+	}
+
+	// Idempotency: a binary already at the snapshot version is up to date on edge.
+	already := newTestUpdater(t, srv.URL, Options{
+		Owner: "o", Repo: "r", CurrentVersion: snapVersion, Channel: ChannelEdge,
+		GOOS: "linux", GOARCH: "amd64", ExecPath: stagedExec(t), HTTPClient: srv.Client(),
+	})
+	plan2, err := already.Check(context.Background())
+	if err != nil {
+		t.Fatalf("Check (edge idempotent): %v", err)
+	}
+	if !plan2.UpToDate {
+		t.Fatalf("expected edge no-op when already at %s, got %+v", snapVersion, plan2)
+	}
+}
+
 func TestCheckErrorsWhenNoAssetForPlatform(t *testing.T) {
 	rel, _ := linuxRelease(t, "1.5.0", "x") // only linux/amd64 asset present
 	srv := newReleaseServer(t, "o", "r", []fakeRelease{rel})

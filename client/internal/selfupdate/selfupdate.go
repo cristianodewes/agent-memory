@@ -142,13 +142,14 @@ func (u *Updater) Check(ctx context.Context) (*Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	targetVersion := strings.TrimPrefix(rel.TagName, "v")
-	assetName := assetFileName(u.goos, u.goarch, targetVersion)
 
-	bin, ok := rel.findAsset(assetName)
+	// The version that will actually be installed is the one embedded in the platform
+	// asset's name — authoritative for both semver and edge-snapshot artifacts, where the
+	// release tag ("edge") is not itself a version.
+	bin, targetVersion, ok := rel.platformAsset(u.goos, u.goarch)
 	if !ok {
-		return nil, fmt.Errorf("o release %s não traz um artefato para %s/%s (esperado %q); "+
-			"artefatos disponíveis: %s", rel.TagName, u.goos, u.goarch, assetName, rel.assetNames())
+		return nil, fmt.Errorf("o release %s não traz um artefato para %s/%s; "+
+			"artefatos disponíveis: %s", rel.TagName, u.goos, u.goarch, rel.assetNames())
 	}
 	sums, ok := rel.findAsset(checksumsFileName)
 	if !ok {
@@ -156,19 +157,21 @@ func (u *Updater) Check(ctx context.Context) (*Plan, error) {
 			rel.TagName, checksumsFileName)
 	}
 
-	cmp := compareVersions(targetVersion, u.currentVersion)
-	upToDate := cmp <= 0
-	if u.pinnedVersion != "" {
-		// An explicit --version is an exact pin: only a byte-for-byte version match is a
-		// no-op; anything else (including a downgrade) is applied on demand.
-		upToDate = cmp == 0
+	// A pinned --version and the rolling edge channel are exact pointers: re-installing
+	// the same build is the only no-op (any difference, even a "downgrade", is applied on
+	// demand). The default stable channel only ever moves forward.
+	var upToDate bool
+	if u.pinnedVersion != "" || u.channel == ChannelEdge {
+		upToDate = targetVersion == u.currentVersion
+	} else {
+		upToDate = compareVersions(targetVersion, u.currentVersion) <= 0
 	}
 
 	return &Plan{
 		CurrentVersion: u.currentVersion,
 		TargetVersion:  targetVersion,
 		TargetTag:      rel.TagName,
-		AssetName:      assetName,
+		AssetName:      bin.Name,
 		UpToDate:       upToDate,
 		asset:          bin,
 		checksums:      sums,
@@ -377,6 +380,21 @@ func (r release) findAsset(want string) (asset, bool) {
 		}
 	}
 	return asset{}, false
+}
+
+// platformAsset returns the release archive for goos/goarch and the version embedded in
+// its name. It matches the "agent-memory_<version>_<os>_<arch>.<ext>" shape by prefix +
+// suffix, so it resolves both semver and edge-snapshot artifacts without trusting the tag.
+func (r release) platformAsset(goos, goarch string) (a asset, version string, ok bool) {
+	prefix := projectName + "_"
+	suffix := platformAssetSuffix(goos, goarch)
+	for _, candidate := range r.Assets {
+		if strings.HasPrefix(candidate.Name, prefix) && strings.HasSuffix(candidate.Name, suffix) {
+			version = strings.TrimSuffix(strings.TrimPrefix(candidate.Name, prefix), suffix)
+			return candidate, version, true
+		}
+	}
+	return asset{}, "", false
 }
 
 func (r release) assetNames() string {

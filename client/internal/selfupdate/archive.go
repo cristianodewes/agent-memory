@@ -27,11 +27,20 @@ const (
 // version WITHOUT a leading "v"): "agent-memory_<version>_<os>_<arch>.<ext>", a .zip on
 // Windows and a .tar.gz elsewhere — mirroring the archives block in .goreleaser.yaml.
 func assetFileName(goos, goarch, version string) string {
+	return projectName + "_" + version + platformAssetSuffix(goos, goarch)
+}
+
+// platformAssetSuffix is the trailing "_<os>_<arch>.<ext>" that identifies the archive
+// for goos/goarch regardless of the version embedded in the middle of the name. Matching
+// on this suffix (rather than reconstructing the full name from the tag) lets the updater
+// handle both semver releases (agent-memory_1.2.0_...) and the rolling edge snapshot
+// (agent-memory_1.2.1-snapshot-<sha>_...) produced by the CD pipeline (#106).
+func platformAssetSuffix(goos, goarch string) string {
 	ext := "tar.gz"
 	if goos == "windows" {
 		ext = "zip"
 	}
-	return fmt.Sprintf("%s_%s_%s_%s.%s", projectName, version, goos, goarch, ext)
+	return fmt.Sprintf("_%s_%s.%s", goos, goarch, ext)
 }
 
 // innerBinaryName is the binary file name inside the archive: goreleaser appends ".exe"
