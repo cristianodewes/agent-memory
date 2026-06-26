@@ -27,7 +27,8 @@ sessions ─▶ AutoImproveScheduler ─▶ ProposalSource ─▶ AutoImproveGat
    the canonical `_lint/report.md` page (mirroring `memory_lint`) and stays **quiescent** when that report
    is unchanged. The seam is an interface, so unit tests substitute a fake; if no source is wired the
    scheduler logs and returns **before** claiming anything, never burning a session against an empty engine.
-   (Turning findings into corrective *actions* — forget/merge/fix — is a richer, action-shaped follow-up.)
+   (Turning findings into corrective *actions* — forget/fix — is the scope-level **curator-action loop**
+   below, issue #101.)
 3. **Approval gate** (`AutoImproveGate`) — records every proposal in `pending_writes`, then **gates every
    apply through the #31 [eval gate](./eval-gate.md)**: a `BLOCKED` verdict rejects the proposal
    (fail-closed, never applied); `PASSED`/`SKIPPED` proceed, and the verdict is recorded in `eval_result`.
@@ -54,6 +55,45 @@ row can be approved/rejected (a second decision is a conflict, not a silent re-a
 (#31)](./eval-gate.md) runs immediately before every apply; its verdict is recorded in the row's
 `eval_result` column whenever the gate actually ran (`null` when `SKIPPED` — the default off state).
 
+## Curator corrective actions (issue #101)
+
+The #30 loop above is **report-shaped**: the curator source renders findings into a `_lint/report.md`
+page (Curator-*content*, #100). The **curator-action loop** is the **action-shaped** progression — it
+turns each actionable finding into a real corrective edit, on its own scope-level cadence:
+
+```
+pages ─▶ CuratorActionScheduler ─▶ CuratorActionProposalSource ─▶ AutoImproveGate ─▶ EvalGate ─▶ pending_writes
+(scope)    (per-project tick)       (#29 finding → action)         (approval gate)   (#31, off)   │
+                                                                                                   ▼
+                                                            DispatchingProposalApplier (forget / link.fix / content)
+```
+
+- **Scope-level cadence.** `CuratorActionScheduler` is a separate off-by-default timer. Unlike the
+  per-finished-**session** `AutoImproveScheduler`, its unit of work is a **project (scope)**: each tick
+  audits every project that has pages. It stays quiescent by skipping a finding whose action is already
+  `proposed`/`rejected`; an *applied* forget/link-fix removes the finding itself, so it cannot recur.
+- **Per-finding granularity.** `CuratorActionProposalSource` maps each actionable finding to its own
+  `ProposedWrite` (vs. #100's single scope-level report):
+
+  | curator rule (#29)        | action kind   | applier effect                                          |
+  |---------------------------|---------------|---------------------------------------------------------|
+  | `COLD_EPISODIC`           | `page.forget` | soft-delete the cold page via the forget sweep (#25).   |
+  | `DANGLING_CROSS_PROJECT`  | `link.fix`    | prune the broken `[[link]]` from the source body (#27). |
+  | `DUPLICATE_TITLE`         | `page.merge`  | **deferred follow-up** — no action emitted yet.         |
+  | `STALE_SLOT`              | `slot.refresh`| **deferred follow-up** — no action emitted yet.         |
+
+- **Action-capable model.** `pending_writes.kind` goes beyond the content upsert: the machine-readable
+  action arguments (e.g. `link.fix`'s dangling `target` as `workspace/project/path`) ride in the
+  `proposal` JSON's `params`, and `path` is the affected page. **V15** promotes `kind` to a schema
+  allowlist (`page.edit`, `page.forget`, `link.fix`) — kept in lockstep with `ProposalKinds`; a deferred
+  kind is added only when its source + applier land (nothing dormant).
+- **Appliers behind the seam.** The production `ProposalApplier` is a `DispatchingProposalApplier` that
+  routes on `kind`; content `page.edit` still applies through `MemoryWriteService` unchanged. An unknown
+  kind **fails closed** (throws, leaving the row recoverable), belt-and-braces with the V15 CHECK.
+- **Eval-gated like everything else.** Every action runs through the same `AutoImproveGate` → `EvalGate`,
+  fail-closed (a `BLOCKED` verdict rejects it, recorded in `eval_result`); the action's affected `path`
+  drives the gate's prefix selection. Off by default via `curator-actions.enabled` (see below).
+
 ## `memory_auto_improve` MCP tool
 
 The human surface over the gate. Not read-only (approve applies a write).
@@ -77,8 +117,12 @@ agent-memory:
     max-attempts: 3               # per-session review attempt cap (a failing session stops retrying)
     max-sessions-per-tick: 20     # bound on a single tick's work
     scheduler:
-      enabled: false              # master switch for the out-of-band timer (default: off)
+      enabled: false              # master switch for the out-of-band (per-session) timer (default: off)
       interval: 15m               # delay between non-overlapping ticks (> 0)
+    curator-actions:              # the scope-level curator corrective-action loop (#101)
+      enabled: false              # master switch (default: off) — forget/link-fix actions never fire
+      interval: 60m               # delay between non-overlapping scope-review ticks (> 0)
+      max-scopes-per-tick: 50     # bound on a single tick's work
     eval:                         # the optional eval gate — see contracts/eval-gate.md
       enabled: false
 ```

@@ -15,6 +15,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.transaction.PlatformTransactionManager;
@@ -59,6 +60,9 @@ public class ForgetSweepService {
 
     /** Audit action key for a sweep (see {@code audit_log.action} examples). */
     static final String AUDIT_ACTION = "forget.sweep";
+
+    /** Audit action key for a targeted, single-page forget (curator {@code COLD_EPISODIC} action, #101). */
+    static final String AUDIT_ACTION_FORGET_PAGE = "forget.page";
 
     private final ForgetSweepRepository repo;
     private final RetentionScorer scorer;
@@ -167,6 +171,67 @@ public class ForgetSweepService {
                     ws, proj, softDeleted.size(), purged.size(), finalExemptSkipped);
             return new SweepReport(false, softDeleted, purged, finalExemptSkipped);
         });
+    }
+
+    /**
+     * Forget one <em>specific</em> page by exact path — the targeted counterpart of the project-wide
+     * {@link #sweep}, driving the curator's {@code COLD_EPISODIC} corrective action (#101). Reuses the
+     * same soft-delete semantics: the live latest version is dropped from "latest" and stamped
+     * {@code deleted_at=now()} (the markdown + git history stay, so it is recoverable until a later purge),
+     * audited in the same transaction. Does <em>not</em> re-check retention/exemptions — the curator
+     * already decided this page is cold; this is the apply step of an approved/auto-applied proposal.
+     * Idempotent: forgetting a path with no live page is a no-op success ({@code false}).
+     *
+     * @param workspace the workspace coordinate; never null.
+     * @param project   the project coordinate; never null.
+     * @param path      the exact page path to forget; never null.
+     * @param reason    a short human reason for the audit log/trace (e.g. the curator finding detail).
+     * @return {@code true} if a live page was soft-deleted, {@code false} if there was none (no-op).
+     */
+    public boolean forgetPage(WorkspaceId workspace, ProjectId project, PagePath path, String reason) {
+        if (workspace == null || project == null || path == null) {
+            throw new IllegalArgumentException("workspace, project and path must not be null");
+        }
+        String ws = workspace.value();
+        String proj = project.value();
+        String p = path.value();
+        Optional<ForgetSweepRepository.Row> row = repo.findLiveLatest(ws, proj, p);
+        if (row.isEmpty()) {
+            log.debug("forget.page {}/{}/{}: no live page (already forgotten?) — no-op", ws, proj, p);
+            return false;
+        }
+        return Boolean.TRUE.equals(tx.execute(statusTx -> {
+            boolean deleted = repo.softDelete(row.get().id());
+            if (deleted) {
+                audit.record(Identity.ofPage(workspace, project, path), AUDIT_ACTION_FORGET_PAGE, "page",
+                        "{\"path\":" + jsonString(p) + ",\"via\":\"curator-action\"}");
+                log.info("forget.page {}/{}: soft-deleted {} ({})", ws, proj, p, reason);
+            }
+            return deleted;
+        }));
+    }
+
+    /** Minimal JSON string encoder for the small audit {@code detail} token. */
+    private static String jsonString(String s) {
+        StringBuilder sb = new StringBuilder(s.length() + 2).append('"');
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '"' -> sb.append("\\\"");
+                case '\\' -> sb.append("\\\\");
+                case '\n' -> sb.append("\\n");
+                case '\r' -> sb.append("\\r");
+                case '\t' -> sb.append("\\t");
+                default -> {
+                    if (c < 0x20) {
+                        sb.append(String.format("\\u%04x", (int) c));
+                    } else {
+                        sb.append(c);
+                    }
+                }
+            }
+        }
+        return sb.append('"').toString();
     }
 
     /**

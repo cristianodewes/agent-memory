@@ -78,6 +78,37 @@ public final class WikiLinkParser {
         return new ArrayList<>(byTarget.values());
     }
 
+    /**
+     * Remove every {@code [[...]]} wikilink in {@code body} whose target resolves (source-relative, the
+     * same way {@link #parse} resolves) to {@code target} — the deterministic prune behind the curator's
+     * {@code DANGLING_CROSS_PROJECT} corrective action (issue #101 link-fix). Because it reuses the exact
+     * grammar + resolution, it strips precisely the markup {@code parse} would have produced for that
+     * target, including aliased ({@code [[t|as written]]}) and duplicate occurrences; malformed or
+     * non-matching links are left as written. Pure and IO-free, like the rest of the parser.
+     *
+     * @param source the page-scoped identity of the page the body belongs to; never null.
+     * @param body   the markdown body (may be null/empty -> returned unchanged).
+     * @param target the page-scoped target identity whose links to remove; null -> body unchanged.
+     * @return the body with matching wikilinks removed (their surrounding prose left intact).
+     */
+    public String stripLinksTo(Identity source, String body, Identity target) {
+        if (source == null || !source.isPageScoped()) {
+            throw new IllegalArgumentException("source identity must be page-scoped");
+        }
+        if (body == null || body.isEmpty() || target == null) {
+            return body;
+        }
+        Matcher m = WIKILINK.matcher(body);
+        StringBuilder out = new StringBuilder(body.length());
+        while (m.find()) {
+            WikiLink link = parseOne(source, m.group(1));
+            String replacement = (link != null && target.equals(link.target())) ? "" : m.group();
+            m.appendReplacement(out, Matcher.quoteReplacement(replacement));
+        }
+        m.appendTail(out);
+        return out.toString();
+    }
+
     /** Parse a single inner token (without the surrounding brackets); null if malformed. */
     private WikiLink parseOne(Identity source, String inner) {
         String token = inner.trim();

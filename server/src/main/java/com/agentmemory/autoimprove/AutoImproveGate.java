@@ -122,16 +122,47 @@ public class AutoImproveGate {
         return rec;
     }
 
-    /** Rebuild the {@link ProposedWrite} from a stored row: {@code path}/{@code kind}/{@code rationale} are columns; {@code title}/{@code body} live in the {@code proposal} JSON. */
+    /** Rebuild the {@link ProposedWrite} from a stored row: {@code path}/{@code kind}/{@code rationale} are columns; {@code title}/{@code body}/{@code params} live in the {@code proposal} JSON. */
     private ProposedWrite toProposedWrite(PendingWriteRecord rec) {
         JsonNode p = json.readTree(rec.proposal());
         String title = str(p == null ? null : p.get("title"), rec.path());
         String body = str(p == null ? null : p.get("body"), "");
-        return new ProposedWrite(rec.path(), title, body, rec.kind(), rec.rationale());
+        Map<String, String> params = readParams(p == null ? null : p.get("params"));
+        return new ProposedWrite(rec.path(), title, body, rec.kind(), rec.rationale(), params);
     }
 
     private static String str(JsonNode node, String fallback) {
         return node != null && node.isString() ? node.stringValue() : fallback;
+    }
+
+    /** Read the action {@code params} object back into a string map (empty for a content proposal). */
+    private Map<String, String> readParams(JsonNode node) {
+        if (node == null || !node.isObject()) {
+            return Map.of();
+        }
+        @SuppressWarnings("unchecked")
+        Map<String, Object> raw = json.convertValue(node, Map.class);
+        Map<String, String> out = new LinkedHashMap<>();
+        raw.forEach((k, v) -> out.put(k, v == null ? null : String.valueOf(v)));
+        return out;
+    }
+
+    /**
+     * Map a proposal to its gate-facing {@link EvalProposal}, kind-aware so the gate sees the real action
+     * (#101): a content {@code page.edit} is an {@code upsert} (unchanged from #30); {@code page.forget}
+     * and {@code link.fix} carry their own action verb. The {@code path} is always the affected page, so
+     * the gate's prefix selection ({@link EvalGate}) governs every kind uniformly.
+     */
+    private static EvalProposal toEvalProposal(ProposedWrite write) {
+        String action;
+        if (ProposalKinds.PAGE_FORGET.equals(write.kind())) {
+            action = ProposalKinds.PAGE_FORGET;
+        } else if (ProposalKinds.LINK_FIX.equals(write.kind())) {
+            action = ProposalKinds.LINK_FIX;
+        } else {
+            action = "upsert";
+        }
+        return new EvalProposal(write.path(), write.title(), write.body(), action);
     }
 
     /**
@@ -140,8 +171,7 @@ public class AutoImproveGate {
      * ran ({@code null} for SKIPPED, i.e. the gate is off or the path is out of scope — the default).
      */
     private Decision applyGated(UUID id, Scope scope, ProposedWrite write) {
-        EvalVerdict verdict = evalGate.evaluate(
-                EvalProposal.upsert(write.path(), write.title(), write.body()));
+        EvalVerdict verdict = evalGate.evaluate(toEvalProposal(write));
         String verdictJson =
                 verdict.decision() == EvalVerdict.Decision.SKIPPED ? null : verdictJson(verdict);
         if (verdict.blocked()) {
