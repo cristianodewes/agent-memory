@@ -3,10 +3,15 @@ package com.agentmemory.recall;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import ch.qos.logback.classic.Level;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.agentmemory.core.PageId;
 import com.agentmemory.core.Uuid7;
 import com.agentmemory.store.PageEmbeddingStore;
 import org.junit.jupiter.api.Test;
+import org.slf4j.LoggerFactory;
 
 /**
  * Pure unit tests (no DB) for the #16 graceful-degradation fast paths — the branches that must short
@@ -70,6 +75,31 @@ class VectorArmDegradationTest {
     void armRanksEmptyForBlankQuery() {
         VectorArm arm = new VectorArm(NO_DB, ScriptedEmbedder.contractWidth());
         assertThat(arm.rank("ws", "proj", "   ", 10).isEmpty()).isTrue();
+    }
+
+    @Test
+    void disabledArmLogsTheDegradedWarningOnceAcrossManyRequests() {
+        // #118 (optional, same observability theme): the "vector recall is disabled" notice must be a
+        // one-time startup-ish warning, not a per-request line. A ListAppender on VectorArm's logger
+        // proves repeated rank() calls on a disabled arm emit exactly one WARN.
+        Logger logger = (Logger) LoggerFactory.getLogger(VectorArm.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try {
+            VectorArm arm = new VectorArm(NO_DB, null); // disabled: no embedder configured
+            for (int i = 0; i < 5; i++) {
+                assertThat(arm.rank("ws", "proj", "query " + i, 10).isEmpty()).isTrue();
+            }
+            long warns = appender.list.stream()
+                    .filter(e -> e.getLevel() == Level.WARN)
+                    .filter(e -> e.getFormattedMessage().contains("Vector recall is disabled"))
+                    .count();
+            assertThat(warns).isEqualTo(1L);
+        } finally {
+            logger.detachAppender(appender);
+            appender.stop();
+        }
     }
 
     // --- PageEmbeddingService skip paths -----------------------------------------------------------

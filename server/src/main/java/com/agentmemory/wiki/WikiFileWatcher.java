@@ -12,6 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -56,6 +57,11 @@ public final class WikiFileWatcher implements AutoCloseable {
     private final AtomicBoolean running = new AtomicBoolean(false);
     // Last content hash we reconciled per file, so a scan only acts on genuine changes.
     private final Map<Path, String> lastSeenHash = new ConcurrentHashMap<>();
+    // Files whose latest content failed to parse. We WARN once on the valid/new -> malformed
+    // transition, then demote repeats of the SAME still-malformed file to DEBUG, so a file rewritten
+    // every poll does not spam the WARN (issue #118). An entry is cleared when the file parses again
+    // or stops being a regular file (removed/renamed), so a later regression WARNs once again.
+    private final Set<Path> malformedPaths = ConcurrentHashMap.newKeySet();
     private ScheduledExecutorService poller;
 
     public WikiFileWatcher(WikiPaths paths, SelfWriteTracker selfWrites,
@@ -136,6 +142,7 @@ public final class WikiFileWatcher implements AutoCloseable {
         if (!Files.isRegularFile(file)) {
             selfWrites.forget(file);
             lastSeenHash.remove(file);
+            malformedPaths.remove(file); // removed/renamed: reset the throttle
             return; // deletes/renames: handled by reindex (#14), out of scope here
         }
         String content;
@@ -147,6 +154,7 @@ public final class WikiFileWatcher implements AutoCloseable {
         }
         String hash = AtomicFileWriter.hashOf(content);
         if (selfWrites.isSelfWrite(file, hash)) {
+            malformedPaths.remove(file); // app rewrote valid content: reset the throttle
             log.debug("ignoring self-write {}", file);
             return;
         }
@@ -159,9 +167,20 @@ public final class WikiFileWatcher implements AutoCloseable {
         try {
             doc = MarkdownDocument.parse(content);
         } catch (WikiFormatException e) {
-            log.warn("skipping malformed wiki file {}: {}", file, e.getMessage());
+            if (malformedPaths.add(file)) {
+                // First time this file is seen malformed (valid/new -> malformed transition): WARN
+                // once, keeping path + reason so the message stays actionable.
+                log.warn("skipping malformed wiki file {}: {}", file, e.getMessage());
+            } else {
+                // Same file still malformed on a later scan (e.g. rewritten every poll): demote to
+                // DEBUG so a file that changes each tick does not re-emit the WARN (issue #118).
+                log.debug("still skipping malformed wiki file {}: {}", file, e.getMessage());
+            }
             return;
         }
+        // Parsed cleanly: if this path was previously malformed the regression is over, so clear the
+        // throttle — a future malformed edit will WARN once again.
+        malformedPaths.remove(file);
 
         // Trust the file's location for identity (a moved file is keyed by where it now lives).
         Identity identity = Identity.ofPage(
