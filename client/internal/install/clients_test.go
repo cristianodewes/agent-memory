@@ -86,8 +86,10 @@ func TestMCPGoldenPerClient(t *testing.T) {
 			ext: ".toml",
 			golden: `[mcp_servers]
   [mcp_servers.agent-memory]
-    bearer_token = "secret"
+    default_tools_approval_mode = "approve"
     url = "http://127.0.0.1:8080/mcp"
+    [mcp_servers.agent-memory.http_headers]
+      Authorization = "Bearer secret"
 `,
 		},
 		{
@@ -114,7 +116,8 @@ func TestMCPGoldenPerClient(t *testing.T) {
       "headers": {
         "Authorization": "Bearer secret"
       },
-      "httpUrl": "http://127.0.0.1:8080/mcp"
+      "httpUrl": "http://127.0.0.1:8080/mcp",
+      "timeout": 5000
     }
   }
 }
@@ -147,9 +150,12 @@ func TestMCPGoldenPerClient(t *testing.T) {
         "mcp-remote",
         "http://127.0.0.1:8080/mcp",
         "--header",
-        "Authorization: Bearer secret"
+        "Authorization:${AGENT_MEMORY_AUTH_HEADER}"
       ],
-      "command": "npx"
+      "command": "npx",
+      "env": {
+        "AGENT_MEMORY_AUTH_HEADER": "Bearer secret"
+      }
     }
   }
 }
@@ -225,34 +231,60 @@ func TestCursorFlatHooksGoldenAndIdempotent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hooks.json")
 	golden := `{
   "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "\"/usr/local/bin/agent-memory\" hook --event UserPromptSubmit",
+        "matcher": "",
+        "type": "command"
+      }
+    ],
     "postToolUse": [
       {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event PostToolUse"
+        "command": "\"/usr/local/bin/agent-memory\" hook --event PostToolUse",
+        "matcher": "",
+        "type": "command"
+      }
+    ],
+    "postToolUseFailure": [
+      {
+        "command": "\"/usr/local/bin/agent-memory\" hook --event PostToolUse",
+        "matcher": "",
+        "type": "command"
+      }
+    ],
+    "preCompact": [
+      {
+        "command": "\"/usr/local/bin/agent-memory\" hook --event PreCompact",
+        "matcher": "",
+        "type": "command"
       }
     ],
     "preToolUse": [
       {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event PreToolUse"
+        "command": "\"/usr/local/bin/agent-memory\" hook --event PreToolUse",
+        "matcher": "",
+        "type": "command"
       }
     ],
     "sessionEnd": [
       {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event SessionEnd"
+        "command": "\"/usr/local/bin/agent-memory\" hook --event SessionEnd",
+        "matcher": "",
+        "type": "command"
       }
     ],
     "sessionStart": [
       {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event SessionStart"
+        "command": "\"/usr/local/bin/agent-memory\" hook --event SessionStart",
+        "matcher": "",
+        "type": "command"
       }
     ],
     "stop": [
       {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event Stop"
-      }
-    ],
-    "userPromptSubmit": [
-      {
-        "command": "\"/usr/local/bin/agent-memory\" hook --event UserPromptSubmit"
+        "command": "\"/usr/local/bin/agent-memory\" hook --event Stop",
+        "matcher": "",
+        "type": "command"
       }
     ]
   },
@@ -316,6 +348,28 @@ func TestGeminiMappedHooksGolden(t *testing.T) {
         ],
         "matcher": ""
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event SessionEnd",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event SessionStart",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
     ]
   }
 }
@@ -326,6 +380,94 @@ func TestGeminiMappedHooksGolden(t *testing.T) {
 	got, _ := os.ReadFile(path)
 	if string(got) != golden {
 		t.Fatalf("gemini hooks golden mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, golden)
+	}
+}
+
+// TestCodexNestedHooksGolden pins Codex's nested hooks.json (~/.codex/hooks.json) — the six
+// CODEX_EVENTS with NO SessionEnd (Codex signals session-end via Stop), same nested shape as Claude.
+func TestCodexNestedHooksGolden(t *testing.T) {
+	c := mustClient(t, "codex")
+	path := filepath.Join(t.TempDir(), "hooks.json")
+	golden := `{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event PostToolUse",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event PreCompact",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event PreToolUse",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event SessionStart",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event Stop",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "command": "\"/usr/local/bin/agent-memory\" hook --event UserPromptSubmit",
+            "type": "command"
+          }
+        ],
+        "matcher": ""
+      }
+    ]
+  }
+}
+`
+	if ch, err := HooksProfile(path, c.Hooks, goldenBin); err != nil || ch != Created {
+		t.Fatalf("install: change=%v err=%v", ch, err)
+	}
+	got, _ := os.ReadFile(path)
+	if string(got) != golden {
+		t.Fatalf("codex hooks golden mismatch:\n--- got ---\n%s\n--- want ---\n%s", got, golden)
+	}
+	if strings.Contains(string(got), "SessionEnd") {
+		t.Errorf("Codex must not wire SessionEnd (uses Stop):\n%s", got)
 	}
 }
 
