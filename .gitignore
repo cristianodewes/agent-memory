@@ -30,3 +30,6 @@ HELP.md
 
 # ---- Docker ----
 **/.docker-cache/
+
+# ---- Packaging (Windows installer build output) ----
+/packaging/windows/dist/

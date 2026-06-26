@@ -1,0 +1,31 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.1.6.0.schema.json
+PackageIdentifier: cristianodewes.agent-memory
+PackageVersion: 0.1.0
+PackageLocale: en-US
+Publisher: Cristiano Dewes
+PublisherUrl: https://github.com/cristianodewes
+PublisherSupportUrl: https://github.com/cristianodewes/agent-memory/issues
+PackageName: agent-memory
+PackageUrl: https://github.com/cristianodewes/agent-memory
+License: MIT
+LicenseUrl: https://github.com/cristianodewes/agent-memory/blob/main/LICENSE
+Copyright: Copyright (c) 2026 Cristiano Dewes
+ShortDescription: LLM-powered long-term memory for AI coding agents (Go client).
+Description: >-
+  agent-memory is the Go client for an LLM-powered long-term memory for AI coding agents.
+  It captures prompts, tool calls and session boundaries via lifecycle hooks, drains them
+  to the agent-memory server, and wires Claude Code (hooks + MCP + self-routing) so memory
+  accumulates across sessions. After install, run "agent-memory setup-agent" inside a
+  project to configure it.
+Moniker: agent-memory
+Tags:
+  - ai
+  - llm
+  - memory
+  - agent
+  - claude
+  - mcp
+  - developer-tools
+  - cli
+ManifestType: defaultLocale
+ManifestVersion: 1.6.0

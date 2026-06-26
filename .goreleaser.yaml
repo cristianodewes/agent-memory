@@ -46,6 +46,19 @@ archives:
         formats:
           - zip
 
+# ── Instalador nativo de Windows (issue #105) ────────────────────────────────────────
+# O instalador EXE (Inno Setup) e o manifesto winget NÃO são produzidos aqui: o compilador
+# do Inno Setup (ISCC) só roda no Windows, enquanto este pipeline roda no Linux. Eles são
+# construídos a partir do .zip de windows acima, por linha de comando, no workflow de CD
+# (issue #106) que roda num runner Windows:
+#
+#   pwsh packaging/windows/build-installer.ps1 -Version <v> \
+#        -SourceZip dist/agent-memory_<v>_windows_amd64.zip
+#
+# Isso gera agent-memory-<v>-setup.exe (+ o SHA256 para o manifesto winget em
+# packaging/winget/). Os pipes `winget`/`scoop` do goreleaser também ficam para o #106,
+# pois exigem fork + token (segredos de release), não um build.
+
 checksum:
   name_template: "checksums.txt"
 
