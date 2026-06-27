@@ -25,6 +25,14 @@ const (
 	// EnvDebug, when truthy (1|true|yes|on), forces debug-level logging — a shorthand for
 	// EnvLogLevel=debug (#117).
 	EnvDebug = "AGENT_MEMORY_DEBUG"
+	// EnvLogResponseBodies, when truthy (1|true|yes|on), makes the client log the FULL body of every
+	// server response at debug — an OPT-IN debugging aid, OFF by default (#126).
+	//
+	// DATA-LEAK WARNING: this writes memory CONTENT (recall/inject, briefing, handoff, scent payloads)
+	// to the durable client log. The bearer token / `Authorization` stays redacted (the log's secret
+	// boundary still runs), but everything else the server returns is exposed in plaintext. Enable it
+	// only for deliberate debugging, never as a default.
+	EnvLogResponseBodies = "AGENT_MEMORY_LOG_RESPONSE_BODIES"
 
 	defaultServerURL   = "http://127.0.0.1:8080"
 	defaultDataDirName = ".agent-memory"
@@ -49,6 +57,10 @@ type Config struct {
 	LogLevel string
 	// Debug is AGENT_MEMORY_DEBUG read as a boolean: a shorthand that forces debug-level logging.
 	Debug bool
+	// LogResponseBodies is AGENT_MEMORY_LOG_RESPONSE_BODIES read as a boolean: the opt-in mode that
+	// logs full server response bodies at debug. DATA-LEAK risk — see EnvLogResponseBodies. Default
+	// false (#126).
+	LogResponseBodies bool
 }
 
 // Load resolves the client configuration from the environment, applying defaults. It performs no IO
@@ -60,11 +72,12 @@ func Load() Config {
 		server = defaultServerURL
 	}
 	return Config{
-		ServerURL: server,
-		Token:     strings.TrimSpace(os.Getenv(EnvToken)),
-		DataDir:   resolveDataDir(os.Getenv(EnvDataDir)),
-		LogLevel:  strings.TrimSpace(os.Getenv(EnvLogLevel)),
-		Debug:     truthy(os.Getenv(EnvDebug)),
+		ServerURL:         server,
+		Token:             strings.TrimSpace(os.Getenv(EnvToken)),
+		DataDir:           resolveDataDir(os.Getenv(EnvDataDir)),
+		LogLevel:          strings.TrimSpace(os.Getenv(EnvLogLevel)),
+		Debug:             truthy(os.Getenv(EnvDebug)),
+		LogResponseBodies: truthy(os.Getenv(EnvLogResponseBodies)),
 	}
 }
 

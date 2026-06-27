@@ -17,6 +17,7 @@ func TestLoadReadsLogEnv(t *testing.T) {
 	t.Setenv(EnvDataDir, t.TempDir())
 	t.Setenv(EnvLogLevel, "  debug ")
 	t.Setenv(EnvDebug, "1")
+	t.Setenv(EnvLogResponseBodies, "yes")
 	cfg := Load()
 	if cfg.LogLevel != "debug" {
 		t.Fatalf("LogLevel = %q, want trimmed %q", cfg.LogLevel, "debug")
@@ -24,14 +25,20 @@ func TestLoadReadsLogEnv(t *testing.T) {
 	if !cfg.Debug {
 		t.Fatalf("Debug = false, want true for AGENT_MEMORY_DEBUG=1")
 	}
+	if !cfg.LogResponseBodies {
+		t.Fatalf("LogResponseBodies = false, want true for AGENT_MEMORY_LOG_RESPONSE_BODIES=yes")
+	}
 }
 
 func TestLoadDebugDefaultsFalse(t *testing.T) {
 	t.Setenv(EnvDataDir, t.TempDir())
-	// EnvDebug unset/empty ⇒ Debug false, LogLevel empty.
+	// EnvDebug / EnvLogResponseBodies unset/empty ⇒ both false, LogLevel empty.
 	cfg := Load()
 	if cfg.Debug {
 		t.Fatal("Debug should default to false when AGENT_MEMORY_DEBUG is unset")
+	}
+	if cfg.LogResponseBodies {
+		t.Fatal("LogResponseBodies should default to false when AGENT_MEMORY_LOG_RESPONSE_BODIES is unset")
 	}
 	if cfg.LogLevel != "" {
 		t.Fatalf("LogLevel should default to empty, got %q", cfg.LogLevel)

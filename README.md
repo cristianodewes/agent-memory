@@ -543,6 +543,7 @@ ancestral mais próximo) → raiz do repositório git → diretório atual. O *m
 | `AGENT_MEMORY_DATA_DIR` | raiz do *data dir* local (spool, credencial OIDC, **logs**) | `~/.agent-memory` |
 | `AGENT_MEMORY_LOG_LEVEL` | nível do log do client (`debug`\|`info`\|`warn`\|`error`) | `info` |
 | `AGENT_MEMORY_DEBUG` | atalho que força nível `debug` quando *truthy* (`1`/`true`/`yes`/`on`) | — |
+| `AGENT_MEMORY_LOG_RESPONSE_BODIES` | ⚠️ **opt-in de depuração** que grava o **corpo completo de cada resposta do server** no `client.log` (`debug`) quando *truthy* — **vaza conteúdo de memória**; ver aviso abaixo | — (off) |
 
 > Atenção ao par de nomes: o caminho de captura/instaladores lê `AGENT_MEMORY_SERVER_URL`,
 > enquanto os comandos administrativos leem `AGENT_MEMORY_SERVER` (sem o sufixo `_URL`).
@@ -563,6 +564,13 @@ além dos erros que antes só apareciam no `stderr` (visíveis apenas sob `claud
 - **Segredos redigidos**: `token`/`Authorization` **nunca** são gravados; *payload* potencialmente
   sensível só aparece em `debug` e ainda passa pela redação (alinhado à sanitização do server —
   invariante #6 / DD-010).
+- ⚠️ **Corpo das respostas (opt-in, off por default)**: `AGENT_MEMORY_LOG_RESPONSE_BODIES` *truthy*
+  (`1`/`true`/`yes`/`on`) faz o client gravar, em `debug`, o **corpo completo de cada resposta do
+  server** (recall/inject, briefing, handoff, scent) no `client.log`. **Isso vaza conteúdo de memória
+  em texto puro** — use apenas para depuração deliberada, nunca como *default*. O corpo é *tee-ado*
+  (os métodos tipados continuam parseando normalmente), truncado em ~64 KiB no log (com nota de
+  truncamento) e **ainda passa pela redação**, então `token`/`Authorization` permanecem mascarados
+  mesmo neste modo; só **headers** continuam fora do log (evita `Set-Cookie` etc.). (#126)
 - **Rotação**: por tamanho (~5 MiB) com retenção limitada (`client.log.1`…`client.log.3`); o
   diretório é criado se faltar e respeita `AGENT_MEMORY_DATA_DIR`.
 - **Inspeção**: `agent-memory logs [--tail N] [--follow]` imprime/segue o arquivo;
