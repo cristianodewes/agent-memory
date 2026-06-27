@@ -573,7 +573,17 @@ além dos erros que antes só apareciam no `stderr` (visíveis apenas sob `claud
   mesmo neste modo; só **headers** continuam fora do log (evita `Set-Cookie` etc.). (#126)
 - **Rotação**: por tamanho (~5 MiB) com retenção limitada (`client.log.1`…`client.log.3`); o
   diretório é criado se faltar e respeita `AGENT_MEMORY_DATA_DIR`.
-- **Inspeção**: `agent-memory logs [--tail N] [--follow]` imprime/segue o arquivo;
+- **Inspeção**: `agent-memory logs` imprime/segue o arquivo e funciona como um *inspector*:
+  - `-n`/`--tail N` (default 200; `0` = tudo) e `-f`/`--follow` (segue novas linhas; **resiliente a
+    rotação** — quando o `client.log` é recriado/encolhe, o *follow* reabre o novo arquivo em vez de
+    silenciar);
+  - filtros combináveis (AND), aplicados ao *tail* **e** ao *follow*: `--level <error|warn|info|debug>`
+    (nível mínimo), `--since <15m|2h|1d|RFC3339>`, `-g`/`--grep <regex>` e
+    `--event <kind>` (com `--workspace` / `--project`) sobre os campos estruturados;
+  - `-o`/`--format <json|text>` — `json` (cru, default, *machine-readable*) ou `text` (uma linha
+    legível `ts · LEVEL · msg · campos`); `--no-color` desliga a cor (que só aparece em TTY);
+  - `--path` imprime só o caminho absoluto do log e sai (scriptável; respeita
+    `--data-dir`/`AGENT_MEMORY_DATA_DIR`).
   `agent-memory doctor` mostra *data dir*, nível efetivo, caminho do log, contagem de *spool* +
   quarentena e as últimas linhas — sem precisar de `cat`/`tail` manual.
 
@@ -610,7 +620,7 @@ Todos aceitam `--agent <id>` / `--client <id>` (default `claude-code`) — ver
 
 | Comando | Descrição |
 |---|---|
-| `logs [--tail N] [--follow]` | Imprime (ou segue) o log do client em `<data-dir>/logs/client.log`. |
+| `logs [-n N] [-f] [--level …] [--since …] [-g …] [--event …] [-o json\|text] [--path]` | Imprime, filtra e segue (resiliente a rotação) o log do client em `<data-dir>/logs/client.log`. |
 | `doctor [--tail N]` | Saúde do client: *data dir*, nível de log, caminho do log, *spool* + quarentena e últimas linhas. |
 
 **Índice**
