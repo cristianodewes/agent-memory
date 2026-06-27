@@ -7,7 +7,9 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // Defaults and env var names. These mirror the server's conventions (loopback bind, ~/.agent-memory
@@ -25,6 +27,10 @@ const (
 	// EnvDebug, when truthy (1|true|yes|on), forces debug-level logging — a shorthand for
 	// EnvLogLevel=debug (#117).
 	EnvDebug = "AGENT_MEMORY_DEBUG"
+	// EnvRecallTimeout overrides the proactive recall-inject deadline (#84, #125). It accepts a Go
+	// duration ("12s", "1500ms") or a bare positive integer count of seconds ("12"); empty or
+	// unparseable values fall back to DefaultRecallTimeout. See ResolveRecallTimeout.
+	EnvRecallTimeout = "AGENT_MEMORY_RECALL_TIMEOUT"
 
 	defaultServerURL   = "http://127.0.0.1:8080"
 	defaultDataDirName = ".agent-memory"
@@ -77,6 +83,43 @@ func (c Config) SpoolDir() string {
 // client.log lives (#117). It mirrors the server's tracing dir location on the client side.
 func (c Config) LogsDir() string {
 	return filepath.Join(c.DataDir, logsSubdir)
+}
+
+// DefaultRecallTimeout is the fallback deadline for the proactive recall-inject call (#84, #125) when
+// AGENT_MEMORY_RECALL_TIMEOUT is unset or unparseable. It is deliberately generous: the server runs two
+// sequential LLM calls (query-expansion + rerank) whose latency swings with the provider/model and load,
+// and the call is advisory — a deadline only skips injection, it never blocks the prompt.
+const DefaultRecallTimeout = 15 * time.Second
+
+// recallHTTPHeadroom is the slack added on top of the resolved recall deadline to derive the HTTP client
+// timeout, so the context deadline (not the transport) stays the authoritative cap and never races the
+// apiclient's own default timeout (#125).
+const recallHTTPHeadroom = 5 * time.Second
+
+// ResolveRecallTimeout resolves the proactive recall-inject deadline from AGENT_MEMORY_RECALL_TIMEOUT
+// (#125). The value may be a Go duration ("12s", "1500ms") or a bare positive integer count of seconds
+// ("12"). Empty, non-positive, or unparseable input falls back to DefaultRecallTimeout. It reads only the
+// environment, so it is safe and fast on the prompt path. This is the authoritative context deadline; the
+// HTTP transport gets a small headroom over it (see RecallHTTPTimeout).
+func ResolveRecallTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv(EnvRecallTimeout))
+	if raw == "" {
+		return DefaultRecallTimeout
+	}
+	if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+		return d
+	}
+	if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return DefaultRecallTimeout
+}
+
+// RecallHTTPTimeout derives the recall HTTP client timeout from the resolved deadline by adding a fixed
+// headroom, keeping the context deadline the authoritative cap so the apiclient default never races it
+// (#125).
+func RecallHTTPTimeout(deadline time.Duration) time.Duration {
+	return deadline + recallHTTPHeadroom
 }
 
 // truthy reports whether an env value reads as "on": 1|true|yes|on (case-insensitive). Anything else

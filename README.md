@@ -201,9 +201,9 @@ Todas as áreas abaixo já estão **implementadas e mergeadas na `main`**.
 A captura é automática, mas o recall, sozinho, seria voluntário e cego. Por isso o contexto
 é **empurrado** para o agente:
 
-- **Prompt-time** (`UserPromptSubmit`): o client chama `POST /recall/inject` (timeout curto,
-  advisory — nunca bloqueia o prompt) e injeta um bloco curado de top-N como *additional
-  context*.
+- **Prompt-time** (`UserPromptSubmit`): o client chama `POST /recall/inject` (deadline
+  configurável via `AGENT_MEMORY_RECALL_TIMEOUT`, default `15s`; advisory — nunca bloqueia o
+  prompt) e injeta um bloco curado de top-N como *additional context*.
 - **SessionStart**: monta um bloco de orientação com **handoff** + **briefing** + um **mapa
   de scent/orientação** do projeto, injetado antes do primeiro prompt.
 
@@ -543,6 +543,7 @@ ancestral mais próximo) → raiz do repositório git → diretório atual. O *m
 | `AGENT_MEMORY_DATA_DIR` | raiz do *data dir* local (spool, credencial OIDC, **logs**) | `~/.agent-memory` |
 | `AGENT_MEMORY_LOG_LEVEL` | nível do log do client (`debug`\|`info`\|`warn`\|`error`) | `info` |
 | `AGENT_MEMORY_DEBUG` | atalho que força nível `debug` quando *truthy* (`1`/`true`/`yes`/`on`) | — |
+| `AGENT_MEMORY_RECALL_TIMEOUT` | *deadline* do recall inject proativo no `UserPromptSubmit` (#84); duração Go (`12s`, `1500ms`) ou inteiro em segundos (`12`). Vazio/inválido cai no default | `15s` |
 
 > Atenção ao par de nomes: o caminho de captura/instaladores lê `AGENT_MEMORY_SERVER_URL`,
 > enquanto os comandos administrativos leem `AGENT_MEMORY_SERVER` (sem o sufixo `_URL`).

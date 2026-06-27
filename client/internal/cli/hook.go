@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -33,12 +34,13 @@ import (
 // lost); the next boundary retries.
 const boundaryDrainTimeout = 15 * time.Second
 
-// recallInjectTimeout bounds the proactive recall call on UserPromptSubmit (#84). Unlike the capture
-// hot path (local disk IO only, invariant #5), this event deliberately makes ONE bounded network call:
-// the server runs LLM query-expansion + rerank, so it needs more than the capture budget but must
-// never hang the prompt. On timeout the call is abandoned and nothing is injected — the prompt is
-// already captured and proceeds regardless.
-const recallInjectTimeout = 5 * time.Second
+// The proactive recall call on UserPromptSubmit (#84) bounds itself with a deadline resolved at runtime
+// from AGENT_MEMORY_RECALL_TIMEOUT (config.ResolveRecallTimeout, default config.DefaultRecallTimeout).
+// Unlike the capture hot path (local disk IO only, invariant #5), this event deliberately makes ONE
+// bounded network call: the server runs LLM query-expansion + rerank, so it needs more than the capture
+// budget but must never hang the prompt. The deadline is configurable (#125) because that LLM latency
+// swings with the provider/model and load; on timeout the call is abandoned and nothing is injected —
+// the prompt is already captured and proceeds regardless.
 
 // bodyPreviewRunes bounds the debug-only payload preview so a large body never bloats the log. The
 // preview is masked for secrets by the logger's redaction boundary before it is written (#117).
@@ -324,11 +326,16 @@ func runRecallInjection(
 		logger.Debug("recall inject skipped: empty prompt")
 		return // nothing to recall on (a prompt event with no body) — skip the network call entirely
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), recallInjectTimeout)
+	// Resolve the deadline at runtime (#125): AGENT_MEMORY_RECALL_TIMEOUT, else the default. The context
+	// deadline is the authoritative cap; the HTTP client gets a small headroom over it so the transport
+	// never races the context and abandons the call early.
+	timeout := config.ResolveRecallTimeout()
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	client := apiclient.New(cfg.ServerURL,
-		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()))
+		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()),
+		apiclient.WithHTTPClient(&http.Client{Timeout: config.RecallHTTPTimeout(timeout)}))
 	t0 := time.Now()
 	block, err := client.InjectRecall(ctx, workspace, project, prompt)
 	latency := time.Since(t0)
