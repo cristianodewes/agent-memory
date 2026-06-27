@@ -4,7 +4,9 @@ import com.agentmemory.llm.ChatMessage;
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ChatResponse;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.recall.RecallHit;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
@@ -54,27 +56,51 @@ public final class CandidateReranker {
     private final LlmProvider llm;
     private final RecallPrompts prompts;
     private final int maxCandidates;
+    private final ReasoningEffort reasoningEffort; // nullable: null = provider default reasoning
     private final JsonMapper json = JsonMapper.builder().build();
 
     public CandidateReranker(LlmProvider llm, RecallPrompts prompts, int maxCandidates) {
+        this(llm, prompts, maxCandidates, null);
+    }
+
+    /**
+     * @param reasoningEffort the reasoning-effort hint to put on the rerank call (issue #130) —
+     *     {@link ReasoningEffort#MINIMAL} on the recall path, or {@code null} to leave the provider
+     *     default unchanged.
+     */
+    public CandidateReranker(LlmProvider llm, RecallPrompts prompts, int maxCandidates,
+            ReasoningEffort reasoningEffort) {
         if (maxCandidates <= 0) {
             throw new IllegalArgumentException("maxCandidates must be > 0, was " + maxCandidates);
         }
         this.llm = llm;
         this.prompts = prompts;
         this.maxCandidates = maxCandidates;
+        this.reasoningEffort = reasoningEffort;
+    }
+
+    /**
+     * Re-rank with the provider-default per-call timeout (no recall budget bound).
+     *
+     * @see #rerank(String, List, Duration)
+     */
+    public List<RecallHit> rerank(String queryText, List<RecallHit> fused) {
+        return rerank(queryText, fused, null);
     }
 
     /**
      * Re-rank {@code fused} (the RRF-ordered hits) by LLM relevance to {@code queryText}, re-stamping
      * each returned hit's 1-based rank and a normalized 0..1 score. Never throws.
      *
-     * @param queryText the user's recall text.
-     * @param fused     the RRF-ordered hits (already best-first); never null.
+     * @param queryText      the user's recall text.
+     * @param fused          the RRF-ordered hits (already best-first); never null.
+     * @param requestTimeout the per-call HTTP timeout derived from the remaining recall budget (issue
+     *     #130), or {@code null} for the provider default. A timeout surfaces as a provider error and so
+     *     keeps the RRF order — the "never worse than baseline" guarantee holds for the budget axis too.
      * @return the re-ordered hits with fresh rank/score, or {@code fused} unchanged on any failure or
      *     when there is nothing worth re-ranking (0 or 1 hits).
      */
-    public List<RecallHit> rerank(String queryText, List<RecallHit> fused) {
+    public List<RecallHit> rerank(String queryText, List<RecallHit> fused, Duration requestTimeout) {
         if (fused == null || fused.size() <= 1) {
             return fused;
         }
@@ -85,7 +111,7 @@ public final class CandidateReranker {
 
         Map<String, Double> scores;
         try {
-            ChatResponse response = llm.chat(buildRequest(queryText, head));
+            ChatResponse response = llm.chat(buildRequest(queryText, head, requestTimeout));
             scores = parseScores(response.text());
         } catch (RuntimeException e) {
             log.debug("rerank skipped (keeping RRF order): {}", e.toString());
@@ -141,7 +167,7 @@ public final class CandidateReranker {
         return true;
     }
 
-    private ChatRequest buildRequest(String queryText, List<RecallHit> head) {
+    private ChatRequest buildRequest(String queryText, List<RecallHit> head, Duration requestTimeout) {
         StringBuilder user = new StringBuilder(256);
         user.append("Query: ").append(queryText).append("\n\nCandidates:\n");
         for (RecallHit h : head) {
@@ -153,7 +179,9 @@ public final class CandidateReranker {
                 List.of(
                         ChatMessage.system(prompts.rerankSystemPrompt()),
                         ChatMessage.user(user.toString())),
-                prompts.rerankSchema());
+                prompts.rerankSchema())
+                .withReasoningEffort(reasoningEffort)
+                .withRequestTimeout(requestTimeout);
     }
 
     /**

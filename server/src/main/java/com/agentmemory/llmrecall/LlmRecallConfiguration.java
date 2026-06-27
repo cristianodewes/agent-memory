@@ -2,6 +2,7 @@ package com.agentmemory.llmrecall;
 
 import com.agentmemory.llm.LlmModule;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.recall.RecallConfiguration;
 import com.agentmemory.recall.RecallService;
 import javax.sql.DataSource;
@@ -63,7 +64,8 @@ public class LlmRecallConfiguration {
             @Qualifier("llmProvider") LlmProvider llmProvider,
             RecallPrompts prompts,
             LlmRecallProperties props) {
-        return new QueryExpander(llmProvider, prompts, props.expansion().maxTerms());
+        return new QueryExpander(
+                llmProvider, prompts, props.expansion().maxTerms(), recallEffort(props));
     }
 
     @Bean
@@ -73,7 +75,17 @@ public class LlmRecallConfiguration {
             @Qualifier("llmProvider") LlmProvider llmProvider,
             RecallPrompts prompts,
             LlmRecallProperties props) {
-        return new CandidateReranker(llmProvider, prompts, props.maxCandidates());
+        return new CandidateReranker(
+                llmProvider, prompts, props.maxCandidates(), recallEffort(props));
+    }
+
+    /**
+     * The reasoning-effort hint the recall steps put on their LLM calls (issue #130, Fase 1):
+     * {@link ReasoningEffort#MINIMAL} when {@code minimal-reasoning} is on (default), else {@code null}
+     * (unchanged provider behavior) so an operator can disable it should a backend reject the param.
+     */
+    private static ReasoningEffort recallEffort(LlmRecallProperties props) {
+        return props.minimalReasoning() ? ReasoningEffort.MINIMAL : null;
     }
 
     /**

@@ -96,6 +96,90 @@ class OpenAiOAuthLlmProviderTest {
         }
     }
 
+    // --- reasoning-effort hint + per-call timeout (issue #130) ----------------------------------
+
+    @Test
+    void emitsMinimalReasoningAndLowVerbosityWhenTheRecallHintIsSet(@TempDir Path tmp) throws Exception {
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, "acct-1");
+        try (StubHttpServer codex = StubHttpServer.start(200, OK_SSE)) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(codex.baseUrl()), 1_000L);
+
+            // A structured recall call carrying the MINIMAL reasoning hint (as QueryExpander/CandidateReranker set).
+            ChatResponse response = provider.chat(ChatRequest.structured(
+                            List.of(ChatMessage.user("rank these")), OK_SCHEMA)
+                    .withReasoningEffort(ReasoningEffort.MINIMAL));
+
+            assertThat(response.text()).isEqualTo("{\"ok\":true}");
+            String body = codex.lastRequestBody();
+            // reasoning.effort=minimal at top level, and text.verbosity=low on the structured text node.
+            assertThat(body).contains("\"reasoning\":{\"effort\":\"minimal\"}");
+            assertThat(body).contains("\"verbosity\":\"low\"");
+        }
+    }
+
+    @Test
+    void omitsReasoningObjectOnAPlainChatCall(@TempDir Path tmp) throws Exception {
+        // The main chat path leaves the hint null (issue #130 invariant): no reasoning/verbosity emitted.
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, "acct-1");
+        try (StubHttpServer codex = StubHttpServer.start(200, OK_SSE)) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(codex.baseUrl()), 1_000L);
+
+            provider.chat(ChatRequest.text(ChatMessage.ofUser("just chat")));
+
+            String body = codex.lastRequestBody();
+            assertThat(body).doesNotContain("reasoning");
+            assertThat(body).doesNotContain("verbosity");
+        }
+    }
+
+    @Test
+    void shortPerCallTimeoutCancelsASlowRecallCall(@TempDir Path tmp) throws Exception {
+        // A request carrying a short budget-derived timeout is cancelled at the HTTP layer when the
+        // backend stalls — the real enforcement behind the recall budget (issue #130). A normal chat
+        // call (no override) would keep the generous client default and not time out here.
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, "acct-1");
+        try (StubHttpServer slow = StubHttpServer.start(200, req -> {
+            try {
+                Thread.sleep(800);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return OK_SSE;
+        })) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(slow.baseUrl()), 1_000L);
+
+            assertThatThrownBy(() -> provider.chat(ChatRequest.structured(
+                            List.of(ChatMessage.user("rank")), OK_SCHEMA)
+                    .withRequestTimeout(Duration.ofMillis(100))))
+                    .isInstanceOf(LlmException.class);
+        }
+    }
+
+    @Test
+    void defaultTimeoutIsPreservedWhenNoOverrideIsGiven(@TempDir Path tmp) throws Exception {
+        // No per-call override: a brief backend delay well under the client default still succeeds,
+        // proving heavy chat keeps its generous timeout (the recall axis is the only one shortened).
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, "acct-1");
+        try (StubHttpServer slow = StubHttpServer.start(200, req -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return OK_SSE;
+        })) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(slow.baseUrl()), 1_000L);
+
+            ChatResponse response = provider.chat(ChatRequest.text(ChatMessage.ofUser("chat")));
+
+            assertThat(response.text()).isEqualTo("{\"ok\":true}");
+        }
+    }
+
     // --- transparent refresh of an expired token, with write-back -------------------------------
 
     @Test

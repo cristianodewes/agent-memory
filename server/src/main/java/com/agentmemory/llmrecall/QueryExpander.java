@@ -4,6 +4,8 @@ import com.agentmemory.llm.ChatMessage;
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ChatResponse;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.ReasoningEffort;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -37,26 +39,50 @@ public final class QueryExpander {
     private final LlmProvider llm;
     private final RecallPrompts prompts;
     private final int maxTerms;
+    private final ReasoningEffort reasoningEffort; // nullable: null = provider default reasoning
     private final JsonMapper json = JsonMapper.builder().build();
 
     public QueryExpander(LlmProvider llm, RecallPrompts prompts, int maxTerms) {
+        this(llm, prompts, maxTerms, null);
+    }
+
+    /**
+     * @param reasoningEffort the reasoning-effort hint to put on the expansion call (issue #130) —
+     *     {@link ReasoningEffort#MINIMAL} on the recall path, or {@code null} to leave the provider
+     *     default unchanged.
+     */
+    public QueryExpander(LlmProvider llm, RecallPrompts prompts, int maxTerms,
+            ReasoningEffort reasoningEffort) {
         if (maxTerms <= 0) {
             throw new IllegalArgumentException("maxTerms must be > 0, was " + maxTerms);
         }
         this.llm = llm;
         this.prompts = prompts;
         this.maxTerms = maxTerms;
+        this.reasoningEffort = reasoningEffort;
+    }
+
+    /**
+     * Expand {@code queryText} with the provider-default per-call timeout (no recall budget bound).
+     *
+     * @see #expand(String, Duration)
+     */
+    public String expand(String queryText) {
+        return expand(queryText, null);
     }
 
     /**
      * Expand {@code queryText} into the original text plus up to {@code maxTerms} additional retrieval
      * terms. Never throws.
      *
-     * @param queryText the user's recall text; never null/blank.
+     * @param queryText      the user's recall text; never null/blank.
+     * @param requestTimeout the per-call HTTP timeout derived from the remaining recall budget (issue
+     *     #130), or {@code null} for the provider default. A timeout simply surfaces as a provider error,
+     *     which falls back to the original text — expansion never degrades recall below the RRF baseline.
      * @return the (possibly) widened query text, or the original text if expansion added nothing or
      *     failed.
      */
-    public String expand(String queryText) {
+    public String expand(String queryText, Duration requestTimeout) {
         if (queryText == null || queryText.isBlank()) {
             return queryText;
         }
@@ -65,7 +91,9 @@ public final class QueryExpander {
                     List.of(
                             ChatMessage.system(prompts.expansionSystemPrompt()),
                             ChatMessage.user("Query: " + queryText)),
-                    prompts.expansionSchema());
+                    prompts.expansionSchema())
+                    .withReasoningEffort(reasoningEffort)
+                    .withRequestTimeout(requestTimeout);
             ChatResponse response = llm.chat(request);
             List<String> terms = parseTerms(response.text(), queryText);
             if (terms.isEmpty()) {
