@@ -41,7 +41,7 @@ func TestMaskSecrets(t *testing.T) {
 
 func TestReplaceAttrRedactsSensitiveKeys(t *testing.T) {
 	for _, key := range []string{"authorization", "Authorization", "token", "TOKEN", "password", "api_key", "access_token"} {
-		a := replaceAttr(nil, slog.String(key, "the-actual-secret"))
+		a := ReplaceAttr(nil, slog.String(key, "the-actual-secret"))
 		if a.Value.String() != Redacted {
 			t.Fatalf("key %q not redacted: got %q", key, a.Value.String())
 		}
@@ -49,11 +49,11 @@ func TestReplaceAttrRedactsSensitiveKeys(t *testing.T) {
 }
 
 func TestReplaceAttrLeavesOrdinaryAttrs(t *testing.T) {
-	a := replaceAttr(nil, slog.Int("sent", 3))
+	a := ReplaceAttr(nil, slog.Int("sent", 3))
 	if a.Value.Kind() != slog.KindInt64 || a.Value.Int64() != 3 {
 		t.Fatalf("ordinary int attr altered: %+v", a)
 	}
-	a = replaceAttr(nil, slog.String("kind", "PostToolUse"))
+	a = ReplaceAttr(nil, slog.String("kind", "PostToolUse"))
 	if a.Value.String() != "PostToolUse" {
 		t.Fatalf("ordinary string attr altered: %q", a.Value.String())
 	}
@@ -61,7 +61,7 @@ func TestReplaceAttrLeavesOrdinaryAttrs(t *testing.T) {
 
 func TestReplaceAttrMasksSecretInStringValue(t *testing.T) {
 	// A non-sensitive KEY whose VALUE embeds a secret (e.g. an error message) must still be masked.
-	a := replaceAttr(nil, slog.String("err", "POST failed: Authorization: Bearer leaky-token-123"))
+	a := ReplaceAttr(nil, slog.String("err", "POST failed: Authorization: Bearer leaky-token-123"))
 	if strings.Contains(a.Value.String(), "leaky-token-123") {
 		t.Fatalf("secret leaked through a non-sensitive key: %q", a.Value.String())
 	}

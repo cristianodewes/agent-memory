@@ -249,7 +249,8 @@ func runBoundaryDrain(
 	}
 
 	client := apiclient.New(cfg.ServerURL,
-		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()))
+		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()),
+		apiclient.WithResponseBodyLogging(cfg.LogResponseBodies))
 	d := drain.New(sp, client, drain.Options{Logger: logger.Slog()})
 
 	t0 := time.Now()
@@ -333,9 +334,14 @@ func runRecallInjection(
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
+	// Option order matters: WithHTTPClient replaces the *http.Client wholesale, so it must come BEFORE
+	// WithLogger (whose logging transport would otherwise be discarded), and WithResponseBodyLogging
+	// augments that transport so it comes AFTER WithLogger (see apiclient/logging.go).
 	client := apiclient.New(cfg.ServerURL,
-		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()),
-		apiclient.WithHTTPClient(&http.Client{Timeout: config.RecallHTTPTimeout(timeout)}))
+		apiclient.WithToken(cfg.Token),
+		apiclient.WithHTTPClient(&http.Client{Timeout: config.RecallHTTPTimeout(timeout)}),
+		apiclient.WithLogger(logger.Slog()),
+		apiclient.WithResponseBodyLogging(cfg.LogResponseBodies))
 	t0 := time.Now()
 	block, err := client.InjectRecall(ctx, workspace, project, prompt)
 	latency := time.Since(t0)

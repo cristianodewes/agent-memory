@@ -544,6 +544,7 @@ ancestral mais próximo) → raiz do repositório git → diretório atual. O *m
 | `AGENT_MEMORY_LOG_LEVEL` | nível do log do client (`debug`\|`info`\|`warn`\|`error`) | `info` |
 | `AGENT_MEMORY_DEBUG` | atalho que força nível `debug` quando *truthy* (`1`/`true`/`yes`/`on`) | — |
 | `AGENT_MEMORY_RECALL_TIMEOUT` | *deadline* do recall inject proativo no `UserPromptSubmit` (#84); duração Go (`12s`, `1500ms`) ou inteiro em segundos (`12`). Vazio/inválido cai no default | `15s` |
+| `AGENT_MEMORY_LOG_RESPONSE_BODIES` | ⚠️ **opt-in de depuração** que grava o **corpo completo de cada resposta do server** no `client.log` (`debug`) quando *truthy* — **vaza conteúdo de memória**; ver aviso abaixo | — (off) |
 
 > Atenção ao par de nomes: o caminho de captura/instaladores lê `AGENT_MEMORY_SERVER_URL`,
 > enquanto os comandos administrativos leem `AGENT_MEMORY_SERVER` (sem o sufixo `_URL`).
@@ -564,9 +565,26 @@ além dos erros que antes só apareciam no `stderr` (visíveis apenas sob `claud
 - **Segredos redigidos**: `token`/`Authorization` **nunca** são gravados; *payload* potencialmente
   sensível só aparece em `debug` e ainda passa pela redação (alinhado à sanitização do server —
   invariante #6 / DD-010).
+- ⚠️ **Corpo das respostas (opt-in, off por default)**: `AGENT_MEMORY_LOG_RESPONSE_BODIES` *truthy*
+  (`1`/`true`/`yes`/`on`) faz o client gravar, em `debug`, o **corpo completo de cada resposta do
+  server** (recall/inject, briefing, handoff, scent) no `client.log`. **Isso vaza conteúdo de memória
+  em texto puro** — use apenas para depuração deliberada, nunca como *default*. O corpo é *tee-ado*
+  (os métodos tipados continuam parseando normalmente), truncado em ~64 KiB no log (com nota de
+  truncamento) e **ainda passa pela redação**, então `token`/`Authorization` permanecem mascarados
+  mesmo neste modo; só **headers** continuam fora do log (evita `Set-Cookie` etc.). (#126)
 - **Rotação**: por tamanho (~5 MiB) com retenção limitada (`client.log.1`…`client.log.3`); o
   diretório é criado se faltar e respeita `AGENT_MEMORY_DATA_DIR`.
-- **Inspeção**: `agent-memory logs [--tail N] [--follow]` imprime/segue o arquivo;
+- **Inspeção**: `agent-memory logs` imprime/segue o arquivo e funciona como um *inspector*:
+  - `-n`/`--tail N` (default 200; `0` = tudo) e `-f`/`--follow` (segue novas linhas; **resiliente a
+    rotação** — quando o `client.log` é recriado/encolhe, o *follow* reabre o novo arquivo em vez de
+    silenciar);
+  - filtros combináveis (AND), aplicados ao *tail* **e** ao *follow*: `--level <error|warn|info|debug>`
+    (nível mínimo), `--since <15m|2h|1d|RFC3339>`, `-g`/`--grep <regex>` e
+    `--event <kind>` (com `--workspace` / `--project`) sobre os campos estruturados;
+  - `-o`/`--format <json|text>` — `json` (cru, default, *machine-readable*) ou `text` (uma linha
+    legível `ts · LEVEL · msg · campos`); `--no-color` desliga a cor (que só aparece em TTY);
+  - `--path` imprime só o caminho absoluto do log e sai (scriptável; respeita
+    `--data-dir`/`AGENT_MEMORY_DATA_DIR`).
   `agent-memory doctor` mostra *data dir*, nível efetivo, caminho do log, contagem de *spool* +
   quarentena e as últimas linhas — sem precisar de `cat`/`tail` manual.
 
@@ -603,7 +621,7 @@ Todos aceitam `--agent <id>` / `--client <id>` (default `claude-code`) — ver
 
 | Comando | Descrição |
 |---|---|
-| `logs [--tail N] [--follow]` | Imprime (ou segue) o log do client em `<data-dir>/logs/client.log`. |
+| `logs [-n N] [-f] [--level …] [--since …] [-g …] [--event …] [-o json\|text] [--path]` | Imprime, filtra e segue (resiliente a rotação) o log do client em `<data-dir>/logs/client.log`. |
 | `doctor [--tail N]` | Saúde do client: *data dir*, nível de log, caminho do log, *spool* + quarentena e últimas linhas. |
 
 **Índice**
