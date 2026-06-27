@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -34,10 +35,11 @@ const boundaryDrainTimeout = 15 * time.Second
 
 // recallInjectTimeout bounds the proactive recall call on UserPromptSubmit (#84). Unlike the capture
 // hot path (local disk IO only, invariant #5), this event deliberately makes ONE bounded network call:
-// the server runs LLM query-expansion + rerank, so it needs more than the capture budget but must
-// never hang the prompt. On timeout the call is abandoned and nothing is injected — the prompt is
-// already captured and proceeds regardless.
-const recallInjectTimeout = 5 * time.Second
+// the server runs LLM query-expansion + rerank (two sequential model calls), so it needs more than the
+// capture budget but must never hang the prompt. 10s gives that pipeline room to finish before the
+// hook gives up; on timeout the call is abandoned and nothing is injected — the prompt is already
+// captured and proceeds regardless.
+const recallInjectTimeout = 10 * time.Second
 
 // newHookCmd builds the `agent-memory hook` command: the native lifecycle hook entry point. It
 // parses the agent's hook JSON from stdin (or --payload), canonicalizes the event kind (#7), appends
@@ -234,7 +236,10 @@ func runRecallInjection(
 	ctx, cancel := context.WithTimeout(context.Background(), recallInjectTimeout)
 	defer cancel()
 
-	client := apiclient.New(cfg.ServerURL, apiclient.WithToken(cfg.Token))
+	// Give the transport headroom above the context deadline so the ctx (recallInjectTimeout) is the
+	// single authoritative cap — the default apiclient http timeout (10s) would otherwise race it.
+	client := apiclient.New(cfg.ServerURL, apiclient.WithToken(cfg.Token),
+		apiclient.WithHTTPClient(&http.Client{Timeout: recallInjectTimeout + 5*time.Second}))
 	block, err := client.InjectRecall(ctx, workspace, project, prompt)
 	if err != nil {
 		// Advisory: a missing/unwired/slow server must not block or delay the prompt (#84).
