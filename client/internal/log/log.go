@@ -93,7 +93,7 @@ func New(opts Options) (*Logger, error) {
 	aw := newAsyncWriter(sink, opts.bufferSize)
 	handler := slog.NewJSONHandler(aw, &slog.HandlerOptions{
 		Level:       opts.Level,
-		ReplaceAttr: replaceAttr,
+		ReplaceAttr: ReplaceAttr,
 	})
 	return &Logger{
 		Logger: slog.New(handler),

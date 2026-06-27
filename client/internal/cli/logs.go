@@ -59,7 +59,12 @@ func newLogsCmd() *cobra.Command {
 			"shows only the last N lines; with --follow/-f it then streams appended lines (resilient to " +
 			"rotation) until interrupted. Filters (--level, --since, --grep, --event/--workspace/--project) " +
 			"combine with AND and apply to both the tail and the follow; --format text renders one readable " +
-			"line per record, while json (default) keeps the raw byte-stream. --path prints the log path.",
+			"line per record, while json (default) keeps the raw byte-stream. --path prints the log path.\n\n" +
+			"By default the log records only request method/path/status/latency for server calls — never " +
+			"headers or bodies, so the bearer token cannot leak. Setting AGENT_MEMORY_LOG_RESPONSE_BODIES " +
+			"truthy (1|true|yes|on) additionally logs the FULL body of every server response at debug. " +
+			"WARNING: that writes memory content (recall/inject, briefing, handoff, scent) to this file in " +
+			"plaintext — a deliberate debugging aid, off by default. token/Authorization stay redacted.",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			cfg := resolveDataDirCfg(dataDir)

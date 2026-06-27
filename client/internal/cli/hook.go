@@ -247,7 +247,8 @@ func runBoundaryDrain(
 	}
 
 	client := apiclient.New(cfg.ServerURL,
-		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()))
+		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()),
+		apiclient.WithResponseBodyLogging(cfg.LogResponseBodies))
 	d := drain.New(sp, client, drain.Options{Logger: logger.Slog()})
 
 	t0 := time.Now()
@@ -328,7 +329,8 @@ func runRecallInjection(
 	defer cancel()
 
 	client := apiclient.New(cfg.ServerURL,
-		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()))
+		apiclient.WithToken(cfg.Token), apiclient.WithLogger(logger.Slog()),
+		apiclient.WithResponseBodyLogging(cfg.LogResponseBodies))
 	t0 := time.Now()
 	block, err := client.InjectRecall(ctx, workspace, project, prompt)
 	latency := time.Since(t0)

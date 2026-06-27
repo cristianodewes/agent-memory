@@ -75,10 +75,12 @@ func mightContainSecret(s string) bool {
 	return false
 }
 
-// replaceAttr is the slog ReplaceAttr hook applied to every attribute (and the built-in message) on
+// ReplaceAttr is the slog ReplaceAttr hook applied to every attribute (and the built-in message) on
 // every record. It (1) replaces the value of a sensitive-keyed attribute outright and (2) masks any
-// secret embedded in a string value or the message. Group nodes are passed through untouched.
-func replaceAttr(_ []string, a slog.Attr) slog.Attr {
+// secret embedded in a string value or the message. Group nodes are passed through untouched. Exported
+// so other slog handlers can reuse the exact same redaction boundary (e.g. a test that wires the
+// apiclient's opt-in body logging into a handler and asserts secrets are still masked — #126).
+func ReplaceAttr(_ []string, a slog.Attr) slog.Attr {
 	if a.Value.Kind() == slog.KindGroup {
 		return a
 	}
