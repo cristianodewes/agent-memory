@@ -5,7 +5,9 @@ import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.recall.RecallConfiguration;
 import com.agentmemory.recall.RecallService;
+import io.micrometer.core.instrument.MeterRegistry;
 import javax.sql.DataSource;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
@@ -100,6 +102,18 @@ public class LlmRecallConfiguration {
     }
 
     /**
+     * Per-stage recall latency telemetry (issue #130 follow-up). Binds the Micrometer
+     * {@link MeterRegistry} Spring Actuator auto-configures (the actuator starter is on the classpath),
+     * injected via {@link ObjectProvider} so the seam degrades to structured-log-only if no registry is
+     * present rather than failing to wire.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public RecallMetrics recallMetrics(ObjectProvider<MeterRegistry> meterRegistry) {
+        return new RecallMetrics(meterRegistry.getIfAvailable());
+    }
+
+    /**
      * The LLM-assisted recall decorator, published {@link Primary} so it is the {@link RecallService}
      * injected everywhere (MCP tools, injection endpoint). It wraps the base {@code recallService} bean
      * by name. The expander is optional (it is absent when expansion is disabled), injected via
@@ -111,11 +125,14 @@ public class LlmRecallConfiguration {
     @ConditionalOnBean({RecallService.class, CandidateReranker.class})
     public RecallService llmRecallService(
             @Qualifier("recallService") RecallService base,
-            org.springframework.beans.factory.ObjectProvider<QueryExpander> expander,
+            ObjectProvider<QueryExpander> expander,
             CandidateReranker reranker,
             AccessReinforcer reinforcer,
-            LlmRecallProperties props) {
-        return new LlmRecallService(base, expander.getIfAvailable(), reranker, reinforcer, props);
+            LlmRecallProperties props,
+            RecallMetrics metrics) {
+        return new LlmRecallService(
+                base, expander.getIfAvailable(), reranker, reinforcer, props,
+                System::currentTimeMillis, metrics);
     }
 
     /**
