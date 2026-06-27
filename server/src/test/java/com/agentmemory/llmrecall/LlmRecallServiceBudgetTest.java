@@ -58,8 +58,13 @@ class LlmRecallServiceBudgetTest {
     }
 
     private static LlmRecallProperties props(boolean enabled, int maxCalls, int minRerank, boolean expand) {
+        return props(enabled, maxCalls, minRerank, expand, 6000L);
+    }
+
+    private static LlmRecallProperties props(
+            boolean enabled, int maxCalls, int minRerank, boolean expand, long budgetMs) {
         return new LlmRecallProperties(
-                enabled, 20, maxCalls, minRerank,
+                enabled, 20, maxCalls, minRerank, budgetMs, /*minimalReasoning*/ true,
                 new LlmRecallProperties.Expansion(expand, 4),
                 new LlmRecallProperties.Injection(5, 0.0, 1200));
     }
@@ -237,6 +242,58 @@ class LlmRecallServiceBudgetTest {
         // reinforcer fired on the (raw) hits — JdbcAccessReinforcer would ignore non-PAGE ids, but the
         // seam is still invoked uniformly.
         assertThat(reinforcer.reinforced).hasSize(2);
+    }
+
+    @Test
+    void budgetExhaustionAbandonsRerankAndReturnsHybridNotEmpty() {
+        // The wall-clock budget is spent before the re-rank step (issue #130): the LLM step must be
+        // ABANDONED and the already-computed hybrid (RRF) hits returned — never empty, never reordered.
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2), page("c", 3))));
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                // If the rerank ever fired it would reverse the order; proving it does NOT run.
+                .chatResponder(req -> "{\"rankings\":[{\"id\":\"c\",\"relevance\":0.9},"
+                        + "{\"id\":\"b\",\"relevance\":0.5},{\"id\":\"a\",\"relevance\":0.1}]}")
+                .build();
+        // Clock: first read is the deadline anchor (t=1000, budget 6000 -> deadline 7000); every later
+        // read is past the deadline, so `remaining` is null when the re-rank step checks it.
+        java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        java.util.function.LongSupplier clock = () -> reads.getAndIncrement() == 0 ? 1_000L : 1_000_000L;
+        RecordingReinforcer reinforcer = new RecordingReinforcer();
+        LlmRecallService svc = new LlmRecallService(
+                base, expander(llm), reranker(llm), reinforcer,
+                props(true, 2, 2, /*expand*/ false, /*budgetMs*/ 6000L), clock);
+
+        RecallResult out = svc.search(new RecallQuery("q", SCOPE, 10));
+
+        // Degraded to the hybrid result: original RRF order, NOT empty, NOT reordered by the LLM.
+        assertThat(out.hits()).extracting(RecallHit::id).containsExactly("a", "b", "c");
+        assertThat(llm.chatCalls()).as("budget exhausted -> no LLM call").isEmpty();
+        // The base hybrid retrieve (Tier 0) still ran and is what we degraded to.
+        assertThat(base.limits).containsExactly(20);
+        // Reinforcement still fires on the returned (hybrid) hits.
+        assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("a", "b", "c");
+    }
+
+    @Test
+    void rerankCallCarriesAShortPerCallTimeoutDerivedFromTheBudget() {
+        // Within budget the re-rank runs AND the call carries a real per-call HTTP timeout derived from
+        // the remaining budget (issue #130) — short, never the provider-wide 300s default.
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2))));
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                .chatResponder(req -> "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.9},"
+                        + "{\"id\":\"b\",\"relevance\":0.1}]}")
+                .build();
+        LlmRecallService svc = new LlmRecallService(
+                base, null, reranker(llm), new RecordingReinforcer(),
+                props(true, 2, 2, /*expand*/ false, /*budgetMs*/ 6000L));
+
+        svc.search(new RecallQuery("q", SCOPE, 10));
+
+        assertThat(llm.chatCalls()).hasSize(1);
+        java.time.Duration timeout = llm.chatCalls().get(0).requestTimeout();
+        assertThat(timeout).as("recall call is bounded by a per-call timeout").isNotNull();
+        assertThat(timeout).isPositive();
+        assertThat(timeout).isLessThanOrEqualTo(java.time.Duration.ofMillis(6000));
     }
 
     @Test

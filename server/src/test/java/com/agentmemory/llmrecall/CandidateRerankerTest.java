@@ -3,9 +3,11 @@ package com.agentmemory.llmrecall;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentmemory.llm.ChatRequest;
+import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.llm.TestDoubleProvider;
 import com.agentmemory.recall.HitSource;
 import com.agentmemory.recall.RecallHit;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Function;
@@ -164,6 +166,37 @@ class CandidateRerankerTest {
         assertThat(reranker.rerank("q", one)).isSameAs(one);
         assertThat(reranker.rerank("q", List.of())).isEmpty();
         assertThat(llm.chatCalls()).isEmpty(); // never bothered the LLM
+    }
+
+    @Test
+    void emitsMinimalReasoningHintAndPerCallTimeoutWhenConfigured() {
+        // Issue #130: the recall reranker tags its call with the MINIMAL reasoning hint and the
+        // budget-derived per-call timeout; the provider reads them (only OpenAI OAuth acts on the hint).
+        List<RecallHit> rrf = pages("a", "b");
+        TestDoubleProvider llm = scripted(
+                "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.9},{\"id\":\"b\",\"relevance\":0.1}]}");
+        CandidateReranker reranker = new CandidateReranker(llm, PROMPTS, 20, ReasoningEffort.MINIMAL);
+
+        reranker.rerank("query", rrf, Duration.ofMillis(1500));
+
+        ChatRequest sent = llm.chatCalls().get(0);
+        assertThat(sent.reasoningEffort()).isEqualTo(ReasoningEffort.MINIMAL);
+        assertThat(sent.requestTimeout()).isEqualTo(Duration.ofMillis(1500));
+    }
+
+    @Test
+    void leavesReasoningAndTimeoutUnsetByDefault() {
+        // Default construction (no effort) + no per-call timeout = unchanged provider behavior.
+        List<RecallHit> rrf = pages("a", "b");
+        TestDoubleProvider llm = scripted(
+                "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.9},{\"id\":\"b\",\"relevance\":0.1}]}");
+        CandidateReranker reranker = new CandidateReranker(llm, PROMPTS, 20);
+
+        reranker.rerank("query", rrf);
+
+        ChatRequest sent = llm.chatCalls().get(0);
+        assertThat(sent.reasoningEffort()).isNull();
+        assertThat(sent.requestTimeout()).isNull();
     }
 
     @Test

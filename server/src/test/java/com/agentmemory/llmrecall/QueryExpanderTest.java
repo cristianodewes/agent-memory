@@ -2,8 +2,11 @@ package com.agentmemory.llmrecall;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.LlmException;
+import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.llm.TestDoubleProvider;
+import java.time.Duration;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -97,5 +100,20 @@ class QueryExpanderTest {
         QueryExpander expander = new QueryExpander(scripted("{\"terms\":[\"x\"]}"), PROMPTS, 4);
 
         assertThat(expander.expand("  ")).isEqualTo("  ");
+    }
+
+    @Test
+    void emitsMinimalReasoningHintAndPerCallTimeoutWhenConfigured() {
+        // Issue #130: the expansion call carries the MINIMAL reasoning hint and the budget-derived
+        // per-call timeout (read by the provider; only OpenAI OAuth acts on the reasoning hint).
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                .chatResponder(req -> "{\"terms\":[\"x\"]}").build();
+        QueryExpander expander = new QueryExpander(llm, PROMPTS, 4, ReasoningEffort.MINIMAL);
+
+        expander.expand("seed", Duration.ofMillis(2000));
+
+        ChatRequest sent = llm.chatCalls().get(0);
+        assertThat(sent.reasoningEffort()).isEqualTo(ReasoningEffort.MINIMAL);
+        assertThat(sent.requestTimeout()).isEqualTo(Duration.ofMillis(2000));
     }
 }

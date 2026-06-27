@@ -175,7 +175,10 @@ public final class OpenAiOAuthLlmProvider implements LlmProvider {
             headers.put("chatgpt-account-id", token.accountId());
         }
 
-        String sse = client.postJsonForText(responsesUri, headers, body, PROVIDER_KEY);
+        // A recall-path request carries a short, budget-derived per-call timeout (issue #130); chat and
+        // consolidation leave it null and keep the provider-wide (300s) default. Null = default.
+        String sse = client.postJsonForText(
+                responsesUri, headers, body, PROVIDER_KEY, request.requestTimeout());
         Completed completed = parseSse(sse);
 
         String reply = completed.outputText();
@@ -268,12 +271,29 @@ public final class OpenAiOAuthLlmProvider implements LlmProvider {
         body.put("store", false);
         body.put("stream", true);
 
+        ObjectNode text = null;
         if (request.wantsStructuredOutput()) {
-            ObjectNode format = body.putObject("text").putObject("format");
+            text = body.putObject("text");
+            ObjectNode format = text.putObject("format");
             format.put("type", "json_schema");
             format.put("name", request.schema().name());
             format.put("strict", true);
             format.set("schema", parseSchema(m, request.schema()));
+        }
+
+        // Reasoning-effort hint (issue #130, Fase 1): only the recall steps set this (to MINIMAL) to
+        // cut the dominant hidden-reasoning latency; chat/consolidation leave it null. These are the
+        // Codex CLI's own params, so the backend should accept them — but if a future backend rejects
+        // `reasoning`/`verbosity` (as it already does `max_output_tokens`), the resulting provider error
+        // degrades the rerank to RRF order (CandidateReranker keeps the RRF baseline) and an operator
+        // can switch the emission off via `agent-memory.recall.llm.minimal-reasoning=false`.
+        ReasoningEffort effort = request.reasoningEffort();
+        if (effort != null) {
+            body.putObject("reasoning").put("effort", effort.wire());
+            // Verbosity rides on the structured `text` node when present (a terser reply for a fast call).
+            if (text != null) {
+                text.put("verbosity", effort.verbosity());
+            }
         }
         return body;
     }
