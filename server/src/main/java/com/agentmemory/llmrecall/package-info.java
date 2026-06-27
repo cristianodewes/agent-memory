@@ -9,8 +9,10 @@
  * <ul>
  *   <li>Pipeline — {@link com.agentmemory.llmrecall.LlmRecallService} decorates the base
  *       {@link com.agentmemory.recall.RecallService}: optional {@link com.agentmemory.llmrecall.QueryExpander}
- *       → base retrieval (over-fetched pool) → optional {@link com.agentmemory.llmrecall.CandidateReranker}
- *       → trim → {@link com.agentmemory.llmrecall.AccessReinforcer}.</li>
+ *       → base retrieval (over-fetched pool) → the {@link com.agentmemory.llmrecall.Reranker} seam
+ *       ({@link com.agentmemory.llmrecall.CrossEncoderReranker}: a calibrated cross-encoder in front of the
+ *       generative {@link com.agentmemory.llmrecall.CandidateReranker} fallback) → trim →
+ *       {@link com.agentmemory.llmrecall.AccessReinforcer}.</li>
  *   <li>Injection — {@link com.agentmemory.llmrecall.RecallInjection} curates a concise,
  *       relevance-gated, bounded markdown block for a {@code UserPromptSubmit} hook (exposed by
  *       {@code com.agentmemory.web.RecallInjectionController} at {@code POST /recall/inject}).</li>

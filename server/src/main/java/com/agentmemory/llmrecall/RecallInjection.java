@@ -19,7 +19,12 @@ import java.util.List;
  *       ({@link LlmRecallProperties.Injection#minScore()}) of the <em>top</em> hit's score are dropped;
  *       if nothing clears the gate the block is <em>empty</em> (the hook injects nothing), so a
  *       low-signal prompt is never padded with marginal memories. The gate is relative (scale-invariant)
- *       so it behaves identically whether the scores are normalized LLM relevances or raw RRF scores.</li>
+ *       so it behaves identically whether the scores are normalized LLM relevances or raw RRF scores.
+ *       When (and only when) a calibrated cross-encoder produced the scores
+ *       ({@link com.agentmemory.recall.RecallResult#calibrated()}), an additional <em>absolute</em> floor
+ *       ({@link LlmRecallProperties.Injection#minScoreAbsolute()}) empties the block whenever even the top
+ *       hit scores below it — the calibrated way to say "nothing relevant here" on a low-signal prompt
+ *       (issue #130, Fase 2). The absolute floor is never applied to uncalibrated RRF/LLM scores.</li>
  *   <li><strong>Bounded</strong>: at most {@link LlmRecallProperties.Injection#maxHits()} hits, and the
  *       rendered text is hard-capped at {@link LlmRecallProperties.Injection#maxChars()} characters so
  *       the hook can rely on a predictable, small paste.</li>
@@ -82,12 +87,23 @@ public final class RecallInjection {
             return Result.empty();
         }
 
+        double topScore = result.hits().get(0).score();
+
+        // Absolute gate (issue #130, Fase 2) — applied ONLY when a calibrated cross-encoder produced the
+        // scores. A calibrated top score below the absolute floor means nothing here is genuinely relevant
+        // (the common low-signal prompt: "ok", "run the tests", "thanks"), so inject nothing. This gate is
+        // deliberately conditional on calibration: raw RRF fused scores are tiny and uncalibrated
+        // (~0.01-0.05), so an absolute cut applied to them would wrongly empty almost every block — for
+        // those the scale-invariant relative gate below is the only one that fires.
+        if (result.calibrated() && topScore < cfg.minScoreAbsolute()) {
+            return Result.empty();
+        }
+
         // Relevance gate. Hits are ranked best-first, so the first hit carries the maximum score; the
         // gate is RELATIVE to it (keep hits within the minScore fraction of the best score). A relative
         // gate is scale-invariant — it behaves the same whether the scores are normalized 0..1 LLM
         // relevances (rerank ran) or raw RRF fused scores (rerank skipped / over budget / disabled) —
         // so a sensible minScore never silently empties the block just because rerank did not run.
-        double topScore = result.hits().get(0).score();
         double threshold = topScore * cfg.minScore();
         List<RecallHit> gated = new ArrayList<>(cfg.maxHits());
         for (RecallHit h : result.hits()) {

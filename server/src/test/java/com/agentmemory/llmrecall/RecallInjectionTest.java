@@ -42,7 +42,12 @@ class RecallInjectionTest {
     }
 
     private static LlmRecallProperties.Injection cfg(int maxHits, double minScore, int maxChars) {
-        return new LlmRecallProperties.Injection(maxHits, minScore, maxChars);
+        return cfg(maxHits, minScore, 0.35, maxChars);
+    }
+
+    private static LlmRecallProperties.Injection cfg(
+            int maxHits, double minScore, double minScoreAbsolute, int maxChars) {
+        return new LlmRecallProperties.Injection(maxHits, minScore, minScoreAbsolute, maxChars);
     }
 
     @Test
@@ -152,6 +157,54 @@ class RecallInjectionTest {
         // Cap is 2; the two kept hits are the top and the first strong backfill (Strong2), not Weak1.
         assertThat(out.hits()).isEqualTo(2);
         assertThat(out.text()).contains("Top").contains("Strong2").doesNotContain("Weak1");
+    }
+
+    @Test
+    void calibratedAbsoluteGateEmptiesALowSignalBlock() {
+        // A calibrated cross-encoder scored everything low (top 0.20 < the 0.35 absolute floor): the
+        // calibrated way to say "nothing relevant here" on a low-signal prompt -> inject NOTHING. The
+        // relative gate (0.0 here) would otherwise have kept the top hit; the absolute floor overrides it.
+        RecallResult r = RecallResult.ofPages(List.of(
+                page("a", "Alpha", "weak", 0.20, 1),
+                page("b", "Beta", "weaker", 0.10, 2)), /*calibrated*/ true);
+        RecallInjection injection = new RecallInjection(new StubRecall(r), cfg(5, 0.0, 0.35, 1200));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "ok thanks");
+
+        assertThat(out.isEmpty()).isTrue();
+    }
+
+    @Test
+    void calibratedAbsoluteGateKeepsAStrongBlock() {
+        // Calibrated top 0.80 >= 0.35 absolute floor: the block is injected as normal.
+        RecallResult r = RecallResult.ofPages(List.of(
+                page("a", "Alpha", "strong", 0.80, 1),
+                page("b", "Beta", "mid", 0.50, 2)), true);
+        RecallInjection injection = new RecallInjection(new StubRecall(r), cfg(5, 0.0, 0.35, 1200));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.isEmpty()).isFalse();
+        assertThat(out.hits()).isEqualTo(2);
+        assertThat(out.text()).contains("Alpha").contains("Beta");
+    }
+
+    @Test
+    void absoluteGateIsNotAppliedToUncalibratedRrfScores() {
+        // The SUBTLETY: the same tiny top score (0.030), but UNCALIBRATED (RRF fallback / LLM rerank).
+        // The absolute floor (0.35) must NOT fire here — raw RRF fused scores are tiny (~0.01-0.05), so an
+        // absolute cut would wrongly empty almost every block. Only the scale-invariant relative gate
+        // applies, which always keeps the top hit -> the block is NOT empty.
+        RecallResult r = RecallResult.ofPages(List.of(
+                page("a", "Alpha", "best", 0.030, 1),
+                page("b", "Beta", "near", 0.020, 2))); // calibrated == false
+        RecallInjection injection = new RecallInjection(new StubRecall(r), cfg(5, 0.5, 0.35, 1200));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.isEmpty()).isFalse();
+        assertThat(out.hits()).isEqualTo(2);
+        assertThat(out.text()).contains("Alpha").contains("Beta");
     }
 
     @Test
