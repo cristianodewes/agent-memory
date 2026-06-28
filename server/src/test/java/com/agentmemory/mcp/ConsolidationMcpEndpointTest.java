@@ -3,7 +3,7 @@ package com.agentmemory.mcp;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import com.agentmemory.llm.ChatRequest;
-import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.ProviderFactory;
 import com.agentmemory.llm.TestDoubleProvider;
 import io.modelcontextprotocol.client.McpClient;
 import io.modelcontextprotocol.client.McpSyncClient;
@@ -43,11 +43,12 @@ import tools.jackson.databind.json.JsonMapper;
  * {@code /mcp}, lists {@code memory_consolidate} + {@code memory_explore}, and calls each against a
  * seeded session on a throwaway {@code pgvector/pgvector:pg16}.
  *
- * <p>The chat {@link LlmProvider} is overridden with a {@link Primary} scripted double so the
- * autowired {@code Consolidator}/{@code MemoryExplore} produce a valid reply deterministically; the
- * health gate probes the by-name {@code test} provider, so startup is unaffected. (The full atomic
- * fan-out / rollback / supersession behaviour is proven in {@code ConsolidationIntegrationTest}; this
- * test proves the tools are registered and routed end-to-end.)
+ * <p>The chat provider is scripted with a {@link Primary} {@link ProviderFactory} whose {@code test}
+ * double returns a valid reply deterministically, so the autowired {@code Consolidator}/
+ * {@code MemoryExplore} (which bind {@code @Qualifier("llmProvider")}) get it; the health gate probes
+ * that same double, so startup is unaffected. (The full atomic fan-out / rollback / supersession
+ * behaviour is proven in {@code ConsolidationIntegrationTest}; this test proves the tools are
+ * registered and routed end-to-end.)
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -76,16 +77,18 @@ class ConsolidationMcpEndpointTest {
     }
 
     /**
-     * Override the chat provider (by type, {@link Primary}) so the autowired consolidation services
-     * return valid replies. A structured request yields a two-page consolidation; a free-text request
-     * (explore) yields prose.
+     * Script the chat provider via a {@link Primary} {@link ProviderFactory} so the module builds its
+     * {@code llmProvider} (and the recall provider, which defaults to it) from the scripted double and
+     * the autowired consolidation services return valid replies. A structured request yields a two-page
+     * consolidation; a free-text request (explore) yields prose.
      */
     @TestConfiguration
     static class ScriptedLlm {
         @Bean
         @Primary
-        LlmProvider scriptedConsolidationProvider() {
-            return TestDoubleProvider.builder().chatResponder(ScriptedLlm::reply).build();
+        ProviderFactory scriptedConsolidationProviderFactory() {
+            return new ProviderFactory(
+                    TestDoubleProvider.builder().chatResponder(ScriptedLlm::reply).build());
         }
 
         private static String reply(ChatRequest req) {

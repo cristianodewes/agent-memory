@@ -80,7 +80,7 @@ class LlmRecallServiceBudgetTest {
                 new LlmRecallProperties.Mmr(true, 0.7),
                 new LlmRecallProperties.Expansion(expand, 4),
                 new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200, null),
-                /*cache*/ null);
+                /*cache*/ null, /*auth*/ null);
     }
 
     /**

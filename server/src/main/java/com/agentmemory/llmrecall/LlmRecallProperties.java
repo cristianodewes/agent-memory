@@ -1,5 +1,6 @@
 package com.agentmemory.llmrecall;
 
+import com.agentmemory.config.ProviderAuth;
 import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
@@ -47,6 +48,12 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param expansion       query-expansion sub-settings.
  * @param injection       curated-injection sub-settings.
  * @param cache           short-TTL recall-result cache sub-settings (issue #142 Fase 4).
+ * @param auth            optional independent provider/model for the recall LLM steps (issue #146,
+ *     Fase 5), in the shape of {@code llm.auth}/{@code embeddings.auth} ({@link ProviderAuth}); all
+ *     fields optional. Empty (the default) ⇒ the recall steps reuse the primary chat provider (no
+ *     behaviour change). A {@code provider} ⇒ an independent, cheaper provider/model on its own key;
+ *     only a {@code model} ⇒ the chat auth (same provider/key/OAuth) with the model swapped. Resolved
+ *     into the {@code recallLlmProvider} bean in {@link com.agentmemory.llm.LlmModule}.
  */
 @ConfigurationProperties(prefix = "agent-memory.recall.llm")
 public record LlmRecallProperties(
@@ -60,7 +67,8 @@ public record LlmRecallProperties(
         @DefaultValue Mmr mmr,
         @DefaultValue Expansion expansion,
         @DefaultValue Injection injection,
-        @DefaultValue Cache cache) {
+        @DefaultValue Cache cache,
+        @DefaultValue ProviderAuth auth) {
 
     public LlmRecallProperties {
         if (maxCandidates <= 0) {
@@ -90,6 +98,9 @@ public record LlmRecallProperties(
         }
         if (cache == null) {
             cache = new Cache(true, Cache.DEFAULT_TTL, Cache.DEFAULT_MAX_ENTRIES);
+        }
+        if (auth == null) {
+            auth = ProviderAuth.NONE;
         }
     }
 

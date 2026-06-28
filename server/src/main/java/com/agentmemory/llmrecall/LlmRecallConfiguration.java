@@ -49,6 +49,15 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * when its feature is disabled (the cache on a pass-through, the LLM service when over budget), so the
  * result is never worse than the hybrid baseline.
  *
+ * <h2>Recall LLM provider (#146 seam)</h2>
+ * The three LLM-backed recall steps — {@link #queryExpander}, {@link #candidateReranker} (the rerank
+ * fallback) and {@link #briefSynthesizer} — bind {@code @Qualifier("recallLlmProvider")} instead of the
+ * primary {@code llmProvider}. That bean (in {@code LlmModule}) is the primary chat provider by default,
+ * so this is a no-op until an operator sets {@code agent-memory.recall.llm.auth} to route these cheap,
+ * high-frequency calls to a faster/cheaper model. Heavyweight work (chat, consolidation, handoff) keeps
+ * the primary. The recall provider is best-effort and never probed at startup: a bad recall model only
+ * degrades these steps to the RRF/bullets fast path they already fall back to.
+ *
  * <h2>Access reinforcement (#24 seam)</h2>
  * {@link JdbcAccessReinforcer} is published {@code @ConditionalOnMissingBean(AccessReinforcer.class)},
  * so issue #24 can later supply its own reinforcer (with the full decay model) and take over without
@@ -76,7 +85,7 @@ public class LlmRecallConfiguration {
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean(LlmProvider.class)
     public QueryExpander queryExpander(
-            @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("recallLlmProvider") LlmProvider llmProvider,
             RecallPrompts prompts,
             LlmRecallProperties props) {
         return new QueryExpander(
@@ -92,7 +101,7 @@ public class LlmRecallConfiguration {
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean(LlmProvider.class)
     public CandidateReranker candidateReranker(
-            @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("recallLlmProvider") LlmProvider llmProvider,
             RecallPrompts prompts,
             LlmRecallProperties props) {
         return new CandidateReranker(
@@ -174,7 +183,7 @@ public class LlmRecallConfiguration {
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean(LlmProvider.class)
     public BriefSynthesizer briefSynthesizer(
-            @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("recallLlmProvider") LlmProvider llmProvider,
             RecallPrompts prompts,
             LlmRecallProperties props) {
         return new BriefSynthesizer(llmProvider, prompts, recallEffort(props));

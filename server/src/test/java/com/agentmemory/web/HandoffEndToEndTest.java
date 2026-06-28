@@ -10,7 +10,7 @@ import com.agentmemory.hooks.HookPayload;
 import com.agentmemory.hooks.IngestService;
 import com.agentmemory.hooks.IngestStatus;
 import com.agentmemory.llm.ChatRequest;
-import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.ProviderFactory;
 import com.agentmemory.llm.TestDoubleProvider;
 import java.time.Duration;
 import java.time.Instant;
@@ -49,10 +49,11 @@ import org.testcontainers.utility.DockerImageName;
  *       fails.</li>
  * </ul>
  *
- * <p>The chat {@link LlmProvider} is overridden with a {@link Primary} scripted {@link TestDoubleProvider}
- * that returns a valid handoff document, so the autowired {@code HandoffService} (and thus the real
- * trigger and the real controller) produce a persistable handoff deterministically. The health-gate
- * still probes the by-name {@code test} provider, so startup is unaffected.
+ * <p>The chat provider is scripted via a {@link Primary} {@link ProviderFactory} whose
+ * {@link TestDoubleProvider} returns a valid handoff document, so the autowired {@code HandoffService}
+ * (which binds {@code @Qualifier("llmProvider")}, and thus the real trigger and controller) produces a
+ * persistable handoff deterministically. The health gate probes that same double, so startup is
+ * unaffected.
  */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -77,18 +78,20 @@ class HandoffEndToEndTest {
     }
 
     /**
-     * Override the chat provider (by type, {@link Primary}) so the autowired {@code HandoffService}
-     * returns a valid handoff. The health gate injects {@code llmProvider} by name, so the real
-     * {@code test} double still answers the startup probe.
+     * Script the chat provider via a {@link Primary} {@link ProviderFactory} so the module builds its
+     * {@code llmProvider} (and the recall provider, which defaults to it) from the scripted double and
+     * the autowired {@code HandoffService} returns a valid handoff. The health gate injects
+     * {@code llmProvider} by name, so that same double answers the startup probe.
      */
     @TestConfiguration
     static class ScriptedLlm {
         @Bean
         @Primary
-        LlmProvider scriptedHandoffProvider() {
-            return TestDoubleProvider.builder()
-                    .chatResponder(ScriptedLlm::reply)
-                    .build();
+        ProviderFactory scriptedHandoffProviderFactory() {
+            return new ProviderFactory(
+                    TestDoubleProvider.builder()
+                            .chatResponder(ScriptedLlm::reply)
+                            .build());
         }
 
         private static String reply(ChatRequest req) {

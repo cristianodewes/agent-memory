@@ -24,10 +24,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * and {@code RecallConfiguration} use) so the DB-less smoke test still loads; ordered after the store
  * and wiki auto-configurations so their beans are present when the conditions are evaluated.
  *
- * <p>The {@link LlmProvider} is injected by name ({@code @Qualifier("llmProvider")}): the
- * deterministic {@code test} double registers under both the {@code llmProvider} and {@code embedder}
- * bean names, so a by-type {@link LlmProvider} injection is unambiguous in production but the explicit
- * qualifier keeps it robust and mirrors {@code LlmModule}'s own consumers.
+ * <p>Every {@link LlmProvider} consumer here binds the primary by name
+ * ({@code @Qualifier("llmProvider")}). Since issue #146 added the optional {@code recallLlmProvider}
+ * (a second {@link LlmProvider} bean carrying the cheap recall steps), a bare by-type injection has two
+ * candidates; consolidation is heavyweight work that wants the primary chat/consolidation provider, so
+ * each site qualifies explicitly (the primary is also {@code @Primary}, so this is belt-and-suspenders
+ * — and it mirrors {@code LlmModule}'s own consumers).
  */
 @AutoConfiguration(afterName = {
     "com.agentmemory.store.StoreConfiguration",
@@ -73,7 +75,7 @@ public class ConsolidateConfiguration {
     @ConditionalOnBean({SessionObservationReader.class, MemoryWriteService.class, McpReadRepository.class})
     public Consolidator consolidator(
             SessionObservationReader reader,
-            LlmProvider llmProvider,
+            @Qualifier("llmProvider") LlmProvider llmProvider,
             MemoryWriteService memoryWriteService,
             McpReadRepository mcpReadRepository) {
         return new Consolidator(reader, llmProvider, memoryWriteService, mcpReadRepository);
@@ -86,7 +88,7 @@ public class ConsolidateConfiguration {
     @Bean
     @ConditionalOnBean({McpReadRepository.class, PageRepository.class})
     public MemoryExplore memoryExplore(
-            LlmProvider llmProvider,
+            @Qualifier("llmProvider") LlmProvider llmProvider,
             McpReadRepository mcpReadRepository,
             PageRepository pageRepository) {
         return new MemoryExplore(llmProvider, mcpReadRepository, pageRepository);
