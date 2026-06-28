@@ -5,8 +5,10 @@ import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Builds the concise, relevance-gated, bounded memory block a {@code UserPromptSubmit} hook injects
@@ -35,6 +37,15 @@ import java.util.List;
  * <p>The block is plain markdown (a short header plus one bullet per hit: title + path + snippet). The
  * snippet is stored page content (already sanitized at ingest, #6); the renderer strips the
  * {@code <mark>} headline tags so the injected text is clean prose. Stateless given its collaborators.
+ *
+ * <h2>Synthesized brief (issue #135, Fase 3)</h2>
+ * When an optional {@link BriefSynthesizer} is wired and enabled, and the gate approved on
+ * <em>calibrated</em> cross-encoder scores, the curated block is upgraded from raw bullets to a single
+ * short "what you need to know" paragraph with path citations — one minimal-effort generative call made
+ * only on real matches (the common low-signal prompt never reaches it, so the Fase 0-2 latency property
+ * holds). It is strictly never-worse-than-baseline: a disabled feature, uncalibrated scores, an absent
+ * synthesizer, or any synthesis failure / timeout / not-relevant / empty / over-budget brief all fall
+ * back to the same bounded, gated bullets that were rendered before Fase 3.
  */
 public final class RecallInjection {
 
@@ -47,8 +58,20 @@ public final class RecallInjection {
 
     private final RecallService recall;
     private final LlmRecallProperties.Injection cfg;
+    private final BriefSynthesizer synthesizer; // nullable: absent => bullets only (pre-Fase-3 behavior)
 
+    /** Bullets-only injection (no brief synthesizer wired). */
     public RecallInjection(RecallService recall, LlmRecallProperties.Injection cfg) {
+        this(recall, cfg, null);
+    }
+
+    /**
+     * @param synthesizer the optional brief synthesizer (issue #135, Fase 3), or {@code null} to render
+     *     the snippet bullets as before. Even when present, it is consulted only if the brief is enabled
+     *     in {@code cfg} and the gate approved on calibrated scores.
+     */
+    public RecallInjection(
+            RecallService recall, LlmRecallProperties.Injection cfg, BriefSynthesizer synthesizer) {
         if (recall == null) {
             throw new IllegalArgumentException("recall must not be null");
         }
@@ -57,6 +80,7 @@ public final class RecallInjection {
         }
         this.recall = recall;
         this.cfg = cfg;
+        this.synthesizer = synthesizer;
     }
 
     /**
@@ -119,6 +143,23 @@ public final class RecallInjection {
             return Result.empty();
         }
 
+        // Synthesized brief (issue #135, Fase 3) — the only generative call the injection makes, and
+        // only on a real match that cleared the CALIBRATED gate: the common low-signal prompt returned
+        // above without ever reaching here, so the Fase 0-2 latency property holds. Any failure, timeout,
+        // not-relevant, empty, or over-budget brief falls through to the bullets below — never worse than
+        // the baseline. The brief is rendered as labeled context, never as instruction (its prose is
+        // synthesized from untrusted snippets, the real injection surface BriefSynthesizer hardens).
+        if (synthesizer != null && cfg.brief().enabled() && result.calibrated()) {
+            Duration timeout = Duration.ofMillis(cfg.brief().timeoutMs());
+            Optional<BriefSynthesizer.Brief> brief = synthesizer.synthesize(prompt, gated, timeout);
+            if (brief.isPresent()) {
+                Result rendered = renderBrief(brief.get(), gated.size());
+                if (!rendered.isEmpty()) {
+                    return rendered;
+                }
+            }
+        }
+
         return render(gated);
     }
 
@@ -145,6 +186,42 @@ public final class RecallInjection {
             return Result.empty();
         }
         return new Result(sb.toString().stripTrailing(), rendered);
+    }
+
+    /**
+     * Render a synthesized brief (issue #135, Fase 3) as the bounded block: the standard header, the
+     * brief prose, then an optional {@code Sources: …} line citing the paths it drew on. The brief is
+     * labeled context under the same header as the bullets, never an instruction. Returns
+     * {@link Result#empty()} when the header+brief alone overflows {@code maxChars} — the caller then
+     * falls back to the (individually char-bounded) bullets, so the block stays bounded either way. The
+     * Sources line is appended only when it too fits.
+     *
+     * @param brief the synthesized brief and its grounded citations.
+     * @param hits  the number of gated hits the brief summarizes, reported as the block's hit count.
+     */
+    private Result renderBrief(BriefSynthesizer.Brief brief, int hits) {
+        String body = clean(brief.text());
+        if (body.isEmpty()) {
+            return Result.empty();
+        }
+        StringBuilder sb = new StringBuilder(256).append("## Relevant project memory\n").append(body);
+        if (sb.length() > cfg.maxChars()) {
+            // The brief alone overflows the budget; fall back to the bullets rather than truncate prose.
+            return Result.empty();
+        }
+        String sources = renderSources(brief.citedPaths());
+        if (!sources.isEmpty() && sb.length() + sources.length() <= cfg.maxChars()) {
+            sb.append(sources);
+        }
+        return new Result(sb.toString().stripTrailing(), hits);
+    }
+
+    /** A trailing {@code "\nSources: a.md, b.md"} line, or empty when there are no cited paths. */
+    private static String renderSources(List<String> citedPaths) {
+        if (citedPaths.isEmpty()) {
+            return "";
+        }
+        return "\nSources: " + String.join(", ", citedPaths);
     }
 
     private static String renderHit(RecallHit h) {

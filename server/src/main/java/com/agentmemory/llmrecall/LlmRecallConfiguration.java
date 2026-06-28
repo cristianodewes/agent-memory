@@ -141,6 +141,24 @@ public class LlmRecallConfiguration {
     }
 
     /**
+     * The brief synthesizer (issue #135, Fase 3) — the optional final curation step that turns the
+     * relevance-gated hits into a short cited paragraph. Built whenever an {@link LlmProvider} exists
+     * (like {@link #candidateReranker}); whether it actually fires is gated per-request by
+     * {@code injection.brief.enabled} (default off) and by calibrated scores inside {@link RecallInjection},
+     * so an operator enables the brief by config alone without re-wiring. It carries the same
+     * {@link ReasoningEffort#MINIMAL} hint as the other recall calls.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean(LlmProvider.class)
+    public BriefSynthesizer briefSynthesizer(
+            @Qualifier("llmProvider") LlmProvider llmProvider,
+            RecallPrompts prompts,
+            LlmRecallProperties props) {
+        return new BriefSynthesizer(llmProvider, prompts, recallEffort(props));
+    }
+
+    /**
      * The reasoning-effort hint the recall steps put on their LLM calls (issue #130, Fase 1):
      * {@link ReasoningEffort#MINIMAL} when {@code minimal-reasoning} is on (default), else {@code null}
      * (unchanged provider behavior) so an operator can disable it should a backend reject the param.
@@ -203,11 +221,18 @@ public class LlmRecallConfiguration {
      * {@link DataSource} and always ship together), so this module declares no resolver of its own —
      * avoiding a second {@code ScopeResolver} that would make the MCP {@code memoryTools} injection
      * ambiguous.
+     *
+     * <p>The {@link BriefSynthesizer} (Fase 3) is optional — absent when no {@link LlmProvider} is
+     * configured — so it is injected via {@link ObjectProvider}, exactly like the cross-encoder client.
+     * When absent (or disabled by config) the injection renders the pre-Fase-3 bullets, unchanged.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean(RecallService.class)
-    public RecallInjection recallInjection(RecallService recall, LlmRecallProperties props) {
-        return new RecallInjection(recall, props.injection());
+    public RecallInjection recallInjection(
+            RecallService recall,
+            ObjectProvider<BriefSynthesizer> briefSynthesizer,
+            LlmRecallProperties props) {
+        return new RecallInjection(recall, props.injection(), briefSynthesizer.getIfAvailable());
     }
 }

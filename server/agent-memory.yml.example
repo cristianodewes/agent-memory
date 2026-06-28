@@ -100,6 +100,15 @@ agent-memory:
         min-score-absolute: 0.35 # absolute floor applied ONLY when a calibrated cross-encoder ran: if even
                                # the top hit is below it, inject nothing (calibrated "nothing relevant").
                                # Never applied to uncalibrated RRF/LLM scores.
+        brief:                 # synthesized brief (Fase 3): when the calibrated gate approves, replace the
+                               # raw snippet bullets with one short cited paragraph via a single minimal-
+                               # effort generative call. Only fires on real matches (low-signal prompts
+                               # never reach it); any failure/timeout/not-relevant falls back to the bullets.
+          enabled: false       # OFF by default: reintroduces a generative call (latency + Codex cost) and a
+                               # prompt-injection surface — enable per deployment after validating in prod
+          timeout-ms: 4000     # per-call HTTP timeout bounding the single brief call; on timeout the block
+                               # falls back to the bullets. Keep under the client's 10s deadline minus the
+                               # recall search already spent (the brief runs only after a fast calibrated search)
 
   embeddings:
     auth:
