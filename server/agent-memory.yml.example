@@ -91,6 +91,13 @@ agent-memory:
         model: rerank-2-lite   # Voyage rerank model (fast, non-generative, calibrated 0..1 score)
         max-documents: 50      # cap on candidates scored per rerank call; the head is min(this, pool),
                                # and the pool is max(query.limit, max-candidates) — right-sizes K cheaply
+      mmr:                     # MMR diversity (Fase 4): after the rerank and before the trim, re-order the
+                               # candidates by relevance − redundancy over their embeddings so the injected
+                               # block is not several bullets of one topic. Pure CPU + one bounded by-id
+                               # embeddings query (NOT bounded by budget-ms); only has an effect when
+                               # embeddings exist, and degrades to the rerank order otherwise.
+        enabled: true          # false keeps the pure rerank order (it is a no-op when embeddings are absent)
+        lambda: 0.7            # relevance/diversity trade-off in [0,1]; higher favours relevance (conservative)
       expansion:
         enabled: false         # query expansion is off by default: appending terms to the conjunctive
                                # FTS query only narrows recall and dilutes the embedding centroid (IR bug)
