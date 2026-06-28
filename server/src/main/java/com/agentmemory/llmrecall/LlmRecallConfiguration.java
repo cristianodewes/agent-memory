@@ -7,6 +7,7 @@ import com.agentmemory.llm.LlmModule;
 import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.llm.VoyageReranker;
+import com.agentmemory.recall.PageEmbeddingService;
 import com.agentmemory.recall.RecallConfiguration;
 import com.agentmemory.recall.RecallService;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -141,6 +142,23 @@ public class LlmRecallConfiguration {
     }
 
     /**
+     * The MMR diversifier (issue #141, Fase 4) injected into {@link LlmRecallService}: the post-rerank,
+     * pre-trim step that re-orders the candidates by relevance − redundancy over their embeddings so a
+     * final injection block is not several bullets of one topic. It reuses {@link PageEmbeddingService}
+     * to read the candidate vectors under the active embedder's {@code {provider, model}} (one bounded
+     * by-id query; no network), so it is built only when that bean exists — i.e. alongside the rest of
+     * the DB-backed recall. Whether it fires per request is gated by {@code mmr.enabled} (default true),
+     * and it degrades to the rerank order whenever embeddings are absent.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean(PageEmbeddingService.class)
+    public MmrDiversifier mmrDiversifier(
+            PageEmbeddingService pageEmbeddingService, LlmRecallProperties props) {
+        return new MmrDiversifier(pageEmbeddingService::embeddingsFor, props.mmr().lambda());
+    }
+
+    /**
      * The brief synthesizer (issue #135, Fase 3) — the optional final curation step that turns the
      * relevance-gated hits into a short cited paragraph. Built whenever an {@link LlmProvider} exists
      * (like {@link #candidateReranker}); whether it actually fires is gated per-request by
@@ -193,8 +211,9 @@ public class LlmRecallConfiguration {
     /**
      * The LLM-assisted recall decorator, published {@link Primary} so it is the {@link RecallService}
      * injected everywhere (MCP tools, injection endpoint). It wraps the base {@code recallService} bean
-     * by name. The expander is optional (it is absent when expansion is disabled), injected via
-     * {@link org.springframework.beans.factory.ObjectProvider}.
+     * by name. The expander and the MMR diversifier are optional (the expander is absent when expansion
+     * is disabled; the diversifier when there is no embeddings module), both injected via
+     * {@link org.springframework.beans.factory.ObjectProvider} and tolerated as {@code null}.
      */
     @Bean
     @Primary
@@ -204,11 +223,12 @@ public class LlmRecallConfiguration {
             @Qualifier("recallService") RecallService base,
             ObjectProvider<QueryExpander> expander,
             Reranker reranker,
+            ObjectProvider<MmrDiversifier> mmr,
             AccessReinforcer reinforcer,
             LlmRecallProperties props,
             RecallMetrics metrics) {
         return new LlmRecallService(
-                base, expander.getIfAvailable(), reranker, reinforcer, props,
+                base, expander.getIfAvailable(), reranker, mmr.getIfAvailable(), reinforcer, props,
                 System::currentTimeMillis, metrics);
     }
 

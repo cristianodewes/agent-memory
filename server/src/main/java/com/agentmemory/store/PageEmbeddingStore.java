@@ -2,8 +2,12 @@ package com.agentmemory.store;
 
 import com.agentmemory.core.PageId;
 import com.agentmemory.llm.EmbeddingResult;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.RowMapper;
 import org.springframework.transaction.annotation.Transactional;
@@ -143,6 +147,63 @@ public class PageEmbeddingStore {
                 literal, workspace, project, provider, model, limit);
     }
 
+    /**
+     * Fetch the stored embedding vector for each of the given page-version ids under one
+     * {@code provider}/{@code model}, in a single bounded query (the read counterpart to
+     * {@link #upsert}). Unlike {@link #nearestLatest} this does <em>not</em> embed or rank — it is a
+     * direct by-id lookup used by the recall MMR diversity pass (issue #141) to read the candidate
+     * pool's own vectors, so the {@code IN} list is bounded to the candidate count (≤ K) and there is
+     * no network call. Only vectors under the active {@code provider}/{@code model} are returned, so
+     * incomparable vectors from a different model are never mixed in; ids with no matching embedding
+     * are simply absent from the result (the caller treats them as diversity-neutral).
+     *
+     * <p>The {@code embedding} column is read as its pgvector text literal ({@code embedding::text})
+     * and parsed back to a {@code float[]} — the inverse of {@link #toVectorLiteral} — so no
+     * third-party pgvector type binding is needed (mirroring the write side). A non-UUID id is skipped
+     * defensively (it cannot reference a page version, so it has no embedding).
+     *
+     * @param pageIds  the candidate page-version ids (canonical UUID text); bounded to the pool.
+     * @param provider the embedding provider whose vectors to read (e.g. {@code voyage}).
+     * @param model    the embedding model whose vectors to read (e.g. {@code voyage-3}).
+     * @return page-version id → its embedding vector, for those ids that have one under provider/model.
+     */
+    @Transactional(readOnly = true)
+    public Map<String, float[]> fetchByPageIds(List<String> pageIds, String provider, String model) {
+        if (pageIds == null || pageIds.isEmpty() || provider == null || model == null) {
+            return Map.of();
+        }
+        // Parse to UUIDs (page-version ids), skipping any non-UUID id defensively — a candidate that is
+        // not a page id simply has no embedding to fetch.
+        List<UUID> ids = new ArrayList<>(pageIds.size());
+        for (String s : pageIds) {
+            UUID u = tryParseUuid(s);
+            if (u != null) {
+                ids.add(u);
+            }
+        }
+        if (ids.isEmpty()) {
+            return Map.of();
+        }
+        String placeholders = ids.stream().map(x -> "?").collect(Collectors.joining(", "));
+        List<Object> args = new ArrayList<>(ids.size() + 2);
+        args.add(provider);
+        args.add(model);
+        args.addAll(ids);
+
+        Map<String, float[]> out = new HashMap<>(ids.size() * 2);
+        // A void block lambda binds to RowCallbackHandler (per-row), accumulating into the map; it is
+        // unambiguous against the ResultSetExtractor overload (which must return a value).
+        jdbc.query(
+                "SELECT page_id::text AS id, embedding::text AS vec "
+                        + "FROM page_embeddings "
+                        + "WHERE provider = ? AND model = ? AND page_id IN (" + placeholders + ")",
+                rs -> {
+                    out.put(rs.getString("id"), parseVectorLiteral(rs.getString("vec")));
+                },
+                args.toArray());
+        return out;
+    }
+
     /** Count stored embeddings for a page version (any provider/model) — for tests/diagnostics. */
     @Transactional(readOnly = true)
     public int countFor(PageId pageId) {
@@ -183,5 +244,47 @@ public class PageEmbeddingStore {
             sb.append(Float.toString(vector[i]));
         }
         return sb.append(']').toString();
+    }
+
+    /**
+     * Parse a pgvector text literal {@code [v0,v1,…]} back into a {@code float[]} — the inverse of
+     * {@link #toVectorLiteral}, used to read the {@code embedding} column via {@code embedding::text}.
+     * Tolerant of surrounding whitespace and the optional brackets; an empty/blank literal yields an
+     * empty array. {@link Float#parseFloat} round-trips the {@link Float#toString} form (incl. scientific
+     * notation) written on the way in.
+     */
+    static float[] parseVectorLiteral(String literal) {
+        if (literal == null) {
+            return new float[0];
+        }
+        String s = literal.trim();
+        if (s.startsWith("[")) {
+            s = s.substring(1);
+        }
+        if (s.endsWith("]")) {
+            s = s.substring(0, s.length() - 1);
+        }
+        s = s.trim();
+        if (s.isEmpty()) {
+            return new float[0];
+        }
+        String[] parts = s.split(",");
+        float[] v = new float[parts.length];
+        for (int i = 0; i < parts.length; i++) {
+            v[i] = Float.parseFloat(parts[i].trim());
+        }
+        return v;
+    }
+
+    /** @return the parsed {@link UUID}, or {@code null} if {@code s} is not a valid UUID. */
+    private static UUID tryParseUuid(String s) {
+        if (s == null) {
+            return null;
+        }
+        try {
+            return UUID.fromString(s);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
     }
 }

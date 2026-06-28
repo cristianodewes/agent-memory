@@ -42,6 +42,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *     latency. Default {@code true}; flip to {@code false} if a backend rejects the {@code reasoning}
  *     param (the rerank then degrades safely to RRF order regardless).
  * @param crossEncoder    calibrated cross-encoder rerank sub-settings (issue #130 Fase 2).
+ * @param mmr             MMR diversity sub-settings (issue #141 Fase 4).
  * @param expansion       query-expansion sub-settings.
  * @param injection       curated-injection sub-settings.
  */
@@ -54,6 +55,7 @@ public record LlmRecallProperties(
         @DefaultValue("6000") long budgetMs,
         @DefaultValue("true") boolean minimalReasoning,
         @DefaultValue CrossEncoder crossEncoder,
+        @DefaultValue Mmr mmr,
         @DefaultValue Expansion expansion,
         @DefaultValue Injection injection) {
 
@@ -73,6 +75,9 @@ public record LlmRecallProperties(
         }
         if (crossEncoder == null) {
             crossEncoder = new CrossEncoder(true, CrossEncoder.DEFAULT_MODEL, 50);
+        }
+        if (mmr == null) {
+            mmr = new Mmr(true, Mmr.DEFAULT_LAMBDA);
         }
         if (expansion == null) {
             expansion = new Expansion(false, 4);
@@ -112,6 +117,38 @@ public record LlmRecallProperties(
             if (maxDocuments <= 0) {
                 throw new IllegalArgumentException(
                         "cross-encoder.maxDocuments must be > 0, was " + maxDocuments);
+            }
+        }
+    }
+
+    /**
+     * MMR (Maximal Marginal Relevance) diversity tuning (issue #141, Fase 4). After the rerank and
+     * before the trim, an MMR pass re-orders the candidates to maximize marginal information
+     * (relevance − redundancy) over their embeddings, so the injected block is not several bullets of
+     * one topic. It is pure CPU over the ≤K candidate vectors plus one bounded embeddings fetch (no
+     * network), so it is <em>not</em> bounded by the LLM time budget; it degrades to the unchanged
+     * rerank order when embeddings are absent and only ever re-orders (never rescoring a hit), so the
+     * {@code calibrated} flag flows through.
+     *
+     * @param enabled whether to run the MMR diversity pass. Default {@code true}: it is cheap (cosine
+     *     over ≤K vectors + one indexed by-id query) and has an effect <em>only</em> when embeddings
+     *     are present — the same axis the cross-encoder rerank (also default-on) needs — so it
+     *     activates exactly where the "5 bullets, same topic" problem (#130) appears and is a no-op
+     *     everywhere else. Set {@code false} to keep the pure rerank order.
+     * @param lambda  the relevance/diversity trade-off in {@code [0, 1]}:
+     *     {@code next = argmax[ λ·rel(c) − (1−λ)·max_{s∈selected} cos(c, s) ]}. Higher favours
+     *     relevance, lower favours diversity. Must be in {@code [0, 1]}. Default
+     *     {@value #DEFAULT_LAMBDA} (relevance-leaning — a conservative re-order that promotes a diverse
+     *     candidate only when redundancy is high).
+     */
+    public record Mmr(@DefaultValue("true") boolean enabled, @DefaultValue("0.7") double lambda) {
+
+        /** Default λ — relevance-leaning, so the diversity re-order stays conservative. */
+        public static final double DEFAULT_LAMBDA = 0.7;
+
+        public Mmr {
+            if (lambda < 0.0 || lambda > 1.0) {
+                throw new IllegalArgumentException("mmr.lambda must be in [0,1], was " + lambda);
             }
         }
     }

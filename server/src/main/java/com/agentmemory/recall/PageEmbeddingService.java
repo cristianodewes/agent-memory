@@ -5,6 +5,9 @@ import com.agentmemory.llm.Embedder;
 import com.agentmemory.llm.EmbeddingResult;
 import com.agentmemory.llm.LlmException;
 import com.agentmemory.store.PageEmbeddingStore;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -13,7 +16,9 @@ import org.slf4j.LoggerFactory;
  * Generates and stores page embeddings — the <em>write</em> side of the semantic-recall arm (issue
  * #16). Page content is embedded via the optional {@link Embedder} (#6) and persisted to
  * {@code page_embeddings} ({@link PageEmbeddingStore}) with its denormalized {@code {provider, model,
- * dim}} (invariant #8). Two callers drive it:
+ * dim}} (invariant #8). It also exposes a bounded by-id <em>read</em> of stored vectors
+ * ({@link #embeddingsFor}) for the recall MMR diversity pass (issue #141). Two callers drive the
+ * write side:
  *
  * <ul>
  *   <li><strong>On write/consolidation</strong> — after a page version is stored, embed it so it is
@@ -50,6 +55,7 @@ public class PageEmbeddingService {
     private final AtomicBoolean warnedNoEmbedder = new AtomicBoolean(false);
     private final AtomicBoolean warnedDimMismatch = new AtomicBoolean(false);
     private final AtomicBoolean warnedUnreachable = new AtomicBoolean(false);
+    private final AtomicBoolean warnedFetchFailed = new AtomicBoolean(false);
 
     /**
      * @param store    the {@code page_embeddings} persistence; never null.
@@ -131,6 +137,38 @@ public class PageEmbeddingService {
                     "Unexpected error while embedding a page (" + e.getMessage()
                             + "); skipping the vector for this write.");
             return false;
+        }
+    }
+
+    /**
+     * The stored embedding vectors for a set of candidate page-version ids — the <em>read</em> side
+     * used by the recall MMR diversity pass (issue #141) to compare candidates by their own vectors.
+     * Reads under the active embedder's {@code {provider, model}} so only comparable vectors are
+     * returned, in one bounded query (no embed/network call); the {@link PageEmbeddingStore} owns the
+     * SQL.
+     *
+     * <p>Best-effort and never throws into the recall path (DD-005): returns an <strong>empty</strong>
+     * map when the embeddings axis is off or width-mismatched ({@link #embeddingsEnabled()} is false),
+     * or when the fetch errors — the caller (MMR) then keeps the rerank order, so diversity is a pure
+     * upside that is simply absent when embeddings are. Candidates with no stored vector are omitted
+     * from the map (the caller treats them as diversity-neutral).
+     *
+     * @param pageIds the candidate page-version ids; already bounded to the recall candidate pool.
+     * @return page-version id → embedding vector for those candidates that have one; empty when
+     *     embeddings are unavailable.
+     */
+    public Map<String, float[]> embeddingsFor(Collection<String> pageIds) {
+        if (pageIds == null || pageIds.isEmpty() || !embeddingsEnabled()) {
+            return Map.of();
+        }
+        try {
+            return store.fetchByPageIds(List.copyOf(pageIds), embedder.id(), embedder.model());
+        } catch (RuntimeException e) {
+            // A diversity read must never escalate into recall; degrade to "no embeddings" (DD-005).
+            warnOnce(warnedFetchFailed,
+                    "Fetching candidate embeddings for recall diversity failed (" + e.getMessage()
+                            + "); recall continues without the MMR diversity pass.");
+            return Map.of();
         }
     }
 
