@@ -1,6 +1,7 @@
 package com.agentmemory.web;
 
 import com.agentmemory.llmrecall.RecallInjection;
+import com.agentmemory.llmrecall.RecallMetrics;
 import com.agentmemory.mcp.ScopeResolver;
 import com.agentmemory.recall.Scope;
 import java.util.LinkedHashMap;
@@ -37,11 +38,15 @@ public class RecallInjectionController {
 
     private final ObjectProvider<RecallInjection> injection;
     private final ObjectProvider<ScopeResolver> scopes;
+    private final ObjectProvider<RecallMetrics> metrics;
 
     public RecallInjectionController(
-            ObjectProvider<RecallInjection> injection, ObjectProvider<ScopeResolver> scopes) {
+            ObjectProvider<RecallInjection> injection,
+            ObjectProvider<ScopeResolver> scopes,
+            ObjectProvider<RecallMetrics> metrics) {
         this.injection = injection;
         this.scopes = scopes;
+        this.metrics = metrics;
     }
 
     /**
@@ -82,6 +87,10 @@ public class RecallInjectionController {
                     .body(Map.of("status", "error", "reason", "scope: " + e.getMessage()));
         }
 
+        // Time the end-to-end injection (search + gate + render) so the #130 "p50/p95 ≤ 3s" criterion
+        // is measurable at the endpoint level (issue #130 follow-up). Recorded on both the success and
+        // the degrade-to-empty path, so a failing recall is still observed.
+        long startNanos = System.nanoTime();
         RecallInjection.Result result;
         try {
             result = svc.inject(scope, request.prompt());
@@ -90,6 +99,10 @@ public class RecallInjectionController {
             log.warn("recall injection failed for {}/{}: {}",
                     scope.workspaceSlug(), scope.projectSlug(), e.toString());
             result = RecallInjection.Result.empty();
+        }
+        RecallMetrics recallMetrics = metrics.getIfAvailable();
+        if (recallMetrics != null) {
+            recallMetrics.recordInject(System.nanoTime() - startNanos, result.hits());
         }
 
         Map<String, Object> body = new LinkedHashMap<>();
