@@ -6,7 +6,9 @@ import static org.awaitility.Awaitility.await;
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ProviderFactory;
 import com.agentmemory.llm.TestDoubleProvider;
+import com.agentmemory.mcp.MemoryTools;
 import com.agentmemory.recall.HitSource;
+import com.agentmemory.recall.HybridRecallService;
 import com.agentmemory.recall.RecallHit;
 import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
@@ -21,6 +23,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.context.ApplicationContext;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -34,7 +37,8 @@ import org.testcontainers.utility.DockerImageName;
 /**
  * End-to-end coverage of the fully-wired LLM-assisted recall pipeline (issue #21) over a throwaway
  * {@code pgvector/pgvector:pg16} (Testcontainers). The autowired {@link RecallService} is the
- * {@code @Primary} {@link LlmRecallService} decorator; its LLM is a deterministic, offline
+ * {@code @Primary} {@link CachingRecallService} wrapping the {@link LlmRecallService} decorator (issue
+ * #142); its LLM is a deterministic, offline
  * {@link TestDoubleProvider} scripted (via a {@code @Primary} {@link ProviderFactory}) to score a
  * <em>sentinel</em>-bearing page highest.
  *
@@ -123,14 +127,34 @@ class LlmRecallIntegrationTest {
 
     @Autowired RecallService recall;
     @Autowired DataSource dataSource;
+    @Autowired ApplicationContext context;
+    @Autowired RecallInjection recallInjection;
+    @Autowired MemoryTools memoryTools;
 
     private JdbcTemplate jdbc() {
         return new JdbcTemplate(dataSource);
     }
 
     @Test
-    void recallServiceIsTheLlmAssistedDecorator() {
-        assertThat(recall).isInstanceOf(LlmRecallService.class);
+    void wiringResolvesTheCachingDecoratorAsPrimaryOverTheLlmAssistedChain() {
+        // The @Primary RecallService that every by-type injection point resolves (the MCP tools, the
+        // /recall/inject endpoint, cross-project recall) is the Fase-4 caching decorator, wrapping the
+        // LLM-assisted service, wrapping the hybrid base: cache -> llmRecallService -> HybridRecallService.
+        assertThat(recall).isInstanceOf(CachingRecallService.class);
+        RecallService delegate = ((CachingRecallService) recall).delegate();
+        assertThat(delegate).isInstanceOf(LlmRecallService.class);
+        // base()/calibrated-gate seam intact: the LLM-assisted service still exposes the hybrid base it
+        // decorates, and that base is what the RecallInjection gate ultimately reads scores from.
+        assertThat(((LlmRecallService) delegate).base()).isInstanceOf(HybridRecallService.class);
+
+        // The LLM-assisted service stays a by-name-resolvable bean (the cache wraps it by name, mirroring
+        // how it wraps the base by name) — the exact instance the cache delegates to.
+        assertThat(context.getBean("llmRecallService", RecallService.class)).isSameAs(delegate);
+
+        // The injection endpoint and the MCP tools inject RecallService by type, so they share the single
+        // @Primary cache; that the context booted them with no ambiguity confirms the by-type resolution.
+        assertThat(recallInjection).isNotNull();
+        assertThat(memoryTools).isNotNull();
     }
 
     @Test

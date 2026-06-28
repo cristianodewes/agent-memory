@@ -95,6 +95,15 @@ agent-memory:
       minimal-reasoning: true  # ask the recall calls for minimal reasoning effort (+ low verbosity) to
                                # cut a reasoning model's hidden-reasoning latency. Set false if a backend
                                # rejects the `reasoning`/`verbosity` params (rerank then degrades to RRF).
+      cache:                   # short-TTL result cache (Fase 4): memoizes the recall RESULT per
+                               # (workspace, project, normalized prompt, limit) so repeated/reformulated
+                               # prompts in a session skip the embed + DB + cross-encoder work. TTL is the
+                               # only invalidation (an entry just expires after a reindex); the scope is in
+                               # the key, so a hit is never shared across projects.
+        enabled: true          # false makes the cache a transparent pass-through (every search delegates)
+        ttl: 45s               # how long a cached result stays fresh; keep short (tens of seconds) so it
+                               # only collapses in-session repeats and post-reindex staleness stays bounded
+        max-entries: 256       # LRU bound on distinct (scope, prompt, limit) entries; eldest evicted past it
       cross-encoder:           # calibrated cross-encoder rerank (Fase 2). Reuses the SAME Voyage API key
                                # as embeddings (below) — active only when embeddings.auth is Voyage + key.
         enabled: true          # false forces the generative LLM reranker; absent Voyage => LLM reranker

@@ -73,7 +73,8 @@ class LlmRecallServiceMmrTest {
                 new LlmRecallProperties.CrossEncoder(true, "rerank-2-lite", 50),
                 new LlmRecallProperties.Mmr(mmrEnabled, 0.7),
                 new LlmRecallProperties.Expansion(false, 4),
-                new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200, null));
+                new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200, null),
+                null);
     }
 
     private static LlmRecallService service(Reranker reranker, MmrDiversifier mmr, LlmRecallProperties props) {

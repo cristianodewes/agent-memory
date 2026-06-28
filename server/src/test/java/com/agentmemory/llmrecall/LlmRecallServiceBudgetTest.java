@@ -79,7 +79,8 @@ class LlmRecallServiceBudgetTest {
                 new LlmRecallProperties.CrossEncoder(true, "rerank-2-lite", 50),
                 new LlmRecallProperties.Mmr(true, 0.7),
                 new LlmRecallProperties.Expansion(expand, 4),
-                new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200, null));
+                new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200, null),
+                /*cache*/ null);
     }
 
     /**
