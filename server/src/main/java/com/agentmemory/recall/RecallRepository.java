@@ -1,5 +1,7 @@
 package com.agentmemory.recall;
 
+import com.agentmemory.core.MemoryLayer;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
@@ -76,7 +78,7 @@ public class RecallRepository {
     @Transactional(readOnly = true)
     public List<Candidate> ftsPages(String workspace, String project, String text, int limit) {
         return jdbc.query(
-                "SELECT p.id::text AS id, p.path, p.title, "
+                "SELECT p.id::text AS id, p.path, p.title, p.updated_at, p.layer, "
                         + "       ts_rank(p.search_vector, q) AS rank, "
                         + "       ts_headline('english', p.body, q, ?) AS snippet "
                         + "FROM pages p, (SELECT " + OR_TSQUERY + " AS q) tsq "
@@ -125,14 +127,14 @@ public class RecallRepository {
                         + "  SELECT l.from_page_id AS nid FROM links l "
                         + "    WHERE l.to_page_id IN (SELECT pid FROM seeds) "
                         + ") "
-                        + "SELECT p.id::text AS id, p.path, p.title, "
+                        + "SELECT p.id::text AS id, p.path, p.title, p.updated_at, p.layer, "
                         + "       count(*) AS edges, "
                         + "       ts_headline('english', p.body, " + OR_TSQUERY + ", ?) AS snippet "
                         + "FROM neighbors n "
                         + "JOIN pages p ON p.id = n.nid "
                         + "WHERE p.is_latest AND p.workspace = ? AND p.project = ? "
                         + "  AND p.id NOT IN (SELECT pid FROM seeds) "
-                        + "GROUP BY p.id, p.path, p.title, p.body "
+                        + "GROUP BY p.id, p.path, p.title, p.updated_at, p.layer, p.body "
                         + "ORDER BY edges DESC, p.id DESC "
                         + "LIMIT ?";
 
@@ -195,9 +197,15 @@ public class RecallRepository {
 
     // --- mapping ------------------------------------------------------------------------------------
 
-    /** Maps a page row to a PAGE candidate; the arm's order is the ranking, so score starts at 0. */
+    /**
+     * Maps a page row to a PAGE candidate; the arm's order is the ranking, so score starts at 0. Carries
+     * {@code updated_at}/{@code layer} (issue #140) so the recency prior and the injected block can read
+     * a page's age and retention layer — both columns are populated by the {@code ftsPages}/
+     * {@code graphNeighbors} SELECTs.
+     */
     private static final RowMapper<Candidate> PAGE_CANDIDATE_MAPPER = (rs, rowNum) -> {
         String id = rs.getString("id");
+        Timestamp updatedAt = rs.getTimestamp("updated_at");
         RecallHit hit = new RecallHit(
                 HitSource.PAGE,
                 id,
@@ -206,7 +214,9 @@ public class RecallRepository {
                 null,
                 0.0,
                 rowNum + 1,
-                rs.getString("snippet"));
+                rs.getString("snippet"),
+                updatedAt == null ? null : updatedAt.toInstant(),
+                MemoryLayer.fromWire(rs.getString("layer")));
         return new Candidate(id, hit);
     };
 
