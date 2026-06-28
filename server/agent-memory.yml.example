@@ -95,6 +95,28 @@ agent-memory:
       minimal-reasoning: true  # ask the recall calls for minimal reasoning effort (+ low verbosity) to
                                # cut a reasoning model's hidden-reasoning latency. Set false if a backend
                                # rejects the `reasoning`/`verbosity` params (rerank then degrades to RRF).
+      auth:                    # OPTIONAL recall provider/model (Fase 5, issue #146). Routes ONLY the LLM
+                               # recall steps (brief synthesis, the rerank fallback, expansion) to a
+                               # separate, cheaper/faster model; chat + consolidation keep the primary
+                               # llm.auth above. Same shape as llm.auth. EMPTY (the default) => recall
+                               # reuses the primary chat provider — zero change. Best-effort: a bad recall
+                               # model only degrades recall to the fast RRF/bullets path, never fails
+                               # startup, and it is NOT probed at boot.
+        provider: ""           # provider set => an INDEPENDENT provider on its own key (a mini/flash/
+                               #   haiku model); ONLY model set (provider empty) => the primary's
+                               #   provider/key/oauth with just the model swapped; both empty => primary
+        api-key: ""
+        base-url: ""
+        model: ""
+      # --- worked examples (copy one into `auth:` above) -----------------------------------------
+      #   # an independent cheap model on its own key:
+      #   auth:
+      #     provider: openai
+      #     api-key: ${OPENAI_API_KEY}
+      #     model: gpt-5.5-mini
+      #   # or the SAME chat provider/key, just a smaller model for the recall steps:
+      #   auth:
+      #     model: gpt-5.5-mini   # provider empty => reuse llm.auth's provider/key/oauth, swap the model
       cache:                   # short-TTL result cache (Fase 4): memoizes the recall RESULT per
                                # (workspace, project, normalized prompt, limit) so repeated/reformulated
                                # prompts in a session skip the embed + DB + cross-encoder work. TTL is the

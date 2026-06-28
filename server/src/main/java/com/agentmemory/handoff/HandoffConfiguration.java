@@ -6,6 +6,7 @@ import com.agentmemory.store.HandoffRepository;
 import com.agentmemory.store.StoreConfiguration;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
 import org.springframework.context.annotation.Bean;
@@ -15,11 +16,13 @@ import org.springframework.context.annotation.Bean;
  * {@code session-end → open handoff} trigger.
  *
  * <p>The service needs the {@link HandoffRepository} (a {@code DataSource}-gated store bean) and the
- * required {@link LlmProvider}; both are present in a wired context. Like the other store-coupled
- * modules it is gated on a {@code DataSource} ({@link ConditionalOnSingleCandidate}) so the DB-less
- * smoke context still loads, and ordered after {@link StoreConfiguration} (declared in
- * {@code META-INF/spring/.../AutoConfiguration.imports}) so the repository bean exists when the
- * condition is evaluated.
+ * required {@link LlmProvider}, bound by name ({@code @Qualifier("llmProvider")}): since issue #146
+ * added the optional {@code recallLlmProvider}, a bare by-type {@link LlmProvider} injection has two
+ * candidates and handoff generation wants the primary chat provider, not the cheap recall one. Like
+ * the other store-coupled modules it is gated on a {@code DataSource}
+ * ({@link ConditionalOnSingleCandidate}) so the DB-less smoke context still loads, and ordered after
+ * {@link StoreConfiguration} (declared in {@code META-INF/spring/.../AutoConfiguration.imports}) so the
+ * repository bean exists when the condition is evaluated.
  *
  * <p>The session-end trigger is added to the {@link IngestService} as a post-write listener at
  * startup via {@link #handoffSessionEndRegistration} (the listeners fan out, so it coexists with
@@ -33,7 +36,8 @@ public class HandoffConfiguration {
 
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
-    public HandoffService handoffService(LlmProvider llmProvider, HandoffRepository handoffRepository) {
+    public HandoffService handoffService(
+            @Qualifier("llmProvider") LlmProvider llmProvider, HandoffRepository handoffRepository) {
         return new HandoffService(llmProvider, handoffRepository);
     }
 

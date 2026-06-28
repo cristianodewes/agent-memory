@@ -2,11 +2,14 @@ package com.agentmemory.llm;
 
 import com.agentmemory.config.AgentMemoryConfig;
 import com.agentmemory.config.ProviderAuth;
+import com.agentmemory.llmrecall.LlmRecallProperties;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.context.annotation.Primary;
 
 /**
  * Wires the LLM provider layer into the Spring context (ARCHITECTURE.md §2.4, §6).
@@ -35,8 +38,17 @@ public class LlmModule {
     /**
      * The required chat/consolidation provider, selected by {@code agent-memory.llm.auth.provider}.
      * Always present (DD-005); a missing/unknown provider key fails fast at bean creation.
+     *
+     * <p>Marked {@link Primary}: since issue #146 added the optional {@link #recallLlmProvider}, a bare
+     * by-type {@link LlmProvider} injection has two candidates. The chat/consolidation provider is the
+     * canonical one — every heavyweight consumer (consolidation, chat, handoff, lint, bootstrap) wants
+     * it — so it wins by-type, and the recall steps opt in to the lighter provider explicitly via
+     * {@code @Qualifier("recallLlmProvider")}. This also keeps the single required provider the unique
+     * candidate for any {@code @ConditionalOnSingleCandidate(LlmProvider.class)}. (Embedder injections
+     * are unaffected: they all bind by {@code @Qualifier("embedder")}, which beats {@code @Primary}.)
      */
     @Bean
+    @Primary
     public LlmProvider llmProvider(ProviderFactory factory, AgentMemoryConfig config) {
         ProviderAuth auth = resolveLlmAuth(config);
         LlmProvider provider = factory.createLlmProvider(auth);
@@ -59,6 +71,87 @@ public class LlmModule {
                 config.dataDir().resolve(OpenAiOAuthLlmProvider.DEFAULT_TOKEN_FILE).toString();
         return new ProviderAuth(auth.provider(), auth.apiKey(), auth.baseUrl(), auth.model(),
                 new ProviderAuth.OAuth(defaultTokenFile));
+    }
+
+    /**
+     * The provider the LLM-assisted recall steps use (issue #146, Fase 5): the {@code QueryExpander},
+     * the {@code CandidateReranker} (the rerank fallback) and the {@code BriefSynthesizer}. It lets a
+     * deployment route the cheap, high-frequency recall calls to a faster/cheaper model than the heavy
+     * chat/consolidation provider, configured under {@code agent-memory.recall.llm.auth} (the shape of
+     * {@code llm.auth}). <strong>Default = the primary chat provider</strong>, so leaving recall auth
+     * unset is a zero-change no-op.
+     *
+     * <p>The {@link LlmRecallProperties} carrier is injected via {@link ObjectProvider} because it is
+     * registered by the (auto-configured) {@code LlmRecallConfiguration}, which need not be present when
+     * this module is loaded in isolation (e.g. the LLM module's own fail-fast test); when it is absent
+     * the recall axis is simply unconfigured and recall reuses the primary.
+     *
+     * <p><strong>Best-effort, never fail-fast.</strong> Unlike {@link #llmProvider}, this provider is
+     * <em>not</em> added to the {@link LlmHealthGate}: a bad recall model must only degrade recall to the
+     * RRF/bullets fast path (every recall step already falls back), never abort startup. Construction is
+     * likewise tolerant — any error building it (e.g. a missing key) falls back to the primary with a
+     * warning. No network call happens here; providers are probed lazily, per request.
+     */
+    @Bean
+    public LlmProvider recallLlmProvider(
+            ProviderFactory factory,
+            AgentMemoryConfig config,
+            @Qualifier("llmProvider") LlmProvider llmProvider,
+            ObjectProvider<LlmRecallProperties> recallProps) {
+        LlmRecallProperties props = recallProps.getIfAvailable();
+        ProviderAuth recallAuth = props == null ? null : props.auth();
+        return resolveRecallProvider(factory, config, llmProvider, recallAuth);
+    }
+
+    /**
+     * Resolve the recall-axis provider from the optional {@code agent-memory.recall.llm.auth} block,
+     * defaulting to the primary chat provider (issue #146). Package-private and side-effect-free (no
+     * network) so the three branches are unit-testable without a context. Never throws — a malformed
+     * recall auth degrades to {@code primary} with a warning, because recall is best-effort.
+     *
+     * <ul>
+     *   <li><strong>{@code provider} set</strong> → an independent provider built from {@code recallAuth}
+     *       (e.g. a cheap mini/flash model on its own API key), distinct from chat/consolidation.</li>
+     *   <li><strong>only {@code model} set</strong> → the chat auth ({@link #resolveLlmAuth}, including the
+     *       OAuth token-file default) with the model swapped — an alternate model on the same
+     *       provider/credential.</li>
+     *   <li><strong>nothing set</strong> → the same {@code primary} instance (no second client).</li>
+     * </ul>
+     */
+    static LlmProvider resolveRecallProvider(ProviderFactory factory, AgentMemoryConfig config,
+            LlmProvider primary, ProviderAuth recallAuth) {
+        boolean providerSet = recallAuth != null && recallAuth.isConfigured();
+        boolean modelOnly = !providerSet && recallAuth != null
+                && recallAuth.model() != null && !recallAuth.model().isBlank();
+        if (!providerSet && !modelOnly) {
+            // Default: recall reuses the primary chat provider — no second provider, no behaviour change.
+            log.info("Recall LLM provider: reusing the primary chat provider '{}' "
+                    + "(set agent-memory.recall.llm.auth to route recall to a separate model).", primary.id());
+            return primary;
+        }
+        try {
+            ProviderAuth effective = providerSet
+                    ? recallAuth
+                    : withModel(resolveLlmAuth(config), recallAuth.model());
+            LlmProvider provider = factory.createLlmProvider(effective);
+            log.info("Recall LLM provider configured ({}): id={}, model={}",
+                    providerSet ? "independent provider" : "chat auth, model override",
+                    provider.id(), provider.model());
+            return provider;
+        } catch (RuntimeException e) {
+            // Best-effort axis: never let a misconfigured recall model abort startup (it would only
+            // degrade recall to the RRF/bullets fast path). Fall back to the primary and log loudly.
+            log.warn("Could not build the recall LLM provider from 'agent-memory.recall.llm.auth' ({}). "
+                    + "Falling back to the primary chat provider '{}' for recall; recall stays best-effort "
+                    + "(degrading to RRF/bullets on any further error) and startup is unaffected.",
+                    e.getMessage(), primary.id());
+            return primary;
+        }
+    }
+
+    /** A copy of {@code base} with only the model swapped (used for the recall model-only override). */
+    private static ProviderAuth withModel(ProviderAuth base, String model) {
+        return new ProviderAuth(base.provider(), base.apiKey(), base.baseUrl(), model, base.oauth());
     }
 
     /**
@@ -94,7 +187,7 @@ public class LlmModule {
     @Bean
     public LlmHealthGate llmHealthGate(
             @Qualifier("llmProvider") LlmProvider llmProvider,
-            @Qualifier("embedder") org.springframework.beans.factory.ObjectProvider<Embedder> embedder) {
+            @Qualifier("embedder") ObjectProvider<Embedder> embedder) {
         // Inject by bean name: a test double implements both interfaces, so type alone is ambiguous.
         // ObjectProvider tolerates the embedder bean being null (optional axis, DD-005).
         LlmHealthGate gate = new LlmHealthGate(llmProvider, embedder.getIfAvailable());
