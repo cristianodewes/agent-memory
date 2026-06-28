@@ -9,6 +9,7 @@ import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.llm.VoyageReranker;
 import com.agentmemory.recall.RecallConfiguration;
 import com.agentmemory.recall.RecallService;
+import io.micrometer.core.instrument.MeterRegistry;
 import javax.sql.DataSource;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -160,6 +161,18 @@ public class LlmRecallConfiguration {
     }
 
     /**
+     * Per-stage recall latency telemetry (issue #130 follow-up). Binds the Micrometer
+     * {@link MeterRegistry} Spring Actuator auto-configures (the actuator starter is on the classpath),
+     * injected via {@link ObjectProvider} so the seam degrades to structured-log-only if no registry is
+     * present rather than failing to wire.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public RecallMetrics recallMetrics(ObjectProvider<MeterRegistry> meterRegistry) {
+        return new RecallMetrics(meterRegistry.getIfAvailable());
+    }
+
+    /**
      * The LLM-assisted recall decorator, published {@link Primary} so it is the {@link RecallService}
      * injected everywhere (MCP tools, injection endpoint). It wraps the base {@code recallService} bean
      * by name. The expander is optional (it is absent when expansion is disabled), injected via
@@ -174,8 +187,11 @@ public class LlmRecallConfiguration {
             ObjectProvider<QueryExpander> expander,
             Reranker reranker,
             AccessReinforcer reinforcer,
-            LlmRecallProperties props) {
-        return new LlmRecallService(base, expander.getIfAvailable(), reranker, reinforcer, props);
+            LlmRecallProperties props,
+            RecallMetrics metrics) {
+        return new LlmRecallService(
+                base, expander.getIfAvailable(), reranker, reinforcer, props,
+                System::currentTimeMillis, metrics);
     }
 
     /**

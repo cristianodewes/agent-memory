@@ -1,6 +1,7 @@
 package com.agentmemory.llmrecall;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ProviderFactory;
@@ -11,6 +12,7 @@ import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -170,10 +172,13 @@ class LlmRecallIntegrationTest {
         RecallResult out = recall.search(new RecallQuery("decay reinforcement bump", s, 10));
         assertThat(out.hits()).extracting(RecallHit::path).contains("r/a.md", "r/b.md");
 
-        // Both returned pages had their access_count bumped by the reinforcement seam.
-        assertThat(accessCount(a)).isEqualTo(1);
-        assertThat(accessCount(b)).isEqualTo(1);
-        assertThat(lastAccessed(a)).isNotNull();
+        // Both returned pages had their access_count bumped by the reinforcement seam. The bump now runs
+        // off the response hot path (issue #130 follow-up), so it is asserted via await rather than inline.
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(accessCount(a)).isEqualTo(1);
+            assertThat(accessCount(b)).isEqualTo(1);
+            assertThat(lastAccessed(a)).isNotNull();
+        });
     }
 
     // --- seeding helpers (mirrors HybridRecallTest) ------------------------------------------------

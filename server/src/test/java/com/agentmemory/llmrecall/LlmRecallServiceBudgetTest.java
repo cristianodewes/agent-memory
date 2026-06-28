@@ -1,6 +1,7 @@
 package com.agentmemory.llmrecall;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 
 import com.agentmemory.llm.CrossEncoderClient;
 import com.agentmemory.llm.TestDoubleProvider;
@@ -10,8 +11,13 @@ import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -46,10 +52,14 @@ class LlmRecallServiceBudgetTest {
         }
     }
 
-    /** A reinforcer that records the hits it was asked to reinforce. */
+    /**
+     * A reinforcer that records the hits it was asked to reinforce. Reinforcement now runs off the
+     * response hot path (issue #130 follow-up), so the recording fields are {@code volatile} and tests
+     * read them through Awaitility — the executor thread writes, the test thread polls.
+     */
     private static final class RecordingReinforcer implements AccessReinforcer {
-        List<RecallHit> reinforced;
-        Scope scope;
+        volatile List<RecallHit> reinforced;
+        volatile Scope scope;
 
         @Override
         public void reinforce(Scope scope, List<RecallHit> hits) {
@@ -98,9 +108,11 @@ class LlmRecallServiceBudgetTest {
         assertThat(llm.chatCalls()).isEmpty(); // no expansion, no rerank
         // base was called once with the caller's own limit (no over-fetch on the fast path).
         assertThat(base.limits).containsExactly(10);
-        // reinforcement still fires on the returned hits.
-        assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("a", "b");
-        assertThat(reinforcer.scope).isEqualTo(SCOPE);
+        // reinforcement still fires on the returned hits (now off the hot path → asserted via await).
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
+            assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("a", "b");
+            assertThat(reinforcer.scope).isEqualTo(SCOPE);
+        });
     }
 
     @Test
@@ -143,8 +155,9 @@ class LlmRecallServiceBudgetTest {
         assertThat(llm.chatCalls()).hasSize(2);
         // base was over-fetched to the candidate pool (max(limit, maxCandidates) = 20).
         assertThat(base.limits).containsExactly(20);
-        // reinforcement saw the final, re-ranked, trimmed hits.
-        assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("c", "b", "a");
+        // reinforcement saw the final, re-ranked, trimmed hits (off the hot path → asserted via await).
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("c", "b", "a"));
     }
 
     @Test
@@ -247,8 +260,9 @@ class LlmRecallServiceBudgetTest {
         assertThat(llm.chatCalls()).hasSize(1);
         assertThat(llm.chatCalls().get(0).schema().name()).isEqualTo(RecallPrompts.EXPANSION_SCHEMA_NAME);
         // reinforcer fired on the (raw) hits — JdbcAccessReinforcer would ignore non-PAGE ids, but the
-        // seam is still invoked uniformly.
-        assertThat(reinforcer.reinforced).hasSize(2);
+        // seam is still invoked uniformly (off the hot path → asserted via await).
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(reinforcer.reinforced).hasSize(2));
     }
 
     @Test
@@ -277,8 +291,9 @@ class LlmRecallServiceBudgetTest {
         assertThat(llm.chatCalls()).as("budget exhausted -> no LLM call").isEmpty();
         // The base hybrid retrieve (Tier 0) still ran and is what we degraded to.
         assertThat(base.limits).containsExactly(20);
-        // Reinforcement still fires on the returned (hybrid) hits.
-        assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("a", "b", "c");
+        // Reinforcement still fires on the returned (hybrid) hits (off the hot path → asserted via await).
+        await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                assertThat(reinforcer.reinforced).extracting(RecallHit::id).containsExactly("a", "b", "c"));
     }
 
     @Test
@@ -365,5 +380,68 @@ class LlmRecallServiceBudgetTest {
 
         assertThat(out.hits()).extracting(RecallHit::id).containsExactly("a", "b");
         assertThat(llm.chatCalls()).hasSize(1);
+    }
+
+    @Test
+    void recordsPerStageTimersWhenAMeterRegistryIsPresent() {
+        // Per-stage latency instrumentation (issue #130 follow-up): with a Micrometer registry wired,
+        // the search records a total timer plus a per-stage timer for the stages that actually ran —
+        // retrieve and re-rank here; expansion is disabled, so its stage timer is never created.
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2), page("c", 3))));
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                .chatResponder(req -> "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.1},"
+                        + "{\"id\":\"b\",\"relevance\":0.2},{\"id\":\"c\",\"relevance\":0.9}]}")
+                .build();
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        LlmRecallService svc = new LlmRecallService(
+                base, expander(llm), reranker(llm), new RecordingReinforcer(),
+                props(true, 2, 2, /*expand*/ false), System::currentTimeMillis, new RecallMetrics(registry));
+
+        svc.search(new RecallQuery("q", SCOPE, 10));
+
+        assertThat(registry.get(RecallMetrics.SEARCH_TIMER).timer().count()).isEqualTo(1);
+        assertThat(registry.get(RecallMetrics.STAGE_TIMER).tag("stage", "retrieve").timer().count())
+                .isEqualTo(1);
+        assertThat(registry.get(RecallMetrics.STAGE_TIMER).tag("stage", "rerank").timer().count())
+                .isEqualTo(1);
+        // Expansion was disabled → its stage timer was never recorded (skipped stages stay off the meters).
+        assertThat(registry.find(RecallMetrics.STAGE_TIMER).tag("stage", "expand").timer()).isNull();
+    }
+
+    @Test
+    void reinforcementRunsOffTheHotPathWithoutBlockingTheResponse() throws Exception {
+        // Issue #130 follow-up: a slow reinforcer must not add to the response latency. The reinforcer
+        // blocks until the test releases it; if reinforcement were synchronous, search() would never
+        // return (the release only happens after it returns) and this test would deadlock. That search
+        // returns at all proves the bump runs off the hot path — and it still applies best-effort.
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2))));
+        TestDoubleProvider llm = TestDoubleProvider.create();
+        CountDownLatch started = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        List<RecallHit> reinforced = new CopyOnWriteArrayList<>();
+        AccessReinforcer slow = (scope, hits) -> {
+            started.countDown();
+            try {
+                release.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            reinforced.addAll(hits);
+        };
+        try (LlmRecallService svc = new LlmRecallService(
+                base, null, reranker(llm), slow, props(/*enabled*/ false, 0, 2, false))) {
+
+            RecallResult out = svc.search(new RecallQuery("q", SCOPE, 10));
+
+            // Response is back while the reinforcer is still blocked mid-flight.
+            assertThat(out.hits()).extracting(RecallHit::id).containsExactly("a", "b");
+            assertThat(started.await(5, TimeUnit.SECONDS)).isTrue();
+            assertThat(reinforced).as("reinforcement has not completed yet (still blocked)").isEmpty();
+
+            // Releasing it lets the best-effort bump finish off the hot path.
+            release.countDown();
+            await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
+                    assertThat(reinforced).extracting(RecallHit::id).containsExactly("a", "b"));
+        }
     }
 }
