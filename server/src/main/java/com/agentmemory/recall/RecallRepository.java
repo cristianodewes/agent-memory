@@ -28,6 +28,31 @@ public class RecallRepository {
             "StartSel=<mark>, StopSel=</mark>, MaxFragments=2, MaxWords=18, MinWords=5, "
                     + "FragmentDelimiter= … ";
 
+    /**
+     * SQL fragment parsing natural search words into an <strong>OR-combined</strong> tsquery (the
+     * single {@code ?} binds the search text). {@code plainto_tsquery} stems and normalizes the text
+     * under the {@code 'english'} config — kept in lockstep with the generated {@code search_vector},
+     * which uses the same config — but <em>AND</em>-combines every lexeme, so a multi-term query
+     * matches only rows containing <em>all</em> terms. In a PT/EN-mixed store that drops multi-term
+     * recall to zero and forces the raw-observation fallback (issue #134). Rewriting the rendered
+     * query's {@code &} conjunctions to {@code |} disjunctions makes <em>any</em> term match while
+     * {@code ts_rank(search_vector, q)} still ranks rows matching more (and higher-weighted) lexemes
+     * above those matching fewer — "retrieve broad, rerank narrow", with precision left to the
+     * downstream RRF + cross-encoder + gates.
+     *
+     * <p>Safe on the edges: an empty/whitespace query yields an empty tsquery, so the {@code replace}
+     * is a no-op and {@code @@} matches nothing exactly as before; {@code plainto_tsquery} only ever
+     * emits {@code &} (never the phrase operator {@code <->}), so rewriting {@code &} → {@code |}
+     * cannot corrupt the query.
+     *
+     * <p>This is a bare scalar expression: valid directly anywhere a tsquery is expected (e.g. a
+     * {@code ts_headline} argument). To expose it as a query relation {@code q} in a {@code FROM}
+     * clause it must be wrapped as {@code (SELECT … AS q) alias} — a cast expression is <em>not</em> a
+     * valid function-in-{@code FROM} item, unlike the bare {@code plainto_tsquery(…)} call it replaces.
+     */
+    private static final String OR_TSQUERY =
+            "replace(plainto_tsquery('english', ?)::text, '&', '|')::tsquery";
+
     private final JdbcTemplate jdbc;
 
     public RecallRepository(JdbcTemplate jdbc) {
@@ -38,8 +63,9 @@ public class RecallRepository {
 
     /**
      * Full-text search over the latest pages in scope, ranked by {@code ts_rank} (title weighted
-     * above body via the generated vector's {@code setweight}). The query text is parsed with
-     * {@code plainto_tsquery} (natural words, AND-combined). Returns at most {@code limit} candidates.
+     * above body via the generated vector's {@code setweight}). The query text is parsed and then
+     * OR-combined via {@link #OR_TSQUERY} so any term matches; {@code ts_rank} still ranks pages
+     * matching more terms higher. Returns at most {@code limit} candidates.
      *
      * @param workspace workspace slug.
      * @param project   project slug.
@@ -53,7 +79,7 @@ public class RecallRepository {
                 "SELECT p.id::text AS id, p.path, p.title, "
                         + "       ts_rank(p.search_vector, q) AS rank, "
                         + "       ts_headline('english', p.body, q, ?) AS snippet "
-                        + "FROM pages p, plainto_tsquery('english', ?) q "
+                        + "FROM pages p, (SELECT " + OR_TSQUERY + " AS q) tsq "
                         + "WHERE p.workspace = ? AND p.project = ? AND p.is_latest "
                         + "  AND p.search_vector @@ q "
                         + "ORDER BY rank DESC, p.id DESC "
@@ -101,7 +127,7 @@ public class RecallRepository {
                         + ") "
                         + "SELECT p.id::text AS id, p.path, p.title, "
                         + "       count(*) AS edges, "
-                        + "       ts_headline('english', p.body, plainto_tsquery('english', ?), ?) AS snippet "
+                        + "       ts_headline('english', p.body, " + OR_TSQUERY + ", ?) AS snippet "
                         + "FROM neighbors n "
                         + "JOIN pages p ON p.id = n.nid "
                         + "WHERE p.is_latest AND p.workspace = ? AND p.project = ? "
@@ -140,7 +166,7 @@ public class RecallRepository {
                 "SELECT o.id::text AS id, o.kind, "
                         + "       ts_rank(o.search_vector, q) AS rank, "
                         + "       ts_headline('english', o.payload, q, ?) AS snippet "
-                        + "FROM observations o, plainto_tsquery('english', ?) q "
+                        + "FROM observations o, (SELECT " + OR_TSQUERY + " AS q) tsq "
                         + "WHERE o.workspace = ? AND o.project = ? "
                         + "  AND o.search_vector @@ q "
                         + "ORDER BY rank DESC, o.created_at DESC, o.id DESC "
