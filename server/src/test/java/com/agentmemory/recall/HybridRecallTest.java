@@ -142,8 +142,11 @@ class HybridRecallTest {
     @Test
     void graphArmPullsInNeighborOfAStrongFtsHit() {
         Scope s = freshScope();
-        // "decisions/storage.md" is the FTS hit; "concepts/indexing.md" does NOT contain the query
-        // terms, so without the link the graph arm has nothing to add and it would not surface.
+        // "decisions/storage.md" is the FTS hit; "concepts/indexing.md" shares NO query lexeme (even
+        // after 'english' stemming), so without the link the graph arm has nothing to add and it would
+        // not surface. NB: the query is "postgres pgvector" (not "...index") on purpose — the FTS arm
+        // now OR-combines terms (#134), and the neighbor's "Indexing notes" title stems to 'index', so
+        // an "index" term would let the neighbor match on its own text and defeat the graph-only setup.
         UUID storage = seedPage(s, "decisions/storage.md", "Storage decision",
                 "We chose Postgres with pgvector for the derived index.");
         UUID indexing = seedPage(s, "concepts/indexing.md", "Indexing notes",
@@ -151,14 +154,14 @@ class HybridRecallTest {
 
         // Control: with NO link, the non-matching neighbor must be absent (proves it can only enter
         // via the graph arm, not via its own text).
-        RecallResult before = recall.search(RecallQuery.of("postgres pgvector index", s));
+        RecallResult before = recall.search(RecallQuery.of("postgres pgvector", s));
         assertThat(before.hits()).extracting(RecallHit::path)
                 .contains("decisions/storage.md")
                 .doesNotContain("concepts/indexing.md");
 
         // Now link the FTS hit to the neighbor; the graph arm must fold the neighbor into the result.
         seedLink(s, storage, "decisions/storage.md", indexing, "concepts/indexing.md");
-        RecallResult after = recall.search(RecallQuery.of("postgres pgvector index", s));
+        RecallResult after = recall.search(RecallQuery.of("postgres pgvector", s));
 
         assertThat(after.rawFallback()).isFalse();
         assertThat(after.hits()).extracting(RecallHit::path)
