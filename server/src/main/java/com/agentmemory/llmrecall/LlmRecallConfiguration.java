@@ -39,10 +39,14 @@ import org.springframework.jdbc.core.JdbcTemplate;
  *
  * <h2>Decoration</h2>
  * The base {@link RecallService} from {@link RecallConfiguration} keeps its bean name
- * ({@code recallService}); this module publishes the {@link LlmRecallService} as {@link Primary}, so
- * the MCP tools and the injection endpoint resolve the LLM-assisted service by type while the
- * decorator injects the base by name ({@code @Qualifier("recallService")}). When the feature is
- * disabled or over budget, the decorator delegates straight through to that base — no behavior change.
+ * ({@code recallService}); this module decorates it by name in two layers. {@link LlmRecallService}
+ * wraps the base ({@code @Qualifier("recallService")}) and is published under the name
+ * {@code llmRecallService}; since Fase 4 (issue #142) the {@link CachingRecallService} wraps
+ * <em>that</em> by name ({@code @Qualifier("llmRecallService")}) and is the {@link Primary} bean, so the
+ * full chain is {@code cache → llmRecallService → recallService (hybrid)}. The MCP tools and the
+ * injection endpoint resolve the {@code @Primary} cache by type; each layer delegates straight through
+ * when its feature is disabled (the cache on a pass-through, the LLM service when over budget), so the
+ * result is never worse than the hybrid baseline.
  *
  * <h2>Access reinforcement (#24 seam)</h2>
  * {@link JdbcAccessReinforcer} is published {@code @ConditionalOnMissingBean(AccessReinforcer.class)},
@@ -191,13 +195,13 @@ public class LlmRecallConfiguration {
     }
 
     /**
-     * The LLM-assisted recall decorator, published {@link Primary} so it is the {@link RecallService}
-     * injected everywhere (MCP tools, injection endpoint). It wraps the base {@code recallService} bean
-     * by name. The expander is optional (it is absent when expansion is disabled), injected via
-     * {@link org.springframework.beans.factory.ObjectProvider}.
+     * The LLM-assisted recall decorator. It wraps the base {@code recallService} bean by name and keeps
+     * its own bean name ({@code llmRecallService}); since Fase 4 it is itself wrapped by the
+     * {@link #cachingRecallService} which is the {@link Primary} {@link RecallService}, so this bean is
+     * resolved by name (by the cache) rather than by type. The expander is optional (it is absent when
+     * expansion is disabled), injected via {@link org.springframework.beans.factory.ObjectProvider}.
      */
     @Bean
-    @Primary
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean({RecallService.class, Reranker.class})
     public RecallService llmRecallService(
@@ -213,8 +217,34 @@ public class LlmRecallConfiguration {
     }
 
     /**
+     * The short-TTL recall-result cache (issue #142, Fase 4), published {@link Primary} so it is the
+     * {@link RecallService} every by-type injection point resolves — the MCP tools, the
+     * {@link #recallInjection} endpoint, and {@link com.agentmemory.recall.CrossProjectRecallService}
+     * (which all inject {@code RecallService} by type, and {@code @Primary} wins over a bean-name match).
+     *
+     * <p><strong>Wiring (mirrors the {@link LlmRecallService} decoration).</strong> Exactly as the
+     * LLM-assisted service wraps the base {@code recallService} <em>by name</em>, this cache wraps the
+     * LLM-assisted service by name ({@code @Qualifier("llmRecallService")}) and takes over {@code @Primary}.
+     * The decoration chain is therefore {@code cache → llmRecallService → recallService (hybrid)}: the
+     * LLM service stays a named, by-type-resolvable bean (its {@code base()} and the {@code RecallInjection}
+     * calibrated gate are untouched — the gate reads the {@code calibrated} flag off the cached
+     * {@link com.agentmemory.recall.RecallResult}, which the cache preserves verbatim). Gated identically
+     * to {@code llmRecallService} so the two are created together (or neither is, in the DB-less context),
+     * keeping the {@code @Qualifier("llmRecallService")} delegate guaranteed present.
+     */
+    @Bean
+    @Primary
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean({RecallService.class, Reranker.class})
+    public RecallService cachingRecallService(
+            @Qualifier("llmRecallService") RecallService delegate, LlmRecallProperties props) {
+        return new CachingRecallService(delegate, props.cache(), System::nanoTime);
+    }
+
+    /**
      * The curated-injection service for the {@code UserPromptSubmit} hook. Uses the {@link Primary}
-     * (LLM-assisted) {@link RecallService}.
+     * {@link RecallService} — since Fase 4 the {@link CachingRecallService} in front of the LLM-assisted
+     * service — resolved by type.
      *
      * <p>Scope resolution for the injection endpoint reuses the MCP module's
      * {@link com.agentmemory.mcp.ScopeResolver} bean (both modules are gated identically on a

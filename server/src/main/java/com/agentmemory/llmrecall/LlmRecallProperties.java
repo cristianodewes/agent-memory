@@ -1,5 +1,6 @@
 package com.agentmemory.llmrecall;
 
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.boot.context.properties.bind.DefaultValue;
 
@@ -44,6 +45,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  * @param crossEncoder    calibrated cross-encoder rerank sub-settings (issue #130 Fase 2).
  * @param expansion       query-expansion sub-settings.
  * @param injection       curated-injection sub-settings.
+ * @param cache           short-TTL recall-result cache sub-settings (issue #142 Fase 4).
  */
 @ConfigurationProperties(prefix = "agent-memory.recall.llm")
 public record LlmRecallProperties(
@@ -55,7 +57,8 @@ public record LlmRecallProperties(
         @DefaultValue("true") boolean minimalReasoning,
         @DefaultValue CrossEncoder crossEncoder,
         @DefaultValue Expansion expansion,
-        @DefaultValue Injection injection) {
+        @DefaultValue Injection injection,
+        @DefaultValue Cache cache) {
 
     public LlmRecallProperties {
         if (maxCandidates <= 0) {
@@ -79,6 +82,9 @@ public record LlmRecallProperties(
         }
         if (injection == null) {
             injection = new Injection(5, 0.4, 0.35, 1200, null);
+        }
+        if (cache == null) {
+            cache = new Cache(true, Cache.DEFAULT_TTL, Cache.DEFAULT_MAX_ENTRIES);
         }
     }
 
@@ -211,6 +217,51 @@ public record LlmRecallProperties(
                     throw new IllegalArgumentException(
                             "injection.brief.timeoutMs must be > 0, was " + timeoutMs);
                 }
+            }
+        }
+    }
+
+    /**
+     * Short-TTL recall-result cache tuning (issue #142, Fase 4). {@code /recall/inject} fires on every
+     * prompt and the hook may re-fire, so repeated/reformulated prompts in one session otherwise redo the
+     * whole pipeline (Voyage embedding + DB + cross-encoder). The {@link CachingRecallService} decorator
+     * memoizes each {@link com.agentmemory.recall.RecallResult} under {@code (workspace, project,
+     * normalize(text), limit)} for a short window, returning the cached result — including its
+     * {@code calibrated}/{@code rawFallback} flags — on a hit. The TTL is the only invalidation: after a
+     * consolidation/reindex the entry simply expires (a short window bounds staleness to a single advisory
+     * block), so there is no explicit invalidation to get wrong. The cache is bounded (LRU) and scope-keyed,
+     * so it can neither grow without limit nor leak a hit across projects.
+     *
+     * @param enabled    master switch for the recall-result cache. Default {@code true}; {@code false}
+     *     makes the decorator a transparent pass-through (every search delegates), for an operator who
+     *     wants to rule the cache out while debugging recall.
+     * @param ttl        how long a cached result stays fresh before it must be recomputed — the staleness
+     *     bound after a reindex/consolidation. Kept short (tens of seconds) so the cache only collapses the
+     *     in-session repeats it is meant to. Must be positive. Default {@value #DEFAULT_TTL_SECONDS}s.
+     * @param maxEntries the hard cap on distinct {@code (scope, prompt, limit)} entries held; the
+     *     least-recently-used entry is evicted past it, so memory stays bounded regardless of prompt
+     *     churn. Must be {@code > 0}. Default {@value #DEFAULT_MAX_ENTRIES}.
+     */
+    public record Cache(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("45s") Duration ttl,
+            @DefaultValue("256") int maxEntries) {
+
+        /** Default cache TTL in seconds — a short window that bounds post-reindex staleness. */
+        public static final long DEFAULT_TTL_SECONDS = 45;
+
+        /** Default cache TTL as a {@link Duration} (used by the properties' compact-constructor default). */
+        public static final Duration DEFAULT_TTL = Duration.ofSeconds(DEFAULT_TTL_SECONDS);
+
+        /** Default LRU bound on distinct cached {@code (scope, prompt, limit)} entries. */
+        public static final int DEFAULT_MAX_ENTRIES = 256;
+
+        public Cache {
+            if (ttl == null || ttl.isZero() || ttl.isNegative()) {
+                throw new IllegalArgumentException("cache.ttl must be a positive duration, was " + ttl);
+            }
+            if (maxEntries <= 0) {
+                throw new IllegalArgumentException("cache.maxEntries must be > 0, was " + maxEntries);
             }
         }
     }
