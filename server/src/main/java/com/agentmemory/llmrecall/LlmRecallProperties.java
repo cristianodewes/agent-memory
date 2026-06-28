@@ -41,6 +41,7 @@ import org.springframework.boot.context.properties.bind.DefaultValue;
  *     reasoning effort (issue #130 Fase 1) — the lever that cuts a reasoning model's hidden-reasoning
  *     latency. Default {@code true}; flip to {@code false} if a backend rejects the {@code reasoning}
  *     param (the rerank then degrades safely to RRF order regardless).
+ * @param crossEncoder    calibrated cross-encoder rerank sub-settings (issue #130 Fase 2).
  * @param expansion       query-expansion sub-settings.
  * @param injection       curated-injection sub-settings.
  */
@@ -52,6 +53,7 @@ public record LlmRecallProperties(
         @DefaultValue("2") int minRerankCandidates,
         @DefaultValue("6000") long budgetMs,
         @DefaultValue("true") boolean minimalReasoning,
+        @DefaultValue CrossEncoder crossEncoder,
         @DefaultValue Expansion expansion,
         @DefaultValue Injection injection) {
 
@@ -69,11 +71,48 @@ public record LlmRecallProperties(
         if (budgetMs <= 0) {
             throw new IllegalArgumentException("budgetMs must be > 0, was " + budgetMs);
         }
+        if (crossEncoder == null) {
+            crossEncoder = new CrossEncoder(true, CrossEncoder.DEFAULT_MODEL, 50);
+        }
         if (expansion == null) {
             expansion = new Expansion(false, 4);
         }
         if (injection == null) {
-            injection = new Injection(5, 0.4, 1200);
+            injection = new Injection(5, 0.4, 0.35, 1200);
+        }
+    }
+
+    /**
+     * Calibrated cross-encoder rerank tuning (issue #130 Fase 2). The cross-encoder (Voyage
+     * {@code rerank-2-lite}) is a fast, non-generative reranker whose score is calibrated enough to
+     * drive an absolute relevance gate; it stands in front of the generative LLM reranker and degrades
+     * to it when Voyage is absent or fails. It is wired only when the <em>embeddings</em> provider is
+     * Voyage with an API key (it reuses that same key, DD-005); otherwise the LLM reranker stays.
+     *
+     * @param enabled      master switch for the cross-encoder rerank. Default {@code true} (it still
+     *     only activates when Voyage embeddings auth is present); {@code false} forces the LLM reranker.
+     * @param model        the rerank model id. Default {@value CrossEncoder#DEFAULT_MODEL}.
+     * @param maxDocuments the hard cap on how many candidates the cross-encoder scores in one call —
+     *     the rerank head is {@code min(maxDocuments, fused pool)}, and since the pool is over-fetched to
+     *     {@code max(query.limit, maxCandidates)} this right-sizes K to the request (cheap reranker, so it
+     *     can score the whole pool). Must be {@code > 0}. Default 50.
+     */
+    public record CrossEncoder(
+            @DefaultValue("true") boolean enabled,
+            @DefaultValue("rerank-2-lite") String model,
+            @DefaultValue("50") int maxDocuments) {
+
+        /** Default cross-encoder model — Voyage's fast, cheap reranker. */
+        public static final String DEFAULT_MODEL = "rerank-2-lite";
+
+        public CrossEncoder {
+            if (model == null || model.isBlank()) {
+                model = DEFAULT_MODEL;
+            }
+            if (maxDocuments <= 0) {
+                throw new IllegalArgumentException(
+                        "cross-encoder.maxDocuments must be > 0, was " + maxDocuments);
+            }
         }
     }
 
@@ -108,13 +147,19 @@ public record LlmRecallProperties(
      *     same whether the scores are normalized LLM relevances (rerank ran) or raw RRF fused scores
      *     (rerank skipped). {@code 0.0} admits everything (and always keeps the top hit). Must be in
      *     {@code [0, 1]}. Default 0.4 (issue #130 Fase 0: a relative gate that suppresses weak bullets on
-     *     low-signal prompts; an <em>absolute</em> gate waits on the calibrated cross-encoder in Fase 2).
+     *     low-signal prompts).
+     * @param minScoreAbsolute the absolute relevance floor (issue #130 Fase 2), applied <em>only</em>
+     *     when a calibrated cross-encoder produced the scores: if even the top hit scores below it, the
+     *     block is empty (the calibrated "nothing relevant here" on a low-signal prompt). It is never
+     *     applied to uncalibrated RRF/LLM scores, whose tiny magnitudes an absolute cut would wrongly
+     *     empty. Must be in {@code [0, 1]}. Default 0.35.
      * @param maxChars the hard upper bound on the rendered block length; the block is truncated to fit
      *     so a hook can rely on a bounded paste. Must be {@code > 0}. Default 1200.
      */
     public record Injection(
             @DefaultValue("5") int maxHits,
             @DefaultValue("0.4") double minScore,
+            @DefaultValue("0.35") double minScoreAbsolute,
             @DefaultValue("1200") int maxChars) {
         public Injection {
             if (maxHits <= 0) {
@@ -123,6 +168,10 @@ public record LlmRecallProperties(
             if (minScore < 0.0 || minScore > 1.0) {
                 throw new IllegalArgumentException(
                         "injection.minScore must be in [0,1], was " + minScore);
+            }
+            if (minScoreAbsolute < 0.0 || minScoreAbsolute > 1.0) {
+                throw new IllegalArgumentException(
+                        "injection.minScoreAbsolute must be in [0,1], was " + minScoreAbsolute);
             }
             if (maxChars <= 0) {
                 throw new IllegalArgumentException("injection.maxChars must be > 0, was " + maxChars);

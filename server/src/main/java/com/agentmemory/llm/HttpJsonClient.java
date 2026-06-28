@@ -69,8 +69,24 @@ final class HttpJsonClient {
      * @throws LlmException on transport failure or a non-2xx status.
      */
     JsonNode postJson(URI uri, Map<String, String> headers, Object body, String providerName) {
+        return postJson(uri, headers, body, providerName, null);
+    }
+
+    /**
+     * As {@link #postJson(URI, Map, Object, String)}, but with a per-call request-timeout override:
+     * when {@code requestTimeoutOverride} is non-null it bounds <em>this</em> request instead of the
+     * client-wide {@link #requestTimeout} — a real HTTP-level deadline (the JDK cancels the in-flight
+     * {@code send} when it elapses), not a post-hoc wall-clock check. The recall cross-encoder (issue
+     * #130) passes a short, budget-derived timeout here so a slow rerank call is abandoned inside the
+     * client's deadline; passing {@code null} keeps the client default.
+     *
+     * @param requestTimeoutOverride the deadline for this call only, or {@code null} for the default.
+     */
+    JsonNode postJson(URI uri, Map<String, String> headers, Object body, String providerName,
+            Duration requestTimeoutOverride) {
+        Duration timeout = requestTimeoutOverride != null ? requestTimeoutOverride : requestTimeout;
         HttpRequest.Builder builder = HttpRequest.newBuilder(uri)
-                .timeout(requestTimeout)
+                .timeout(timeout)
                 .header("content-type", "application/json")
                 .POST(HttpRequest.BodyPublishers.ofString(write(body)));
         headers.forEach(builder::header);

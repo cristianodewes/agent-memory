@@ -1,12 +1,18 @@
 package com.agentmemory.llmrecall;
 
+import com.agentmemory.config.AgentMemoryConfig;
+import com.agentmemory.config.ProviderAuth;
+import com.agentmemory.llm.CrossEncoderClient;
 import com.agentmemory.llm.LlmModule;
 import com.agentmemory.llm.LlmProvider;
 import com.agentmemory.llm.ReasoningEffort;
+import com.agentmemory.llm.VoyageReranker;
 import com.agentmemory.recall.RecallConfiguration;
 import com.agentmemory.recall.RecallService;
 import io.micrometer.core.instrument.MeterRegistry;
 import javax.sql.DataSource;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
@@ -48,6 +54,8 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @EnableConfigurationProperties(LlmRecallProperties.class)
 public class LlmRecallConfiguration {
 
+    private static final Logger log = LoggerFactory.getLogger(LlmRecallConfiguration.class);
+
     /** The static prompts + structured-output schemas for the two LLM steps. No deps. */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
@@ -70,6 +78,11 @@ public class LlmRecallConfiguration {
                 llmProvider, prompts, props.expansion().maxTerms(), recallEffort(props));
     }
 
+    /**
+     * The generative LLM reranker. Since Fase 2 it is the <em>fallback</em> behind the calibrated
+     * cross-encoder ({@link #reranker}): it runs when the cross-encoder is absent (no Voyage embeddings
+     * auth) or fails. Always built when an {@link LlmProvider} exists.
+     */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     @ConditionalOnBean(LlmProvider.class)
@@ -79,6 +92,52 @@ public class LlmRecallConfiguration {
             LlmRecallProperties props) {
         return new CandidateReranker(
                 llmProvider, prompts, props.maxCandidates(), recallEffort(props));
+    }
+
+    /**
+     * The calibrated cross-encoder client (issue #130, Fase 2), or {@code null} when it is not active.
+     * It is wired only when the cross-encoder is enabled <em>and</em> the embeddings provider is Voyage
+     * with an API key — the rerank API reuses that same Voyage key (DD-005). A {@code null} bean is the
+     * "not configured" signal (mirrors {@code LlmModule.embedder}); the {@link #reranker} seam then keeps
+     * the LLM reranker. No network call is made here — the client is built lazily and probed per request,
+     * degrading on failure.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    public CrossEncoderClient crossEncoderClient(AgentMemoryConfig config, LlmRecallProperties props) {
+        LlmRecallProperties.CrossEncoder ce = props.crossEncoder();
+        if (!ce.enabled()) {
+            log.info("Cross-encoder rerank disabled by config; recall rerank uses the LLM reranker.");
+            return null;
+        }
+        ProviderAuth auth = config.embeddings().auth();
+        if (auth == null
+                || !VoyageReranker.PROVIDER_KEY.equals(auth.providerKey())
+                || !auth.hasApiKey()) {
+            log.info("Cross-encoder rerank inactive: embeddings provider is not Voyage with an API key; "
+                    + "recall rerank uses the LLM reranker.");
+            return null;
+        }
+        VoyageReranker reranker = new VoyageReranker(auth, ce.model());
+        log.info("Cross-encoder rerank enabled: provider=voyage, model={}", reranker.model());
+        return reranker;
+    }
+
+    /**
+     * The {@link Reranker} seam injected into {@link LlmRecallService}: the calibrated cross-encoder in
+     * front of the LLM reranker, degrading to it (then to raw RRF) on absence/error/timeout — never worse
+     * than the hybrid baseline. The cross-encoder client is optional (absent when Voyage is not
+     * configured), injected via {@link ObjectProvider}.
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean(CandidateReranker.class)
+    public Reranker reranker(
+            ObjectProvider<CrossEncoderClient> crossEncoder,
+            CandidateReranker candidateReranker,
+            LlmRecallProperties props) {
+        return new CrossEncoderReranker(
+                crossEncoder.getIfAvailable(), candidateReranker, props.crossEncoder().maxDocuments());
     }
 
     /**
@@ -122,11 +181,11 @@ public class LlmRecallConfiguration {
     @Bean
     @Primary
     @ConditionalOnSingleCandidate(DataSource.class)
-    @ConditionalOnBean({RecallService.class, CandidateReranker.class})
+    @ConditionalOnBean({RecallService.class, Reranker.class})
     public RecallService llmRecallService(
             @Qualifier("recallService") RecallService base,
             ObjectProvider<QueryExpander> expander,
-            CandidateReranker reranker,
+            Reranker reranker,
             AccessReinforcer reinforcer,
             LlmRecallProperties props,
             RecallMetrics metrics) {

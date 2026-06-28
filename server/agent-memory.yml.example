@@ -85,12 +85,21 @@ agent-memory:
       minimal-reasoning: true  # ask the recall calls for minimal reasoning effort (+ low verbosity) to
                                # cut a reasoning model's hidden-reasoning latency. Set false if a backend
                                # rejects the `reasoning`/`verbosity` params (rerank then degrades to RRF).
+      cross-encoder:           # calibrated cross-encoder rerank (Fase 2). Reuses the SAME Voyage API key
+                               # as embeddings (below) — active only when embeddings.auth is Voyage + key.
+        enabled: true          # false forces the generative LLM reranker; absent Voyage => LLM reranker
+        model: rerank-2-lite   # Voyage rerank model (fast, non-generative, calibrated 0..1 score)
+        max-documents: 50      # cap on candidates scored per rerank call; the head is min(this, pool),
+                               # and the pool is max(query.limit, max-candidates) — right-sizes K cheaply
       expansion:
         enabled: false         # query expansion is off by default: appending terms to the conjunctive
                                # FTS query only narrows recall and dilutes the embedding centroid (IR bug)
       injection:
         min-score: 0.4         # relative relevance gate for the injected block (fraction of the top hit's
                                # score); suppresses weak bullets on low-signal prompts. 0.0 = admit all.
+        min-score-absolute: 0.35 # absolute floor applied ONLY when a calibrated cross-encoder ran: if even
+                               # the top hit is below it, inject nothing (calibrated "nothing relevant").
+                               # Never applied to uncalibrated RRF/LLM scores.
 
   embeddings:
     auth:

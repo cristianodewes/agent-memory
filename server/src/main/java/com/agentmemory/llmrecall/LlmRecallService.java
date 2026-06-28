@@ -68,7 +68,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
 
     private final RecallService base;
     private final QueryExpander expander; // nullable when expansion is disabled
-    private final CandidateReranker reranker;
+    private final Reranker reranker;
     private final AccessReinforcer reinforcer;
     private final LlmRecallProperties props;
     private final LongSupplier nowMs;
@@ -79,7 +79,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
     public LlmRecallService(
             RecallService base,
             QueryExpander expander,
-            CandidateReranker reranker,
+            Reranker reranker,
             AccessReinforcer reinforcer,
             LlmRecallProperties props) {
         this(base, expander, reranker, reinforcer, props, System::currentTimeMillis, new RecallMetrics(null));
@@ -89,7 +89,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
     LlmRecallService(
             RecallService base,
             QueryExpander expander,
-            CandidateReranker reranker,
+            Reranker reranker,
             AccessReinforcer reinforcer,
             LlmRecallProperties props,
             LongSupplier nowMs) {
@@ -100,7 +100,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
     public LlmRecallService(
             RecallService base,
             QueryExpander expander,
-            CandidateReranker reranker,
+            Reranker reranker,
             AccessReinforcer reinforcer,
             LlmRecallProperties props,
             LongSupplier nowMs,
@@ -226,24 +226,29 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
         List<RecallHit> hits = base0.hits();
         int candidates = hits.size();
 
-        // 3. LLM re-rank, using the reserved call. Skip when too few candidates make it pointless (RRF
-        // order already suffices). Also skip when the budget is already spent: abandon the LLM step and
-        // return the hybrid hits, bounding /recall/inject under the client's deadline. When it does run,
-        // the remaining budget is passed as a real per-call HTTP timeout (cancellation, not a post-hoc
-        // check) — a timeout there degrades to RRF order, same as any other rerank failure.
+        // 3. Re-rank, using the reserved call. The reranker is the cross-encoder seam (calibrated when a
+        // cross-encoder ran, else the LLM reranker / raw RRF). Skip when too few candidates make it
+        // pointless (RRF order already suffices). Also skip when the budget is already spent: abandon the
+        // step and return the hybrid hits, bounding /recall/inject under the client's deadline. When it
+        // does run, the remaining budget is passed as a real per-call HTTP timeout (cancellation, not a
+        // post-hoc check) — a timeout there degrades to RRF order, same as any other rerank failure.
+        boolean calibrated = false;
         if (rerankIntended && hits.size() >= props.minRerankCandidates()) {
             Duration remaining = remaining(deadlineMs);
             if (remaining != null) {
                 long t = System.nanoTime();
-                hits = reranker.rerank(text, hits, remaining);
+                Reranker.Result reranked = reranker.rerank(text, hits, remaining);
+                hits = reranked.hits();
+                calibrated = reranked.calibrated();
                 rerankNanos = System.nanoTime() - t;
             } else {
                 log.debug("recall budget exhausted before re-rank; returning hybrid result");
             }
         }
 
-        // 4. Trim to the caller's limit (re-stamping ranks so the returned page is 1..limit).
-        RecallResult out = trimPages(hits, query.limit());
+        // 4. Trim to the caller's limit (re-stamping ranks so the returned page is 1..limit), carrying
+        // whether a calibrated cross-encoder produced the scores (drives the injection absolute gate).
+        RecallResult out = trimPages(hits, query.limit(), calibrated);
         metrics.recordSearch(expandNanos, retrieveNanos, rerankNanos, System.nanoTime() - startNanos,
                 candidates, out.hits().size());
         return out;
@@ -296,7 +301,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
                 : RecallResult.ofPages(capped);
     }
 
-    private static RecallResult trimPages(List<RecallHit> hits, int limit) {
+    private static RecallResult trimPages(List<RecallHit> hits, int limit, boolean calibrated) {
         int n = Math.min(limit, hits.size());
         List<RecallHit> capped = new java.util.ArrayList<>(n);
         for (int i = 0; i < n; i++) {
@@ -304,7 +309,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
             RecallHit h = hits.get(i);
             capped.add(h.withRankAndScore(i + 1, h.score()));
         }
-        return RecallResult.ofPages(capped);
+        return RecallResult.ofPages(capped, calibrated);
     }
 
     /** @return the wrapped base service (used by the injection layer's fast path). */

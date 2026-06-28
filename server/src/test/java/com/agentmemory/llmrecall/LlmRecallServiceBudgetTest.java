@@ -3,6 +3,7 @@ package com.agentmemory.llmrecall;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
+import com.agentmemory.llm.CrossEncoderClient;
 import com.agentmemory.llm.TestDoubleProvider;
 import com.agentmemory.recall.HitSource;
 import com.agentmemory.recall.RecallHit;
@@ -75,12 +76,18 @@ class LlmRecallServiceBudgetTest {
             boolean enabled, int maxCalls, int minRerank, boolean expand, long budgetMs) {
         return new LlmRecallProperties(
                 enabled, 20, maxCalls, minRerank, budgetMs, /*minimalReasoning*/ true,
+                new LlmRecallProperties.CrossEncoder(true, "rerank-2-lite", 50),
                 new LlmRecallProperties.Expansion(expand, 4),
-                new LlmRecallProperties.Injection(5, 0.0, 1200));
+                new LlmRecallProperties.Injection(5, 0.0, 0.35, 1200));
     }
 
-    private static CandidateReranker reranker(TestDoubleProvider llm) {
-        return new CandidateReranker(llm, PROMPTS, 20);
+    /**
+     * The LLM-only reranker behind the Fase-2 {@link Reranker} seam (no cross-encoder client): exercises
+     * exactly the LLM rerank path these budget tests assert, now via {@link CrossEncoderReranker}'s
+     * fallback. The decorator is agnostic to which reranker ran.
+     */
+    private static Reranker reranker(TestDoubleProvider llm) {
+        return new CrossEncoderReranker(null, new CandidateReranker(llm, PROMPTS, 20), 50);
     }
 
     private static QueryExpander expander(TestDoubleProvider llm) {
@@ -309,6 +316,53 @@ class LlmRecallServiceBudgetTest {
         assertThat(timeout).as("recall call is bounded by a per-call timeout").isNotNull();
         assertThat(timeout).isPositive();
         assertThat(timeout).isLessThanOrEqualTo(java.time.Duration.ofMillis(6000));
+    }
+
+    @Test
+    void crossEncoderRerankReordersAndMarksResultCalibrated() {
+        // With a cross-encoder client present behind the seam, the result is re-ordered by its calibrated
+        // scores AND flagged calibrated() so the injection layer may apply the absolute gate (Fase 2).
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2), page("c", 3))));
+        // Head order is a,b,c; score a=0.5, b=0.1, c=0.9 -> descending order is c, a, b.
+        CrossEncoderClient cross = (q, docs, t) -> new double[] {0.5, 0.1, 0.9};
+        // The LLM fallback would reverse the order if it ever ran; proving the cross-encoder won.
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                .chatResponder(req -> "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.9},"
+                        + "{\"id\":\"b\",\"relevance\":0.5},{\"id\":\"c\",\"relevance\":0.1}]}")
+                .build();
+        Reranker reranker = new CrossEncoderReranker(cross, new CandidateReranker(llm, PROMPTS, 20), 50);
+        LlmRecallService svc = new LlmRecallService(
+                base, null, reranker, new RecordingReinforcer(), props(true, 2, 2, false));
+
+        RecallResult out = svc.search(new RecallQuery("q", SCOPE, 10));
+
+        assertThat(out.calibrated()).as("cross-encoder scores are calibrated").isTrue();
+        assertThat(out.hits()).extracting(RecallHit::id).containsExactly("c", "a", "b");
+        assertThat(out.hits().get(0).score()).isEqualTo(0.9);
+        assertThat(llm.chatCalls()).as("cross-encoder ran; the LLM fallback did not").isEmpty();
+    }
+
+    @Test
+    void crossEncoderFailureDegradesToLlmRerankUncalibrated() {
+        // The cross-encoder throws; the seam degrades to the LLM reranker, whose result is uncalibrated.
+        StubBase base = new StubBase(RecallResult.ofPages(List.of(page("a", 1), page("b", 2), page("c", 3))));
+        CrossEncoderClient failing = (q, docs, t) -> {
+            throw new com.agentmemory.llm.LlmException("voyage down");
+        };
+        TestDoubleProvider llm = TestDoubleProvider.builder()
+                .chatResponder(req -> "{\"rankings\":[{\"id\":\"a\",\"relevance\":0.1},"
+                        + "{\"id\":\"b\",\"relevance\":0.5},{\"id\":\"c\",\"relevance\":0.9}]}")
+                .build();
+        Reranker reranker = new CrossEncoderReranker(failing, new CandidateReranker(llm, PROMPTS, 20), 50);
+        LlmRecallService svc = new LlmRecallService(
+                base, null, reranker, new RecordingReinforcer(), props(true, 2, 2, false));
+
+        RecallResult out = svc.search(new RecallQuery("q", SCOPE, 10));
+
+        // LLM fallback ran: a=0.1, b=0.5, c=0.9 -> c, b, a; and the result is NOT calibrated.
+        assertThat(out.hits()).extracting(RecallHit::id).containsExactly("c", "b", "a");
+        assertThat(out.calibrated()).isFalse();
+        assertThat(llm.chatCalls()).hasSize(1);
     }
 
     @Test
