@@ -3,8 +3,9 @@ package com.agentmemory.recall;
 /**
  * A recall request: the free-text {@code text} to search for, the {@link Scope} to search within,
  * and how many fused hits to return. The query text is parsed by Postgres
- * ({@code plainto_tsquery('english', …)}) on both the pages and the raw-observation arms, so callers
- * pass natural words, not {@code tsquery} operators.
+ * ({@code plainto_tsquery('english', …)}, then OR-combined so any term matches — see
+ * {@link RecallRepository}) on both the pages and the raw-observation arms, so callers pass natural
+ * words, not {@code tsquery} operators.
  *
  * @param text  the search text; never null/blank.
  * @param scope the {@code (workspace, project)} to search; never null.
