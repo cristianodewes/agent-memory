@@ -76,6 +76,16 @@ agent-memory:
   # bounded by the client's 10s deadline) AND MCP memory_query. Values shown are the built-in defaults;
   # delete keys you don't need.
   recall:
+    # Recency prior on the BASE hybrid fusion (issue #140): multiplies each fused hit's score by a
+    # per-layer exponential decay of its age (since pages.updated_at), so a fresher page outranks an
+    # equally-relevant stale one. Applied below the `llm` rerank — it shapes the candidate pool and the
+    # non-LLM fast-path order; the cross-encoder then re-scores the head by pure relevance. Semantic and
+    # procedural pages do not age-decay. NB: a full reindex re-stamps updated_at, so after one a page's
+    # recency reflects the rebuild time, not its real edit.
+    recency:
+      enabled: true                  # master switch; false = untouched base RRF order
+      working-half-life-days: 1.0    # half-life (days) for WORKING pages (session scratch); 0 = off
+      episodic-half-life-days: 14.0  # half-life (days) for EPISODIC pages (events fade ~2 weeks); 0 = off
     llm:
       enabled: true            # master switch for the LLM rerank decorator; false = raw hybrid (RRF)
       max-candidates: 8        # K: how many fused candidates the LLM re-scores (renders at most 5)

@@ -2,6 +2,7 @@ package com.agentmemory.llmrecall;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.core.MemoryLayer;
 import com.agentmemory.llm.ChatRequest;
 import com.agentmemory.llm.ReasoningEffort;
 import com.agentmemory.llm.TestDoubleProvider;
@@ -11,7 +12,10 @@ import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.function.Function;
 import org.junit.jupiter.api.Test;
@@ -94,9 +98,46 @@ class RecallInjectionTest {
         assertThat(out.isEmpty()).isFalse();
         assertThat(out.hits()).isEqualTo(2);
         assertThat(out.text()).startsWith("## Relevant project memory");
-        assertThat(out.text()).contains("**Alpha** (p/a.md)").contains("**Beta** (p/b.md)");
+        assertThat(out.text()).contains("- p/a.md").contains("- p/b.md");
         // <mark> tags are stripped from the injected snippet.
         assertThat(out.text()).contains("first hit body").doesNotContain("<mark>");
+    }
+
+    @Test
+    void rendersPathFirstWithLayerRecencyAndRelevanceMetadata() {
+        // A hit carrying recency metadata (layer + updated_at) renders path-first with the
+        // layer · "atualizado há Nd" · "rel X.XX" annotations and the snippet (issue #140).
+        Instant now = Instant.parse("2026-06-28T00:00:00Z");
+        Instant updated = now.minus(Duration.ofDays(3));
+        RecallHit h = new RecallHit(
+                HitSource.PAGE, "id-a", "concepts/recall.md", "Hybrid recall", null, 0.91, 1,
+                "fusion <mark>blends</mark> signals", updated, MemoryLayer.EPISODIC);
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(RecallResult.ofPages(List.of(h))), cfg(5, 0.0, 1200), null,
+                Clock.fixed(now, ZoneOffset.UTC));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).startsWith("## Relevant project memory");
+        // Path-first lead, then the three metadata segments, then the mark-stripped snippet.
+        assertThat(out.text()).contains(
+                "- concepts/recall.md · episodic · atualizado há 3d · rel 0.91 — fusion blends signals");
+        assertThat(out.text()).doesNotContain("<mark>");
+    }
+
+    @Test
+    void recencyLabelReadsTodayForASamedayHit() {
+        Instant now = Instant.parse("2026-06-28T12:00:00Z");
+        RecallHit h = new RecallHit(
+                HitSource.PAGE, "id-a", "p/a.md", "A", null, 0.5, 1, "body",
+                now.minus(Duration.ofHours(2)), MemoryLayer.WORKING);
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(RecallResult.ofPages(List.of(h))), cfg(5, 0.0, 1200), null,
+                Clock.fixed(now, ZoneOffset.UTC));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).contains("- p/a.md · working · atualizado hoje · rel 0.50 — body");
     }
 
     @Test
@@ -110,7 +151,7 @@ class RecallInjectionTest {
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
         assertThat(out.hits()).isEqualTo(1);
-        assertThat(out.text()).contains("Alpha").doesNotContain("Beta");
+        assertThat(out.text()).contains("p/a.md").doesNotContain("p/b.md");
     }
 
     @Test
@@ -127,7 +168,7 @@ class RecallInjectionTest {
 
         // Alpha (1.0) and Beta (0.6 >= 0.5) kept; Gamma (0.2 < 0.5) dropped.
         assertThat(out.hits()).isEqualTo(2);
-        assertThat(out.text()).contains("Alpha").contains("Beta").doesNotContain("Gamma");
+        assertThat(out.text()).contains("p/a.md").contains("p/b.md").doesNotContain("p/c.md");
     }
 
     @Test
@@ -157,7 +198,7 @@ class RecallInjectionTest {
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
         assertThat(out.hits()).isEqualTo(2);
-        assertThat(out.text()).contains("**A**").contains("**B**").doesNotContain("**C**");
+        assertThat(out.text()).contains("p/a.md").contains("p/b.md").doesNotContain("p/c.md");
     }
 
     @Test
@@ -186,9 +227,10 @@ class RecallInjectionTest {
 
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
-        // Cap is 2; the two kept hits are the top and the first strong backfill (Strong2), not Weak1.
+        // Cap is 2; the two kept hits are the top and the first strong backfill (Strong2=p/c.md), not
+        // Weak1=p/b.md.
         assertThat(out.hits()).isEqualTo(2);
-        assertThat(out.text()).contains("Top").contains("Strong2").doesNotContain("Weak1");
+        assertThat(out.text()).contains("p/a.md").contains("p/c.md").doesNotContain("p/b.md");
     }
 
     @Test
@@ -218,7 +260,7 @@ class RecallInjectionTest {
 
         assertThat(out.isEmpty()).isFalse();
         assertThat(out.hits()).isEqualTo(2);
-        assertThat(out.text()).contains("Alpha").contains("Beta");
+        assertThat(out.text()).contains("p/a.md").contains("p/b.md");
     }
 
     @Test
@@ -236,7 +278,7 @@ class RecallInjectionTest {
 
         assertThat(out.isEmpty()).isFalse();
         assertThat(out.hits()).isEqualTo(2);
-        assertThat(out.text()).contains("Alpha").contains("Beta");
+        assertThat(out.text()).contains("p/a.md").contains("p/b.md");
     }
 
     @Test
@@ -263,7 +305,7 @@ class RecallInjectionTest {
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
         assertThat(out.text().length()).isLessThanOrEqualTo(120);
-        assertThat(out.text()).contains("Alpha").doesNotContain("Beta");
+        assertThat(out.text()).contains("p/a.md").doesNotContain("p/b.md");
         assertThat(out.hits()).isEqualTo(1); // count matches the rendered content, not the gated set
     }
 
@@ -308,7 +350,8 @@ class RecallInjectionTest {
         assertThat(out.text()).startsWith("## Relevant project memory");
         assertThat(out.text()).contains("The server runs behind Traefik.");
         assertThat(out.text()).contains("Sources: p/a.md, p/b.md");
-        assertThat(out.text()).doesNotContain("- **Alpha**").doesNotContain("- **Beta**");
+        // The brief paragraph replaced the bullets, so no per-hit "· rel" metadata line is present.
+        assertThat(out.text()).doesNotContain("· rel");
         assertThat(out.hits()).isEqualTo(2); // the brief covers both gated hits
         assertThat(llm.chatCalls()).hasSize(1); // exactly one generative call
     }
@@ -323,7 +366,7 @@ class RecallInjectionTest {
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
         // relevant:false → the bullets, never worse than the pre-Fase-3 baseline.
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(out.text()).doesNotContain("Sources:");
         assertThat(llm.chatCalls()).hasSize(1); // the call ran, but its verdict was "not relevant"
     }
@@ -342,7 +385,7 @@ class RecallInjectionTest {
 
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(out.text()).doesNotContain("Sources:");
     }
 
@@ -357,7 +400,7 @@ class RecallInjectionTest {
 
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(out.text()).doesNotContain("Sources:");
     }
 
@@ -390,7 +433,7 @@ class RecallInjectionTest {
 
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(llm.chatCalls()).isEmpty();
     }
 
@@ -405,7 +448,7 @@ class RecallInjectionTest {
 
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(llm.chatCalls()).isEmpty();
     }
 
@@ -439,7 +482,7 @@ class RecallInjectionTest {
         RecallInjection.Result out = injection.inject(SCOPE, "prompt");
 
         // The brief alone exceeds the 200-char budget → fall back to the bounded bullets.
-        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).contains("- p/a.md");
         assertThat(out.text().length()).isLessThanOrEqualTo(200);
     }
 }

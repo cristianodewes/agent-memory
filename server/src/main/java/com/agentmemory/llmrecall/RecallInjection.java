@@ -5,9 +5,12 @@ import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 /**
@@ -34,9 +37,13 @@ import java.util.Optional;
  *       low-confidence raw-observation fallback is never auto-pasted into a prompt.</li>
  * </ul>
  *
- * <p>The block is plain markdown (a short header plus one bullet per hit: title + path + snippet). The
- * snippet is stored page content (already sanitized at ingest, #6); the renderer strips the
- * {@code <mark>} headline tags so the injected text is clean prose. Stateless given its collaborators.
+ * <p>The block is plain markdown: a short header plus one bullet per hit. Each bullet is
+ * <strong>path-first</strong> — it leads with the page path so the agent can {@code memory_read_page}
+ * the source — then annotates the hit's {@link com.agentmemory.core.MemoryLayer layer}, its recency
+ * ("atualizado há Nd", from {@code updated_at}), and its relevance score, and ends with the snippet
+ * (issue #140): {@code - path · layer · atualizado há 3d · rel 0.91 — snippet}. The snippet is stored
+ * page content (already sanitized at ingest, #6); the renderer strips the {@code <mark>} headline tags
+ * so the injected text is clean prose. Stateless given its collaborators.
  *
  * <h2>Synthesized brief (issue #135, Fase 3)</h2>
  * When an optional {@link BriefSynthesizer} is wired and enabled, and the gate approved on
@@ -59,6 +66,7 @@ public final class RecallInjection {
     private final RecallService recall;
     private final LlmRecallProperties.Injection cfg;
     private final BriefSynthesizer synthesizer; // nullable: absent => bullets only (pre-Fase-3 behavior)
+    private final Clock clock; // "now" for the per-hit recency label (issue #140); UTC in production
 
     /** Bullets-only injection (no brief synthesizer wired). */
     public RecallInjection(RecallService recall, LlmRecallProperties.Injection cfg) {
@@ -72,15 +80,33 @@ public final class RecallInjection {
      */
     public RecallInjection(
             RecallService recall, LlmRecallProperties.Injection cfg, BriefSynthesizer synthesizer) {
+        this(recall, cfg, synthesizer, Clock.systemUTC());
+    }
+
+    /**
+     * Fully-injectable constructor exposing the {@link Clock} the recency label reads "now" from, so a
+     * test can assert "atualizado há Nd" deterministically against a fixed clock.
+     *
+     * @param clock the clock for the per-hit recency annotation; never null.
+     */
+    public RecallInjection(
+            RecallService recall,
+            LlmRecallProperties.Injection cfg,
+            BriefSynthesizer synthesizer,
+            Clock clock) {
         if (recall == null) {
             throw new IllegalArgumentException("recall must not be null");
         }
         if (cfg == null) {
             throw new IllegalArgumentException("injection config must not be null");
         }
+        if (clock == null) {
+            throw new IllegalArgumentException("clock must not be null");
+        }
         this.recall = recall;
         this.cfg = cfg;
         this.synthesizer = synthesizer;
+        this.clock = clock;
     }
 
     /**
@@ -224,18 +250,64 @@ public final class RecallInjection {
         return "\nSources: " + String.join(", ", citedPaths);
     }
 
-    private static String renderHit(RecallHit h) {
-        StringBuilder b = new StringBuilder(96);
-        b.append("- **").append(clean(h.title())).append("**");
-        if (h.path() != null && !h.path().isBlank()) {
-            b.append(" (").append(h.path()).append(")");
+    /**
+     * Render one hit as a path-first bullet with layer / recency / relevance metadata (issue #140):
+     * {@code - path · layer · atualizado há 3d · rel 0.91 — snippet}. Leading with the path gives the
+     * agent the exact {@code memory_read_page} target; the layer and "atualizado há Nd" (from
+     * {@code updated_at}) and the relevance score let it weigh the memory. Each metadata segment is
+     * emitted only when present (a vector-only or raw hit may lack a layer/timestamp), and a hit without
+     * a path falls back to its bold title as the lead. The {@code <mark>} headline tags are stripped and
+     * newlines flattened so the bullet is a single clean line; the {@code maxChars} budget is enforced by
+     * the caller ({@link #render}).
+     */
+    private String renderHit(RecallHit h) {
+        StringBuilder b = new StringBuilder(128).append("- ");
+
+        // Path-first: lead with the page path (the memory_read_page target); fall back to the title when
+        // a hit has no path (vector-only / raw — though raw is never injected).
+        String path = h.path();
+        boolean hasPath = path != null && !path.isBlank();
+        if (hasPath) {
+            b.append(path);
+        } else {
+            b.append("**").append(clean(h.title())).append("**");
         }
+
+        // Layer · recency · relevance — each segment appended only when available.
+        List<String> meta = new ArrayList<>(3);
+        if (h.layer() != null) {
+            meta.add(h.layer().wire());
+        }
+        String recency = recencyLabel(h.updatedAt());
+        if (recency != null) {
+            meta.add(recency);
+        }
+        meta.add(String.format(Locale.ROOT, "rel %.2f", h.score()));
+        b.append(" · ").append(String.join(" · ", meta));
+
         String snippet = clean(stripMarks(h.snippet()));
         if (!snippet.isEmpty()) {
             b.append(" — ").append(snippet);
         }
         b.append('\n');
         return b.toString();
+    }
+
+    /**
+     * The relevance-prior recency label for a hit, derived from {@code updated_at} against the clock's
+     * "now": {@code "atualizado hoje"} under a day, else {@code "atualizado há Nd"}. Returns {@code null}
+     * when the hit carries no timestamp (raw/vector-only), so the bullet omits the segment. Age is
+     * floored at zero so a slight clock skew never renders a negative day count.
+     */
+    private String recencyLabel(Instant updatedAt) {
+        if (updatedAt == null) {
+            return null;
+        }
+        long days = Duration.between(updatedAt, clock.instant()).toDays();
+        if (days <= 0) {
+            return "atualizado hoje";
+        }
+        return "atualizado há " + days + "d";
     }
 
     /** Strip the {@code <mark>}/{@code </mark>} headline delimiters the SQL snippet adds. */

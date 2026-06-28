@@ -2,12 +2,14 @@ package com.agentmemory.recall;
 
 import com.agentmemory.llm.Embedder;
 import com.agentmemory.store.PageEmbeddingStore;
+import java.time.Clock;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.boot.jdbc.autoconfigure.JdbcTemplateAutoConfiguration;
 import org.springframework.context.annotation.Bean;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -36,19 +38,35 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * and the arm self-disables.
  */
 @AutoConfiguration(after = JdbcTemplateAutoConfiguration.class)
+@EnableConfigurationProperties(RecencyProperties.class)
 public class RecallConfiguration {
 
     /**
-     * The rank-fusion strategy. Default RRF; declared {@code @ConditionalOnMissingBean} so a later
-     * issue (#16 vector arm, #21 re-rank) can override it by publishing its own {@link Fusion}.
-     * Carries no DB dependency, so it is available even in the DB-less smoke context.
+     * The rank-fusion strategy: RRF, wrapped by the per-layer recency prior (issue #140) unless that
+     * prior is disabled by config. Declared {@code @ConditionalOnMissingBean} so a later issue (#16
+     * vector arm, #21 re-rank) can still override it by publishing its own {@link Fusion}. Carries no DB
+     * dependency, so it is available even in the DB-less smoke context.
      *
-     * @return the default {@link RrfFusion}.
+     * <p>The recency decorator is applied here, in the {@code recall} base fusion, so it runs
+     * <em>before</em> the LLM-recall cross-encoder re-rank ({@code LlmRecallService}): it reorders the
+     * fused candidate pool and the non-LLM fast path, and the cross-encoder re-scores the resulting head
+     * by pure relevance (see {@link RecencyDecayFusion}). The {@link Clock} is the shared retention clock
+     * when present (so recency and the decay sweep read one "now"), falling back to the system UTC clock
+     * in a context that wires no clock bean — keeping this DB-less bean robust.
+     *
+     * @param recency the recency-prior tuning (half-lives + on/off).
+     * @param clock   provider for the shared clock; system UTC when none is wired.
+     * @return the (optionally recency-decorated) {@link Fusion}.
      */
     @Bean
     @org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean(Fusion.class)
-    public Fusion rrfFusion() {
-        return new RrfFusion();
+    public Fusion rrfFusion(RecencyProperties recency, ObjectProvider<Clock> clock) {
+        Fusion base = new RrfFusion();
+        if (!recency.enabled()) {
+            return base; // prior off → untouched RRF order
+        }
+        RecencyDecay decay = new RecencyDecay(recency.toParameters(), clock.getIfAvailable(Clock::systemUTC));
+        return new RecencyDecayFusion(base, decay);
     }
 
     @Bean
