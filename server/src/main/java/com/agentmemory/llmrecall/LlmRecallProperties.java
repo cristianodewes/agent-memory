@@ -78,7 +78,7 @@ public record LlmRecallProperties(
             expansion = new Expansion(false, 4);
         }
         if (injection == null) {
-            injection = new Injection(5, 0.4, 0.35, 1200);
+            injection = new Injection(5, 0.4, 0.35, 1200, null);
         }
     }
 
@@ -155,12 +155,14 @@ public record LlmRecallProperties(
      *     empty. Must be in {@code [0, 1]}. Default 0.35.
      * @param maxChars the hard upper bound on the rendered block length; the block is truncated to fit
      *     so a hook can rely on a bounded paste. Must be {@code > 0}. Default 1200.
+     * @param brief    synthesized-brief sub-settings (issue #135, Fase 3).
      */
     public record Injection(
             @DefaultValue("5") int maxHits,
             @DefaultValue("0.4") double minScore,
             @DefaultValue("0.35") double minScoreAbsolute,
-            @DefaultValue("1200") int maxChars) {
+            @DefaultValue("1200") int maxChars,
+            @DefaultValue Brief brief) {
         public Injection {
             if (maxHits <= 0) {
                 throw new IllegalArgumentException("injection.maxHits must be > 0, was " + maxHits);
@@ -175,6 +177,40 @@ public record LlmRecallProperties(
             }
             if (maxChars <= 0) {
                 throw new IllegalArgumentException("injection.maxChars must be > 0, was " + maxChars);
+            }
+            if (brief == null) {
+                brief = new Brief(false, Brief.DEFAULT_TIMEOUT_MS);
+            }
+        }
+
+        /**
+         * Synthesized-brief tuning (issue #135, Fase 3). When enabled <em>and</em> the relevance gate
+         * approved on calibrated cross-encoder scores, the injection makes one minimal-effort generative
+         * call to replace the raw snippet bullets with a short "what you need to know" paragraph plus
+         * path citations. The call is the only generative step the injection hot path makes, so it is
+         * bounded by a per-call timeout and degrades to the bullets on any failure or timeout.
+         *
+         * @param enabled   whether to synthesize the brief at all. Default {@code false}: the brief
+         *     reintroduces a generative call (latency + Codex cost) and a prompt-injection surface, so it
+         *     is opt-in until validated in production; when {@code false} the injection renders the
+         *     existing bullets, unchanged.
+         * @param timeoutMs the per-call HTTP timeout (ms) bounding the single brief call; on timeout the
+         *     injection falls back to the bullets. Set comfortably under the client's deadline minus the
+         *     recall search already spent (the brief only fires after a fast calibrated search). Must be
+         *     {@code > 0}. Default {@value #DEFAULT_TIMEOUT_MS}.
+         */
+        public record Brief(
+                @DefaultValue("false") boolean enabled,
+                @DefaultValue("4000") long timeoutMs) {
+
+            /** Default per-call brief timeout (ms) — comfortably under the client's 10s deadline. */
+            public static final long DEFAULT_TIMEOUT_MS = 4000;
+
+            public Brief {
+                if (timeoutMs <= 0) {
+                    throw new IllegalArgumentException(
+                            "injection.brief.timeoutMs must be > 0, was " + timeoutMs);
+                }
             }
         }
     }

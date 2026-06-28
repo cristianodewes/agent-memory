@@ -2,13 +2,18 @@ package com.agentmemory.llmrecall;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.llm.ChatRequest;
+import com.agentmemory.llm.ReasoningEffort;
+import com.agentmemory.llm.TestDoubleProvider;
 import com.agentmemory.recall.HitSource;
 import com.agentmemory.recall.RecallHit;
 import com.agentmemory.recall.RecallQuery;
 import com.agentmemory.recall.RecallResult;
 import com.agentmemory.recall.RecallService;
 import com.agentmemory.recall.Scope;
+import java.time.Duration;
 import java.util.List;
+import java.util.function.Function;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -47,7 +52,34 @@ class RecallInjectionTest {
 
     private static LlmRecallProperties.Injection cfg(
             int maxHits, double minScore, double minScoreAbsolute, int maxChars) {
-        return new LlmRecallProperties.Injection(maxHits, minScore, minScoreAbsolute, maxChars);
+        // brief == null → the compact constructor defaults it to a DISABLED brief, so these cases
+        // exercise the bullet path exactly as before Fase 3.
+        return new LlmRecallProperties.Injection(maxHits, minScore, minScoreAbsolute, maxChars, null);
+    }
+
+    /** An injection config with the synthesized brief enabled (issue #135, Fase 3). */
+    private static LlmRecallProperties.Injection cfgBriefEnabled(
+            int maxHits, double minScore, double minScoreAbsolute, int maxChars, long timeoutMs) {
+        return new LlmRecallProperties.Injection(
+                maxHits, minScore, minScoreAbsolute, maxChars,
+                new LlmRecallProperties.Injection.Brief(true, timeoutMs));
+    }
+
+    private static final RecallPrompts PROMPTS = new RecallPrompts();
+
+    /** A provider returning a fixed curate JSON for every call. */
+    private static TestDoubleProvider scriptedProvider(String curateJson) {
+        return scriptedProvider(req -> curateJson);
+    }
+
+    /** A provider running an arbitrary responder (to throw, branch, or count calls). */
+    private static TestDoubleProvider scriptedProvider(Function<ChatRequest, String> responder) {
+        return TestDoubleProvider.builder().chatResponder(responder).build();
+    }
+
+    /** A synthesizer over {@code llm} with no reasoning hint — for output-only assertions. */
+    private static BriefSynthesizer synthesizer(TestDoubleProvider llm) {
+        return new BriefSynthesizer(llm, PROMPTS, null);
     }
 
     @Test
@@ -255,5 +287,159 @@ class RecallInjectionTest {
         RecallInjection injection = new RecallInjection(new StubRecall(RecallResult.empty()), cfg(5, 0.0, 1200));
 
         assertThat(injection.inject(SCOPE, "prompt").isEmpty()).isTrue();
+    }
+
+    // --- Synthesized brief (issue #135, Fase 3) ------------------------------------------------
+
+    @Test
+    void briefReplacesBulletsWhenGateApprovesAndSynthesizerIsRelevant() {
+        RecallResult r = RecallResult.ofPages(List.of(
+                page("a", "Alpha", "alpha body", 0.90, 1),
+                page("b", "Beta", "beta body", 0.80, 2)), /*calibrated*/ true);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"The server runs behind Traefik.\","
+                        + "\"cited_paths\":[\"p/a.md\",\"p/b.md\"]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "where does the server run");
+
+        // The block is the synthesized paragraph + Sources, NOT the raw snippet bullets.
+        assertThat(out.text()).startsWith("## Relevant project memory");
+        assertThat(out.text()).contains("The server runs behind Traefik.");
+        assertThat(out.text()).contains("Sources: p/a.md, p/b.md");
+        assertThat(out.text()).doesNotContain("- **Alpha**").doesNotContain("- **Beta**");
+        assertThat(out.hits()).isEqualTo(2); // the brief covers both gated hits
+        assertThat(llm.chatCalls()).hasSize(1); // exactly one generative call
+    }
+
+    @Test
+    void fallsBackToBulletsWhenSynthesizerSaysNotRelevant() {
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        TestDoubleProvider llm = scriptedProvider("{\"relevant\":false,\"brief\":\"\",\"cited_paths\":[]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        // relevant:false → the bullets, never worse than the pre-Fase-3 baseline.
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).doesNotContain("Sources:");
+        assertThat(llm.chatCalls()).hasSize(1); // the call ran, but its verdict was "not relevant"
+    }
+
+    @Test
+    void fallsBackToBulletsOnSynthesizerFailureOrTimeout() {
+        // A provider error stands in for both a hard failure and a per-call HTTP timeout (a timeout
+        // surfaces as a provider exception); either way the injection degrades to the bullets, never
+        // throwing out of inject().
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        TestDoubleProvider llm = scriptedProvider(req -> {
+            throw new com.agentmemory.llm.LlmException("simulated timeout");
+        });
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).doesNotContain("Sources:");
+    }
+
+    @Test
+    void fallsBackToBulletsWhenBriefIsBlank() {
+        // relevant:true but an all-whitespace brief is unusable → bullets.
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"   \",\"cited_paths\":[\"p/a.md\"]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text()).doesNotContain("Sources:");
+    }
+
+    @Test
+    void calibratedGateRejectsLowSignalSoTheBriefIsNeverCalled() {
+        // Calibrated top 0.20 < the 0.35 absolute floor → empty block, and the synthesizer is NEVER
+        // called: the common low-signal prompt makes no generative call (the Fase 0-2 latency property).
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "weak", 0.20, 1)), true);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"unused\",\"cited_paths\":[]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "ok thanks");
+
+        assertThat(out.isEmpty()).isTrue();
+        assertThat(llm.chatCalls()).isEmpty(); // gate rejected before any generative call
+    }
+
+    @Test
+    void uncalibratedScoresSkipTheBriefAndRenderBullets() {
+        // Brief enabled + a real match, but the scores are UNCALIBRATED (RRF / LLM rerank, not the
+        // cross-encoder). The brief fires only on calibrated scores, so this renders bullets, no call.
+        RecallResult r = RecallResult.ofPages(List.of(
+                page("a", "Alpha", "alpha body", 0.90, 1))); // calibrated == false
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"unused\",\"cited_paths\":[\"p/a.md\"]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(llm.chatCalls()).isEmpty();
+    }
+
+    @Test
+    void briefDisabledRendersBulletsEvenWithASynthesizerPresent() {
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"unused\",\"cited_paths\":[\"p/a.md\"]}");
+        // cfg() defaults the brief to DISABLED; the synthesizer is wired but must not be consulted.
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfg(5, 0.0, 0.35, 1200), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(llm.chatCalls()).isEmpty();
+    }
+
+    @Test
+    void briefCallCarriesMinimalReasoningAndTheConfiguredPerCallTimeout() {
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"A brief.\",\"cited_paths\":[\"p/a.md\"]}");
+        BriefSynthesizer synth = new BriefSynthesizer(llm, PROMPTS, ReasoningEffort.MINIMAL);
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 1200, 2500), synth);
+
+        injection.inject(SCOPE, "prompt");
+
+        ChatRequest sent = llm.chatCalls().get(0);
+        assertThat(sent.reasoningEffort()).isEqualTo(ReasoningEffort.MINIMAL);
+        // The per-call timeout is the configured injection.brief.timeout-ms (the latency bound).
+        assertThat(sent.requestTimeout()).isEqualTo(Duration.ofMillis(2500));
+        assertThat(sent.wantsStructuredOutput()).isTrue();
+    }
+
+    @Test
+    void briefThatOverflowsTheCharBudgetFallsBackToBullets() {
+        RecallResult r = RecallResult.ofPages(List.of(page("a", "Alpha", "alpha body", 0.90, 1)), true);
+        String hugeBrief = "x".repeat(5000);
+        TestDoubleProvider llm = scriptedProvider(
+                "{\"relevant\":true,\"brief\":\"" + hugeBrief + "\",\"cited_paths\":[\"p/a.md\"]}");
+        RecallInjection injection = new RecallInjection(
+                new StubRecall(r), cfgBriefEnabled(5, 0.0, 0.35, 200, 4000), synthesizer(llm));
+
+        RecallInjection.Result out = injection.inject(SCOPE, "prompt");
+
+        // The brief alone exceeds the 200-char budget → fall back to the bounded bullets.
+        assertThat(out.text()).contains("- **Alpha** (p/a.md)");
+        assertThat(out.text().length()).isLessThanOrEqualTo(200);
     }
 }
