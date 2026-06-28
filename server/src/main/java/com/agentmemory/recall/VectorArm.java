@@ -125,10 +125,13 @@ public class VectorArm {
     /**
      * The displayable payload for a vector-only hit: path/title/snippet are not loaded by the vector
      * query (the FTS/graph arms supply richer ones and win the first-writer merge), so a vector-only
-     * hit carries just its id and {@link HitSource#PAGE} source — still navigable by id. The
-     * placeholder score is the cosine similarity {@code 1 - distance} clamped to {@code [0, 1]} (the
-     * {@code <=>} cosine distance is in {@code [0, 2]}, so an anti-correlated vector would otherwise
-     * yield a negative "similarity"); the {@link Fusion} overwrites it with the fused score regardless.
+     * hit carries just its id and {@link HitSource#PAGE} source — still navigable by id. Its recency
+     * metadata ({@code updatedAt}/{@code layer}) is likewise unloaded (left {@code null} via the
+     * convenience constructor), so the recency prior leaves a vector-only hit unpenalized (issue #140);
+     * a page the FTS/graph arms also found keeps their richer payload, recency included. The placeholder
+     * score is the cosine similarity {@code 1 - distance} clamped to {@code [0, 1]} (the {@code <=>}
+     * cosine distance is in {@code [0, 2]}, so an anti-correlated vector would otherwise yield a negative
+     * "similarity"); the {@link Fusion} overwrites it with the fused score regardless.
      */
     private static RecallHit vectorHit(PageEmbeddingStore.VectorHit h, int rank) {
         double similarity = Math.max(0.0, Math.min(1.0, 1.0 - h.distance()));

@@ -35,6 +35,12 @@ import org.slf4j.LoggerFactory;
  *   <li><strong>Re-rank</strong> (optional): re-order the fused candidates by LLM relevance
  *       ({@link CandidateReranker}), capped to the top {@code maxCandidates}. Skipped for the
  *       raw-observation fallback and for trivially small result sets. Failure keeps RRF order.</li>
+ *   <li><strong>Diversify</strong> (optional, issue #141): an {@link MmrDiversifier MMR} pass over the
+ *       candidate embeddings re-orders the re-ranked hits to maximize marginal information
+ *       (relevance − redundancy) before the trim, so the final page is not several bullets of one
+ *       topic. Pure CPU plus one bounded embeddings fetch — not bounded by the LLM time budget — and
+ *       degrades to the rerank order when embeddings are absent. Only re-orders; the
+ *       {@code calibrated} flag and the hit scores flow through untouched.</li>
  *   <li><strong>Trim</strong>: cut to the caller's requested {@code limit}.</li>
  *   <li><strong>Reinforce</strong>: fire {@link AccessReinforcer} on the final hits (#24 seam) — a
  *       best-effort side effect that never fails the query. The reinforcing UPDATE runs <em>off the
@@ -69,6 +75,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
     private final RecallService base;
     private final QueryExpander expander; // nullable when expansion is disabled
     private final Reranker reranker;
+    private final MmrDiversifier mmr; // nullable when MMR is unwired (no embeddings module)
     private final AccessReinforcer reinforcer;
     private final LlmRecallProperties props;
     private final LongSupplier nowMs;
@@ -96,11 +103,32 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
         this(base, expander, reranker, reinforcer, props, nowMs, new RecallMetrics(null));
     }
 
-    /** Fully-injectable constructor (clock + telemetry); the wiring path supplies the real metrics. */
+    /**
+     * Fully-injectable constructor (clock + telemetry) without an MMR diversifier — delegates to the
+     * canonical constructor with no MMR (the pre-#141 behaviour). Retained for callers and tests that
+     * do not exercise diversity.
+     */
     public LlmRecallService(
             RecallService base,
             QueryExpander expander,
             Reranker reranker,
+            AccessReinforcer reinforcer,
+            LlmRecallProperties props,
+            LongSupplier nowMs,
+            RecallMetrics metrics) {
+        this(base, expander, reranker, null, reinforcer, props, nowMs, metrics);
+    }
+
+    /**
+     * Canonical constructor (issue #141): adds the optional {@link MmrDiversifier}. {@code mmr} is
+     * nullable — when {@code null} (MMR unwired, e.g. no embeddings module) the diversity step is
+     * skipped and the service behaves exactly as the pre-#141 pipeline.
+     */
+    public LlmRecallService(
+            RecallService base,
+            QueryExpander expander,
+            Reranker reranker,
+            MmrDiversifier mmr,
             AccessReinforcer reinforcer,
             LlmRecallProperties props,
             LongSupplier nowMs,
@@ -126,6 +154,7 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
         this.base = base;
         this.expander = expander;
         this.reranker = reranker;
+        this.mmr = mmr;
         this.reinforcer = reinforcer;
         this.props = props;
         this.nowMs = nowMs;
@@ -244,6 +273,17 @@ public final class LlmRecallService implements RecallService, AutoCloseable {
             } else {
                 log.debug("recall budget exhausted before re-rank; returning hybrid result");
             }
+        }
+
+        // 3b. Diversify (issue #141). An MMR pass over the candidate embeddings re-orders the (re-ranked)
+        // hits to maximize marginal information — relevance − redundancy — so the final page is not
+        // several bullets of one topic. It is pure CPU (cosine over the ≤K candidate vectors) plus one
+        // bounded embeddings fetch, so it runs whether or not the LLM re-rank fired and is NOT gated by
+        // the wall-clock budget. It degrades to the current order when embeddings are absent (DD-005) and
+        // never throws. Crucially it only RE-ORDERS — `calibrated` and every hit's score are preserved,
+        // so the #133 absolute gate downstream still holds.
+        if (mmr != null && props.mmr().enabled()) {
+            hits = mmr.diversify(hits);
         }
 
         // 4. Trim to the caller's limit (re-stamping ranks so the returned page is 1..limit), carrying
