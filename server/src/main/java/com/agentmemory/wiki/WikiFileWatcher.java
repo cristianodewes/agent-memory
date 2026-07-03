@@ -8,8 +8,11 @@ import com.agentmemory.store.PageRecord;
 import com.agentmemory.store.PageRepository;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
@@ -18,7 +21,6 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -199,16 +201,62 @@ public final class WikiFileWatcher implements AutoCloseable {
         log.info("reconciled external edit into index: {}", identity.page().value());
     }
 
+    /**
+     * Walk the wiki tree and hand every <em>page</em> file to {@code action}. Excluded by name:
+     * anything under {@code .git/}, and {@code SessionLog}'s frontmatter-less event ledger
+     * ({@code log.md}) — a machine-appended file that is not a page, mirroring
+     * {@code DefaultReindexService.isPageFile} so the watcher stops re-hashing the hottest file in
+     * the tree and warning about its own sibling's writes (issue #148).
+     *
+     * <p>Uses {@link Files#walkFileTree} rather than {@code Files.walk}: page writes are atomic
+     * moves of short-lived {@code .wiki-*.tmp} siblings and deletes/moves happen concurrently
+     * (forget-sweep, lifecycle), so entries routinely vanish between the directory listing and the
+     * walker's stat. {@code Files.walk} rethrows that as an {@link java.io.UncheckedIOException}
+     * that aborted the whole scan (and could abort startup from {@code seedBaseline});
+     * {@link SimpleFileVisitor#visitFileFailed} skips just the vanished entry instead.
+     */
     private void forEachMarkdownFile(java.util.function.Consumer<Path> action) {
         Path root = paths.wikiDir();
         if (!Files.isDirectory(root)) {
             return;
         }
-        try (Stream<Path> s = Files.walk(root)) {
-            s.filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().endsWith(".md"))
-                    .filter(p -> !isUnderGitDir(p))
-                    .forEach(action);
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult preVisitDirectory(Path dir, BasicFileAttributes attrs) {
+                    Path name = dir.getFileName();
+                    return name != null && name.toString().equals(".git")
+                            ? FileVisitResult.SKIP_SUBTREE
+                            : FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    String name = file.getFileName().toString();
+                    if (attrs.isRegularFile() && name.endsWith(".md")
+                            && !name.equals(SessionLog.LOG_FILE_NAME)) {
+                        action.accept(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    // Entry vanished between listing and stat (an atomic-move tmp file, a concurrent
+                    // delete): skip it; the next poll sees the settled state.
+                    log.debug("wiki entry vanished mid-scan (skipped): {}", file);
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+                    if (exc != null) {
+                        // Directory vanished mid-walk (project move/delete): same story.
+                        log.debug("wiki directory vanished mid-scan (skipped): {}", dir);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+            });
         } catch (IOException e) {
             log.warn("could not walk wiki tree {}: {}", root, e.toString());
         }
@@ -220,15 +268,6 @@ public final class WikiFileWatcher implements AutoCloseable {
         } catch (IOException e) {
             return null; // file vanished between walk and read; next scan will catch up
         }
-    }
-
-    private static boolean isUnderGitDir(Path p) {
-        for (Path part : p) {
-            if (part.toString().equals(".git")) {
-                return true;
-            }
-        }
-        return false;
     }
 
     @Override

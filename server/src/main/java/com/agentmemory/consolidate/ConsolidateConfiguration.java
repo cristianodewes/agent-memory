@@ -3,6 +3,7 @@ package com.agentmemory.consolidate;
 import com.agentmemory.hooks.IngestService;
 import com.agentmemory.links.WikiLinkService;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.LlmRateLimitGate;
 import com.agentmemory.mcp.McpReadRepository;
 import com.agentmemory.mcp.MemoryWriteService;
 import com.agentmemory.store.PageRepository;
@@ -108,8 +109,8 @@ public class ConsolidateConfiguration {
     @Bean(destroyMethod = "close")
     @ConditionalOnBean(SessionConsolidationTrigger.class)
     public ConsolidationObservationListener consolidationObservationListener(
-            SessionConsolidationTrigger trigger) {
-        return new ConsolidationObservationListener(trigger);
+            SessionConsolidationTrigger trigger, LlmRateLimitGate llmRateLimitGate) {
+        return new ConsolidationObservationListener(trigger, llmRateLimitGate);
     }
 
     /**

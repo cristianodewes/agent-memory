@@ -13,12 +13,14 @@ import com.agentmemory.wiki.WikiPaths;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
-import java.util.stream.Stream;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -173,20 +175,45 @@ public class DefaultReindexService implements ReindexService {
         log.info("reindex: re-embedded {} page(s)", indexed.size());
     }
 
-    /** List every compiled-page file under {@code wiki/}, deterministically ordered by path. */
+    /**
+     * List every compiled-page file under {@code wiki/}, deterministically ordered by path. Walked
+     * with a tolerant visitor rather than {@code Files.walk}: page writes are atomic moves of
+     * short-lived tmp siblings and deletes happen concurrently, so an entry can vanish between the
+     * directory listing and the walker's stat — {@code Files.walk} rethrows that as an
+     * {@link UncheckedIOException} that aborted the whole reindex; skipping just the vanished entry
+     * keeps the run alive (issue #148).
+     */
     private List<Path> listPageFiles() {
         Path root = wikiPaths.wikiDir();
         if (!Files.isDirectory(root)) {
             return List.of();
         }
-        try (Stream<Path> walk = Files.walk(root)) {
-            return walk.filter(Files::isRegularFile)
-                    .filter(DefaultReindexService::isPageFile)
-                    .sorted()
-                    .toList();
+        List<Path> files = new ArrayList<>();
+        try {
+            Files.walkFileTree(root, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile() && isPageFile(file)) {
+                        files.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
+                }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    return FileVisitResult.CONTINUE; // vanished mid-walk: skip it
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+                    return FileVisitResult.CONTINUE; // directory vanished mid-walk: same story
+                }
+            });
         } catch (IOException e) {
             throw new UncheckedIOException("failed to walk wiki dir " + root, e);
         }
+        files.sort(null);
+        return files;
     }
 
     /** A compiled page is a {@code *.md} file under {@code wiki/}, excluding git and the session log. */

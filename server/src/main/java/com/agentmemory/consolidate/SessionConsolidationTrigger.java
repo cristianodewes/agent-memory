@@ -51,14 +51,8 @@ public class SessionConsolidationTrigger {
      *     synthesis failed (a failure is logged; it is retried on the next trigger).
      */
     public SynthesisOutcome onObservation(SessionId sessionId, ObservationKind kind) {
-        if (sessionId == null || kind == null) {
-            throw new IllegalArgumentException("sessionId and kind must not be null");
-        }
-        if (!triggers(kind)) {
-            return null;
-        }
         try {
-            return synthesizer.synthesize(sessionId);
+            return onObservationOrThrow(sessionId, kind);
         } catch (RuntimeException e) {
             // DD-005: synthesis is LLM-driven with no fallback, but it must not break ingest. Log and
             // move on; the next session-end/pre-compact retries, and synthesis is idempotent.
@@ -66,5 +60,25 @@ public class SessionConsolidationTrigger {
                     sessionId, kind.wire(), e.getMessage());
             return null;
         }
+    }
+
+    /**
+     * As {@link #onObservation}, but a synthesis failure <em>propagates</em> instead of being
+     * swallowed. The off-worker dispatcher ({@code ConsolidationObservationListener}) uses this
+     * variant so it can tell a retryable LLM failure (a 429 during an exhausted quota window — defer
+     * and re-run, issue #148) from a permanent one, a policy the caller owns. Argument validation is
+     * unchanged: a null {@code sessionId}/{@code kind} still throws.
+     *
+     * @return the outcome when synthesis ran, or {@code null} when the kind did not trigger.
+     * @throws RuntimeException whatever synthesis raised (an {@code LlmException}, a write error, …).
+     */
+    public SynthesisOutcome onObservationOrThrow(SessionId sessionId, ObservationKind kind) {
+        if (sessionId == null || kind == null) {
+            throw new IllegalArgumentException("sessionId and kind must not be null");
+        }
+        if (!triggers(kind)) {
+            return null;
+        }
+        return synthesizer.synthesize(sessionId);
     }
 }

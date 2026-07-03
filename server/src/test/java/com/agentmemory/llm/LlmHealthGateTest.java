@@ -43,6 +43,38 @@ class LlmHealthGateTest {
     }
 
     @Test
+    void rateLimitedLlmProbeIsNonFatal() {
+        // A 429 at startup means the credentials were ACCEPTED — the quota window is just exhausted.
+        // Failing fast here would crash-loop a restarted container until the window resets (issue
+        // #148), so the gate must degrade instead of aborting.
+        LlmProvider rateLimited = new LlmProvider() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                throw new UnsupportedOperationException("not used by the probe");
+            }
+
+            @Override
+            public String id() {
+                return "stub";
+            }
+
+            @Override
+            public String model() {
+                return "stub-model";
+            }
+
+            @Override
+            public void probe() {
+                throw new LlmException("stub request failed with HTTP 429: usage_limit_reached",
+                        null, true, 429, 14_000_000);
+            }
+        };
+
+        assertThatCode(() -> new LlmHealthGate(rateLimited, null).verify())
+                .doesNotThrowAnyException();
+    }
+
+    @Test
     void nullEmbedderIsTolerated() {
         TestDoubleProvider goodLlm = TestDoubleProvider.create();
 

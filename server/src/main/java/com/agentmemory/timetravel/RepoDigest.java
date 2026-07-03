@@ -140,7 +140,9 @@ final class RepoDigest {
                 sb.append("### ").append(repoRoot.relativize(p).toString().replace('\\', '/'))
                         .append('\n').append(firstChars(readCapped(p), 1_500)).append("\n\n");
             }
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
+            // UncheckedIOException: an entry vanished while Files.walk statted it (concurrent
+            // delete/move); degrade to the partial digest collected so far (issue #148).
             return sb.toString();
         }
         return sb.toString();
@@ -162,7 +164,9 @@ final class RepoDigest {
                             .append('\n').append(header).append("\n\n");
                 }
             }
-        } catch (IOException e) {
+        } catch (IOException | UncheckedIOException e) {
+            // UncheckedIOException: an entry vanished while Files.walk statted it (concurrent
+            // delete/move); degrade to the partial digest collected so far (issue #148).
             return sb.toString();
         }
         return sb.toString();

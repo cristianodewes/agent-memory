@@ -12,11 +12,14 @@ import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.SessionId;
 import com.agentmemory.core.Uuid7;
 import com.agentmemory.core.WorkspaceId;
+import com.agentmemory.llm.LlmException;
+import com.agentmemory.llm.LlmRateLimitGate;
 import com.agentmemory.recall.Scope;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -24,23 +27,27 @@ import org.junit.jupiter.api.Test;
  * {@code Consumer<Observation>}, on a {@code session-end} it calls {@link HandoffService#begin}
  * <strong>off the calling thread</strong> (the ingest worker) on its dedicated daemon executor — the
  * LLM-backed generation must never run inline on the worker (invariant #5). Non-{@code session-end}
- * kinds are filtered cheaply on the calling thread and never reach {@code begin}, and a failing
- * {@code begin} is swallowed without killing the executor. Uses a recording {@link HandoffService}
+ * kinds are filtered cheaply on the calling thread and never reach {@code begin}. Since issue #148
+ * the dispatcher is also rate-limit aware: {@code SESSION_END} is the session's final event (no
+ * "next trigger" ever comes), so a retryable LLM failure re-dispatches after a deferral instead of
+ * losing the handoff, and a paused {@link LlmRateLimitGate} defers the run entirely. A permanent
+ * failure is still swallowed without killing the executor. Uses a recording {@link HandoffService}
  * subclass; no Spring, no DB, no LLM.
  */
 class SessionEndHandoffTriggerTest {
 
     /**
      * A {@link HandoffService} that records the (scope, session) it is asked to open a handoff for, and
-     * the thread it ran on (to prove the dispatch is off the caller's thread). Optionally throws to
-     * prove the trigger swallows a generation failure. The {@code (null, null)} super args are never
-     * used because {@code begin} is fully overridden.
+     * the thread it ran on (to prove the dispatch is off the caller's thread). Can be told to fail its
+     * first N runs to drive the retry paths. The {@code (null, null)} super args are never used because
+     * {@code begin} is fully overridden.
      */
     private static final class RecordingHandoffService extends HandoffService {
         final List<SessionId> sessions = new CopyOnWriteArrayList<>();
         final List<String> workspaces = new CopyOnWriteArrayList<>();
         final List<String> threads = new CopyOnWriteArrayList<>();
-        volatile boolean throwOnce = false;
+        final AtomicInteger failuresRemaining = new AtomicInteger();
+        volatile RuntimeException failure;
 
         RecordingHandoffService() {
             super(null, null);
@@ -51,12 +58,17 @@ class SessionEndHandoffTriggerTest {
             sessions.add(session);
             workspaces.add(scope.workspaceSlug());
             threads.add(Thread.currentThread().getName());
-            if (throwOnce) {
-                throwOnce = false;
-                throw new IllegalStateException("boom"); // simulate an LLM/persistence failure
+            if (failuresRemaining.getAndUpdate(n -> Math.max(0, n - 1)) > 0) {
+                throw failure;
             }
             return null; // the trigger ignores the return value
         }
+    }
+
+    /** A trigger with test-fast retry timing (base/floor/jitter of a few ms). */
+    private static SessionEndHandoffTrigger fastTrigger(
+            RecordingHandoffService service, LlmRateLimitGate gate) {
+        return new SessionEndHandoffTrigger(service, gate, 5, 1, 1);
     }
 
     private static Observation observation(SessionId session, ObservationKind kind) {
@@ -71,11 +83,17 @@ class SessionEndHandoffTriggerTest {
                 Instant.parse("2026-06-25T12:00:00Z"));
     }
 
+    private static LlmException retryable429() {
+        return new LlmException("openai-oauth request failed with HTTP 429: usage_limit_reached",
+                null, true, 429, 0);
+    }
+
     @Test
     void dispatchesSessionEndToBeginOffTheCallerThread() {
         RecordingHandoffService service = new RecordingHandoffService();
         String callerThread = Thread.currentThread().getName();
-        try (SessionEndHandoffTrigger trigger = new SessionEndHandoffTrigger(service)) {
+        try (SessionEndHandoffTrigger trigger =
+                new SessionEndHandoffTrigger(service, new LlmRateLimitGate())) {
             SessionId session = SessionId.newId();
 
             trigger.accept(observation(session, ObservationKind.SESSION_END));
@@ -100,7 +118,8 @@ class SessionEndHandoffTriggerTest {
     @Test
     void ignoresNonSessionEndKindsWithoutCallingBegin() throws Exception {
         RecordingHandoffService service = new RecordingHandoffService();
-        try (SessionEndHandoffTrigger trigger = new SessionEndHandoffTrigger(service)) {
+        try (SessionEndHandoffTrigger trigger =
+                new SessionEndHandoffTrigger(service, new LlmRateLimitGate())) {
 
             // Only session-end triggers a handoff; these are filtered on the calling thread and never
             // dispatched, so begin is never invoked.
@@ -117,7 +136,8 @@ class SessionEndHandoffTriggerTest {
     @Test
     void aNullObservationIsIgnored() throws Exception {
         RecordingHandoffService service = new RecordingHandoffService();
-        try (SessionEndHandoffTrigger trigger = new SessionEndHandoffTrigger(service)) {
+        try (SessionEndHandoffTrigger trigger =
+                new SessionEndHandoffTrigger(service, new LlmRateLimitGate())) {
             trigger.accept(null); // must not throw, must not dispatch
             Thread.sleep(100);
             assertThat(service.sessions).isEmpty();
@@ -127,8 +147,10 @@ class SessionEndHandoffTriggerTest {
     @Test
     void aFailingBeginIsSwallowedAndDoesNotKillTheExecutor() {
         RecordingHandoffService service = new RecordingHandoffService();
-        service.throwOnce = true;
-        try (SessionEndHandoffTrigger trigger = new SessionEndHandoffTrigger(service)) {
+        service.failure = new IllegalStateException("boom"); // permanent: swallowed, not retried
+        service.failuresRemaining.set(1);
+        try (SessionEndHandoffTrigger trigger =
+                new SessionEndHandoffTrigger(service, new LlmRateLimitGate())) {
             SessionId first = SessionId.newId();
             SessionId second = SessionId.newId();
 
@@ -139,6 +161,59 @@ class SessionEndHandoffTriggerTest {
 
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
                     assertThat(service.sessions).containsExactly(first, second));
+        }
+    }
+
+    @Test
+    void aRetryable429IsRedispatchedUntilTheHandoffOpens() {
+        // Issue #148: SESSION_END never re-fires for its own session — before this fix a 429 during an
+        // exhausted quota window silently lost the auto-handoff (seven in production). Now the same
+        // task re-dispatches after a deferral until begin succeeds (fails twice, succeeds third).
+        RecordingHandoffService service = new RecordingHandoffService();
+        service.failure = retryable429();
+        service.failuresRemaining.set(2);
+        try (SessionEndHandoffTrigger trigger = fastTrigger(service, new LlmRateLimitGate())) {
+            SessionId session = SessionId.newId();
+
+            trigger.accept(observation(session, ObservationKind.SESSION_END));
+
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                    assertThat(service.sessions).hasSize(3).containsOnly(session));
+        }
+    }
+
+    @Test
+    void aPausedGateDefersGenerationInsteadOfBurningACall() {
+        // The gate says the quota window is exhausted for a short while: begin must not run during the
+        // pause, and must fire (exactly once) after the pause lifts.
+        LlmRateLimitGate gate = new LlmRateLimitGate();
+        gate.recordFailure(new LlmException("HTTP 429", null, true, 429, 800)); // paused ~800ms
+        RecordingHandoffService service = new RecordingHandoffService();
+        try (SessionEndHandoffTrigger trigger = fastTrigger(service, gate)) {
+            SessionId session = SessionId.newId();
+
+            trigger.accept(observation(session, ObservationKind.SESSION_END));
+
+            assertThat(service.sessions).as("no generation while the gate is paused").isEmpty();
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                    assertThat(service.sessions).containsExactly(session));
+        }
+    }
+
+    @Test
+    void retriesGiveUpAfterMaxAttempts() throws Exception {
+        // A quota window that never reopens must not retry forever: MAX_ATTEMPTS bounds the loop.
+        RecordingHandoffService service = new RecordingHandoffService();
+        service.failure = retryable429();
+        service.failuresRemaining.set(Integer.MAX_VALUE);
+        try (SessionEndHandoffTrigger trigger = fastTrigger(service, new LlmRateLimitGate())) {
+
+            trigger.accept(observation(SessionId.newId(), ObservationKind.SESSION_END));
+
+            await().atMost(Duration.ofSeconds(10)).untilAsserted(() ->
+                    assertThat(service.sessions).hasSize(SessionEndHandoffTrigger.MAX_ATTEMPTS));
+            Thread.sleep(300); // no further attempts after the cap
+            assertThat(service.sessions).hasSize(SessionEndHandoffTrigger.MAX_ATTEMPTS);
         }
     }
 }
