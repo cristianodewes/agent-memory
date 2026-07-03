@@ -197,10 +197,11 @@ final class HttpJsonClient {
             try {
                 long seconds = Long.parseLong(header.strip());
                 if (seconds > 0) {
-                    return seconds * 1000L;
+                    return Math.multiplyExact(seconds, 1000L);
                 }
-            } catch (NumberFormatException ignored) {
-                // HTTP-date form (or garbage): fall through to the body hint.
+            } catch (NumberFormatException | ArithmeticException ignored) {
+                // HTTP-date form, garbage, or an absurd value that overflows: fall through to the
+                // body hint rather than propagate a wrapped/negative pause.
             }
         }
         String body = response.body();
@@ -208,10 +209,10 @@ final class HttpJsonClient {
             try {
                 long seconds = json.readTree(body).path("error").path("resets_in_seconds").asLong(0);
                 if (seconds > 0) {
-                    return seconds * 1000L;
+                    return Math.multiplyExact(seconds, 1000L);
                 }
             } catch (RuntimeException ignored) {
-                // Non-JSON error body: no hint.
+                // Non-JSON error body (or an overflowing value): no hint.
             }
         }
         return 0L;

@@ -80,8 +80,9 @@ class WikiFileWatcherScanTest {
         Files.writeString(projectDir.resolve(SessionLog.LOG_FILE_NAME),
                 "## [2026-07-03T12:41:19Z] SessionStart\n## [2026-07-03T12:42:14Z] PreToolUse | tool: Glob\n",
                 StandardCharsets.UTF_8);
-        Files.writeString(projectDir.resolve("notes.md"),
-                validPage("Notes", "notes.md", "external edit\n"), StandardCharsets.UTF_8);
+        // Atomic write: the live poller (50ms) must never observe a half-written page, or a spurious
+        // "malformed wiki file" WARN would flake the noneMatch assertion below.
+        writeAtomic(projectDir.resolve("notes.md"), validPage("Notes", "notes.md", "external edit\n"));
 
         // The real page is reconciled into the index…
         await().atMost(Duration.ofSeconds(5)).untilAsserted(() ->
@@ -101,6 +102,13 @@ class WikiFileWatcherScanTest {
         assertThat(appender.list)
                 .noneMatch(e -> e.getFormattedMessage().contains("malformed wiki file"));
         assertThat(pages.createdTitles).hasSize(1);
+    }
+
+    /** Write via a temp sibling + atomic move so the live poller never sees a half-written page. */
+    private static void writeAtomic(Path target, String content) throws Exception {
+        Path tmp = Files.createTempFile(target.getParent(), ".test-", ".tmp");
+        Files.writeString(tmp, content, StandardCharsets.UTF_8);
+        Files.move(tmp, target, java.nio.file.StandardCopyOption.ATOMIC_MOVE);
     }
 
     /** A well-formed page file (frontmatter + body) that {@link MarkdownDocument#parse} accepts. */

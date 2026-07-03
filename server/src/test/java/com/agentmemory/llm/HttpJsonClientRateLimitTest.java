@@ -73,6 +73,18 @@ class HttpJsonClientRateLimitTest {
     }
 
     @Test
+    void anAbsurdRetryAfterIsTreatedAsNoHintInsteadOfOverflowing() throws Exception {
+        // Long.MAX_VALUE seconds would wrap negative under a naive * 1000; the parse must degrade to
+        // "no hint" (the body here carries none either), never a wrapped/negative pause.
+        try (StubHttpServer stub =
+                StubHttpServer.start(429, "{}", Map.of("Retry-After", "9223372036854775807"))) {
+            LlmException e = callAndCatch(stub);
+
+            assertThat(e.retryAfterMillis()).isZero();
+        }
+    }
+
+    @Test
     void non429FailuresCarryNoHint() throws Exception {
         // Even with a Retry-After header present, only a 429 is a quota signal.
         try (StubHttpServer stub =
