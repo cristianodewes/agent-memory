@@ -63,6 +63,32 @@ final class StubHttpServer implements AutoCloseable {
     }
 
     /**
+     * As {@link #start(int, String)}, but also setting the given response headers — for exercising
+     * header-driven client behaviour (e.g. {@code Retry-After} on a 429, issue #148).
+     */
+    static StubHttpServer start(int status, String body,
+            java.util.Map<String, String> responseHeaders) throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        StubHttpServer stub = new StubHttpServer(server);
+        server.createContext("/", (HttpExchange exchange) -> {
+            String requestBody = readBody(exchange);
+            stub.lastRequestBody.set(requestBody);
+            stub.lastRequestHeaders.set(exchange.getRequestHeaders());
+            URI uri = exchange.getRequestURI();
+            stub.lastRequestPath.set(uri == null ? null : uri.getPath());
+            byte[] response = body.getBytes(StandardCharsets.UTF_8);
+            exchange.getResponseHeaders().set("content-type", "application/json");
+            responseHeaders.forEach((k, v) -> exchange.getResponseHeaders().set(k, v));
+            exchange.sendResponseHeaders(status, response.length);
+            try (var os = exchange.getResponseBody()) {
+                os.write(response);
+            }
+        });
+        server.start();
+        return stub;
+    }
+
+    /**
      * Start a stub that replays a fixed sequence of {@code (status, body)} responses, one per request
      * (the last entry is repeated if more requests arrive). Lets a test drive the structured-output
      * fallback: first call returns {@code 400} (json_schema unsupported), second returns {@code 200}.

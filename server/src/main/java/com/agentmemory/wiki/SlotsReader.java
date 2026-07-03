@@ -5,12 +5,14 @@ import com.agentmemory.core.WorkspaceId;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SimpleFileVisitor;
+import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import java.util.stream.Stream;
 
 /**
  * Reads a project's memory slots from the wiki files — the source of truth (DD-002) — for the
@@ -59,21 +61,44 @@ public final class SlotsReader {
             return List.of();
         }
 
-        List<SlotView> out = new ArrayList<>();
-        try (Stream<Path> files = Files.walk(slotsDir)) {
-            List<Path> mdFiles = files
-                    .filter(Files::isRegularFile)
-                    .filter(p -> p.getFileName().toString().toLowerCase(java.util.Locale.ROOT).endsWith(".md"))
-                    .sorted(Comparator.comparing(Path::toString))
-                    .toList();
-            for (Path file : mdFiles) {
-                SlotView view = readSlot(file);
-                if (view != null) {
-                    out.add(view);
+        // walkFileTree with a tolerant visitor rather than Files.walk: page writes are atomic moves of
+        // short-lived tmp siblings and deletes happen concurrently, so an entry can vanish between the
+        // directory listing and the walker's stat. Files.walk rethrows that as an UncheckedIOException
+        // that would surface as a briefing error; skipping just the vanished entry keeps the read
+        // best-effort (issue #148).
+        List<Path> mdFiles = new ArrayList<>();
+        try {
+            Files.walkFileTree(slotsDir, new SimpleFileVisitor<>() {
+                @Override
+                public FileVisitResult visitFile(Path file, BasicFileAttributes attrs) {
+                    if (attrs.isRegularFile()
+                            && file.getFileName().toString()
+                                    .toLowerCase(java.util.Locale.ROOT).endsWith(".md")) {
+                        mdFiles.add(file);
+                    }
+                    return FileVisitResult.CONTINUE;
                 }
-            }
+
+                @Override
+                public FileVisitResult visitFileFailed(Path file, IOException exc) {
+                    return FileVisitResult.CONTINUE; // vanished mid-walk: skip it
+                }
+
+                @Override
+                public FileVisitResult postVisitDirectory(Path dir, IOException exc) {
+                    return FileVisitResult.CONTINUE; // directory vanished mid-walk: same story
+                }
+            });
         } catch (IOException e) {
             throw new UncheckedIOException("failed to list slots under " + slotsDir, e);
+        }
+        mdFiles.sort(Comparator.comparing(Path::toString));
+        List<SlotView> out = new ArrayList<>();
+        for (Path file : mdFiles) {
+            SlotView view = readSlot(file);
+            if (view != null) {
+                out.add(view);
+            }
         }
         out.sort(Comparator.comparing(SlotView::path));
         return out;

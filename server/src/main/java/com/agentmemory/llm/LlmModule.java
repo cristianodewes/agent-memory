@@ -36,6 +36,17 @@ public class LlmModule {
     }
 
     /**
+     * Shared runtime rate-limit state for the required chat provider (issue #148). The primary
+     * provider records every call outcome here (via {@link RateLimitTrackingLlmProvider}); the
+     * background dispatchers (consolidation, handoff) consult it before firing so an exhausted quota
+     * pauses the queues instead of burning one doomed LLM call per queued task.
+     */
+    @Bean
+    public LlmRateLimitGate llmRateLimitGate() {
+        return new LlmRateLimitGate();
+    }
+
+    /**
      * The required chat/consolidation provider, selected by {@code agent-memory.llm.auth.provider}.
      * Always present (DD-005); a missing/unknown provider key fails fast at bean creation.
      *
@@ -49,11 +60,14 @@ public class LlmModule {
      */
     @Bean
     @Primary
-    public LlmProvider llmProvider(ProviderFactory factory, AgentMemoryConfig config) {
+    public LlmProvider llmProvider(ProviderFactory factory, AgentMemoryConfig config,
+            LlmRateLimitGate rateLimitGate) {
         ProviderAuth auth = resolveLlmAuth(config);
         LlmProvider provider = factory.createLlmProvider(auth);
         log.info("LLM provider configured: id={}, model={}", provider.id(), provider.model());
-        return provider;
+        // Wrapped so every call outcome feeds the shared rate-limit gate (issue #148); the decorator
+        // is otherwise a pure pass-through and preserves id()/model()/probe() semantics.
+        return new RateLimitTrackingLlmProvider(provider, rateLimitGate);
     }
 
     /**

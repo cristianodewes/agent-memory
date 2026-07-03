@@ -181,7 +181,40 @@ final class HttpJsonClient {
         boolean retryable = status == 408 || status == 429 || status >= 500;
         String detail = truncate(response.body());
         String message = providerName + " request failed with HTTP " + status + ": " + detail;
-        throw new LlmException(message, null, retryable, status);
+        long retryAfterMillis = status == 429 ? rateLimitResetMillis(response) : 0L;
+        throw new LlmException(message, null, retryable, status, retryAfterMillis);
+    }
+
+    /**
+     * Extract a {@code 429}'s reset hint, in milliseconds: the {@code Retry-After} header
+     * (delta-seconds form), falling back to the {@code error.resets_in_seconds} field of the ChatGPT
+     * {@code usage_limit_reached} body (issue #148). Returns {@code 0} when neither is present or
+     * parseable — the hint is best-effort and must never turn a 429 into a different failure.
+     */
+    private long rateLimitResetMillis(HttpResponse<String> response) {
+        String header = response.headers().firstValue("retry-after").orElse(null);
+        if (header != null) {
+            try {
+                long seconds = Long.parseLong(header.strip());
+                if (seconds > 0) {
+                    return seconds * 1000L;
+                }
+            } catch (NumberFormatException ignored) {
+                // HTTP-date form (or garbage): fall through to the body hint.
+            }
+        }
+        String body = response.body();
+        if (body != null && !body.isBlank()) {
+            try {
+                long seconds = json.readTree(body).path("error").path("resets_in_seconds").asLong(0);
+                if (seconds > 0) {
+                    return seconds * 1000L;
+                }
+            } catch (RuntimeException ignored) {
+                // Non-JSON error body: no hint.
+            }
+        }
+        return 0L;
     }
 
     /** Serialize {@code form} to {@code k=v&…} with URL-encoded keys and values (UTF-8). */

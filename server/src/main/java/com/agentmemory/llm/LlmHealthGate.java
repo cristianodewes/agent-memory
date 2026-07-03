@@ -56,6 +56,17 @@ public final class LlmHealthGate {
         try {
             llmProvider.probe();
         } catch (RuntimeException e) {
+            if (isRateLimited(e)) {
+                // A 429 means the credentials were accepted — the quota window is just exhausted.
+                // Aborting here would crash-loop a restarted container until the window resets
+                // (issue #148), so degrade instead: LLM-backed features defer/retry via the
+                // rate-limit gate until the quota recovers.
+                log.warn("LLM provider '{}' (model {}) is rate-limited at startup (HTTP 429): {}. "
+                                + "Credentials look valid; continuing startup — LLM-backed features "
+                                + "will defer until the quota window resets.",
+                        llmProvider.id(), llmProvider.model(), e.getMessage());
+                return;
+            }
             // Fail-fast: the LLM is a required dependency (DD-005, invariant #13).
             throw new LlmException(
                     "Required LLM provider '" + llmProvider.id() + "' (model " + llmProvider.model()
@@ -65,6 +76,16 @@ public final class LlmHealthGate {
                     e);
         }
         log.info("LLM provider '{}' is reachable.", llmProvider.id());
+    }
+
+    /** Whether {@code t} (or a cause) is an HTTP 429 — quota exhausted, not a config problem. */
+    private static boolean isRateLimited(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof LlmException llm && llm.httpStatus() == 429) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void verifyEmbeddings() {

@@ -2,6 +2,7 @@ package com.agentmemory.handoff;
 
 import com.agentmemory.hooks.IngestService;
 import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.LlmRateLimitGate;
 import com.agentmemory.store.HandoffRepository;
 import com.agentmemory.store.StoreConfiguration;
 import javax.sql.DataSource;
@@ -47,8 +48,9 @@ public class HandoffConfiguration {
      */
     @Bean(destroyMethod = "close")
     @ConditionalOnSingleCandidate(DataSource.class)
-    public SessionEndHandoffTrigger sessionEndHandoffTrigger(HandoffService handoffService) {
-        return new SessionEndHandoffTrigger(handoffService);
+    public SessionEndHandoffTrigger sessionEndHandoffTrigger(
+            HandoffService handoffService, LlmRateLimitGate llmRateLimitGate) {
+        return new SessionEndHandoffTrigger(handoffService, llmRateLimitGate);
     }
 
     /**

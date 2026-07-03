@@ -114,7 +114,12 @@ class RecallProviderSeamWiringTest {
                     assertThat(ctx).hasNotFailed();
                     // The independent recall provider was built (distinct from the primary) but never probed.
                     assertThat(ctx.getBean("recallLlmProvider", LlmProvider.class)).isSameAs(failingRecall);
-                    assertThat(ctx.getBean("llmProvider", LlmProvider.class)).isSameAs(healthy);
+                    // Since issue #148 the primary bean is the rate-limit-tracking decorator, so raw
+                    // instance identity no longer holds; the delegated model proves the chat provider
+                    // (not recall-x) is behind it.
+                    assertThat(ctx.getBean("llmProvider", LlmProvider.class).model())
+                            .isEqualTo(healthy.model())
+                            .isNotEqualTo(failingRecall.model());
                     // Sanity: it really would have aborted startup had it been probed.
                     org.assertj.core.api.Assertions.assertThatThrownBy(failingRecall::probe)
                             .isInstanceOf(LlmException.class);
