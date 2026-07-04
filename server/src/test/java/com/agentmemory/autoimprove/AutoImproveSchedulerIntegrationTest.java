@@ -124,7 +124,7 @@ class AutoImproveSchedulerIntegrationTest {
 
     private static AutoImproveProperties props(int maxAttempts, int maxPerTick) {
         return new AutoImproveProperties(
-                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null), null);
+                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null), null, null);
     }
 
     private static ProposedWrite ruleEdit() {
@@ -161,7 +161,7 @@ class AutoImproveSchedulerIntegrationTest {
         AutoImproveProperties props = props(3, 20);
 
         ProposalSource source = (scope, s) -> List.of(ruleEdit());
-        new AutoImproveScheduler(state, gate(props), () -> source, props).tick();
+        new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props).tick();
 
         assertThat(applied).hasSize(1);
         assertThat(reviewStatus(session)).isEqualTo("done");
@@ -197,7 +197,7 @@ class AutoImproveSchedulerIntegrationTest {
             holder[0].tick(); // re-enter: must be a no-op while the outer tick holds the guard
             return List.of(ruleEdit());
         };
-        holder[0] = new AutoImproveScheduler(state, gate(props), () -> source, props);
+        holder[0] = new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props);
         holder[0].tick();
 
         assertThat(sourceCalls.get()).isEqualTo(1); // the re-entrant tick did not process again
@@ -217,7 +217,7 @@ class AutoImproveSchedulerIntegrationTest {
             sourceCalls.incrementAndGet();
             return List.of(ruleEdit());
         };
-        new AutoImproveScheduler(state, gate(props), () -> source, props).tick();
+        new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props).tick();
 
         assertThat(watermarkCount(seed)).isEqualTo(1); // watermark established
         assertThat(sourceCalls.get()).isZero(); // but nothing before it reviewed
@@ -236,7 +236,7 @@ class AutoImproveSchedulerIntegrationTest {
             sourceCalls.incrementAndGet();
             throw new RuntimeException("review blew up");
         };
-        AutoImproveScheduler scheduler = new AutoImproveScheduler(state, gate(props), () -> boom, props);
+        AutoImproveScheduler scheduler = new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(boom), props);
 
         scheduler.tick();
         assertThat(reviewStatus(session)).isEqualTo("failed");
@@ -249,5 +249,88 @@ class AutoImproveSchedulerIntegrationTest {
         assertThat(sourceCalls.get()).isEqualTo(2);
         assertThat(reviewStatus(session)).isEqualTo("failed");
         assertThat(reviewAttempts(session)).isEqualTo(2);
+    }
+
+    @Test
+    void sourcesKeepIndependentClaims() {
+        Seed seed = freshScope();
+        SessionId session = seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // The rule-based curator (default source id) reviews the session and marks it done...
+        ProposalSource curator = (scope, s) -> List.of(ruleEdit());
+        new AutoImproveScheduler(state, gate(props), () -> List.of(curator), props).tick();
+        assertThat(applied).hasSize(1);
+
+        // ...which must NOT hide it from the LLM review engine (#150, V16): its own claim namespace
+        // still sees the session as due and reviews it independently.
+        List<SessionId> reviewed = new ArrayList<>();
+        ProposalSource review = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                reviewed.add(s);
+                return List.of();
+            }
+
+            @Override
+            public String id() {
+                return "review";
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(review), props).tick();
+        assertThat(reviewed).containsExactly(session);
+    }
+
+    @Test
+    void aNotReadySourceConsumesNoClaims() {
+        Seed seed = freshScope();
+        SessionId session = seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // ready()=false is deferral, not failure (#148/#150): nothing is claimed, no attempt is
+        // burned, and the session stays due for a later tick.
+        ProposalSource paused = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                throw new AssertionError("must not review while not ready");
+            }
+
+            @Override
+            public boolean ready(int backlog) {
+                return false;
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(paused), props).tick();
+        assertThat(reviewStatus(session)).isNull();
+
+        ProposalSource open = (scope, s) -> List.of(ruleEdit());
+        new AutoImproveScheduler(state, gate(props), () -> List.of(open), props).tick();
+        assertThat(reviewStatus(session)).isEqualTo("done");
+    }
+
+    @Test
+    void endTickAggregatesAreSubmittedThroughTheGate() {
+        Seed seed = freshScope();
+        seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // The review engine's tick report flows through the same gate, with no owning session.
+        ProposalSource reporting = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                return List.of();
+            }
+
+            @Override
+            public List<ScopedWrite> endTick() {
+                return List.of(new ScopedWrite(seed.scope(), ruleEdit()));
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(reporting), props).tick();
+
+        assertThat(applied).hasSize(1);
+        List<PendingWriteRecord> report = pending.recent(seed.scope(), 10);
+        assertThat(report).hasSize(1);
+        assertThat(report.get(0).status()).isEqualTo(PendingWriteStatus.APPLIED);
     }
 }

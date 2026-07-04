@@ -1,13 +1,18 @@
 package com.agentmemory.autoimprove;
 
+import com.agentmemory.consolidate.SessionObservationReader;
 import com.agentmemory.curate.CuratorService;
 import com.agentmemory.eval.EvalGate;
 import com.agentmemory.forget.ForgetSweepService;
 import com.agentmemory.links.WikiLinkParser;
+import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.LlmRateLimitGate;
 import com.agentmemory.mcp.MemoryWriteService;
+import com.agentmemory.recall.RecallService;
 import com.agentmemory.store.PageRepository;
 import javax.sql.DataSource;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnSingleCandidate;
@@ -36,7 +41,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
             "com.agentmemory.curate.CuratorConfiguration",
             "com.agentmemory.eval.EvalGateConfiguration",
             "com.agentmemory.forget.ForgetConfiguration",
-            "com.agentmemory.links.LinksConfiguration"
+            "com.agentmemory.links.LinksConfiguration",
+            "com.agentmemory.consolidate.ConsolidateConfiguration",
+            "com.agentmemory.recall.RecallConfiguration"
         })
 @EnableConfigurationProperties(AutoImproveProperties.class)
 public class AutoImproveConfiguration {
@@ -100,10 +107,32 @@ public class AutoImproveConfiguration {
     }
 
     /**
-     * The out-of-band review scheduler. Created when its data + gate beans exist, but inert by default:
-     * off unless {@code agent-memory.auto-improve.scheduler.enabled=true}, and a no-op even then until a
-     * {@link ProposalSource} is wired (deferred to #29/#19). The source is passed as a supplier over an
-     * {@link ObjectProvider} so the scheduler resolves whatever source lands later without re-wiring.
+     * The LLM session-review engine (issue #150) — the second {@link ProposalSource}, composing with the
+     * rule-based curator adapter above under its own claim namespace ({@code source='review'}, V16).
+     * Binds the {@code reviewLlmProvider} seam by name (route review to a cheap model, default = the
+     * rate-limit-tracking primary, #148) and the plain hybrid {@code recallService} for staging-time
+     * dedup (never the {@code @Primary} LLM-recall decorator — dedup must not burn extra LLM calls).
+     * Disabled via {@code agent-memory.auto-improve.review.enabled=false} (default on).
+     */
+    @Bean
+    @ConditionalOnSingleCandidate(DataSource.class)
+    @ConditionalOnBean({SessionObservationReader.class, PageRepository.class, LlmRateLimitGate.class})
+    public SessionReviewProposalSource sessionReviewProposalSource(
+            SessionObservationReader reader,
+            PageRepository pages,
+            @Qualifier("reviewLlmProvider") LlmProvider reviewLlm,
+            @Qualifier("recallService") ObjectProvider<RecallService> recall,
+            LlmRateLimitGate rateLimitGate,
+            AutoImproveProperties props) {
+        return new SessionReviewProposalSource(
+                reader, pages, reviewLlm, recall::getIfAvailable, rateLimitGate, props);
+    }
+
+    /**
+     * The out-of-band review scheduler. Created when its data + gate beans exist; on by default (#150,
+     * {@code agent-memory.auto-improve.scheduler.enabled}), and a no-op until at least one
+     * {@link ProposalSource} is wired. The sources are passed as a supplier over an
+     * {@link ObjectProvider} so the scheduler resolves whatever engines are present without re-wiring.
      */
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
@@ -111,9 +140,9 @@ public class AutoImproveConfiguration {
     public AutoImproveScheduler autoImproveScheduler(
             JdbcAutoImproveStateRepository state,
             AutoImproveGate gate,
-            ObjectProvider<ProposalSource> source,
+            ObjectProvider<ProposalSource> sources,
             AutoImproveProperties props) {
-        return new AutoImproveScheduler(state, gate, source::getIfAvailable, props);
+        return new AutoImproveScheduler(state, gate, () -> sources.orderedStream().toList(), props);
     }
 
     // --- issue #101: scope-level curator corrective-action loop ------------------------------------

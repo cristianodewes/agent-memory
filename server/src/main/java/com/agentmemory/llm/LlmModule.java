@@ -134,31 +134,51 @@ public class LlmModule {
      */
     static LlmProvider resolveRecallProvider(ProviderFactory factory, AgentMemoryConfig config,
             LlmProvider primary, ProviderAuth recallAuth) {
-        boolean providerSet = recallAuth != null && recallAuth.isConfigured();
-        boolean modelOnly = !providerSet && recallAuth != null
-                && recallAuth.model() != null && !recallAuth.model().isBlank();
+        return resolveSecondaryProvider(
+                factory, config, primary, recallAuth, "Recall", "agent-memory.recall.llm.auth");
+    }
+
+    /**
+     * Resolve an optional secondary-axis provider (recall #146, auto-improve review #150) from its own
+     * auth block, defaulting to the primary chat provider. Never throws — a malformed secondary auth
+     * degrades to {@code primary} with a warning, because every secondary axis is best-effort.
+     *
+     * <ul>
+     *   <li><strong>{@code provider} set</strong> → an independent provider built from {@code auth}
+     *       (e.g. a cheap mini/flash model on its own API key), distinct from chat/consolidation.</li>
+     *   <li><strong>only {@code model} set</strong> → the chat auth ({@link #resolveLlmAuth}, including the
+     *       OAuth token-file default) with the model swapped — an alternate model on the same
+     *       provider/credential.</li>
+     *   <li><strong>nothing set</strong> → the same {@code primary} instance (no second client).</li>
+     * </ul>
+     */
+    static LlmProvider resolveSecondaryProvider(ProviderFactory factory, AgentMemoryConfig config,
+            LlmProvider primary, ProviderAuth auth, String axis, String configKey) {
+        boolean providerSet = auth != null && auth.isConfigured();
+        boolean modelOnly = !providerSet && auth != null
+                && auth.model() != null && !auth.model().isBlank();
         if (!providerSet && !modelOnly) {
-            // Default: recall reuses the primary chat provider — no second provider, no behaviour change.
-            log.info("Recall LLM provider: reusing the primary chat provider '{}' "
-                    + "(set agent-memory.recall.llm.auth to route recall to a separate model).", primary.id());
+            // Default: the axis reuses the primary chat provider — no second provider, no behaviour change.
+            log.info("{} LLM provider: reusing the primary chat provider '{}' "
+                    + "(set {} to route it to a separate model).", axis, primary.id(), configKey);
             return primary;
         }
         try {
             ProviderAuth effective = providerSet
-                    ? recallAuth
-                    : withModel(resolveLlmAuth(config), recallAuth.model());
+                    ? auth
+                    : withModel(resolveLlmAuth(config), auth.model());
             LlmProvider provider = factory.createLlmProvider(effective);
-            log.info("Recall LLM provider configured ({}): id={}, model={}",
-                    providerSet ? "independent provider" : "chat auth, model override",
+            log.info("{} LLM provider configured ({}): id={}, model={}",
+                    axis, providerSet ? "independent provider" : "chat auth, model override",
                     provider.id(), provider.model());
             return provider;
         } catch (RuntimeException e) {
-            // Best-effort axis: never let a misconfigured recall model abort startup (it would only
-            // degrade recall to the RRF/bullets fast path). Fall back to the primary and log loudly.
-            log.warn("Could not build the recall LLM provider from 'agent-memory.recall.llm.auth' ({}). "
-                    + "Falling back to the primary chat provider '{}' for recall; recall stays best-effort "
-                    + "(degrading to RRF/bullets on any further error) and startup is unaffected.",
-                    e.getMessage(), primary.id());
+            // Best-effort axis: never let a misconfigured secondary model abort startup. Fall back to
+            // the primary and log loudly.
+            log.warn("Could not build the {} LLM provider from '{}' ({}). "
+                    + "Falling back to the primary chat provider '{}'; the axis stays best-effort "
+                    + "and startup is unaffected.",
+                    axis, configKey, e.getMessage(), primary.id());
             return primary;
         }
     }
@@ -166,6 +186,31 @@ public class LlmModule {
     /** A copy of {@code base} with only the model swapped (used for the recall model-only override). */
     private static ProviderAuth withModel(ProviderAuth base, String model) {
         return new ProviderAuth(base.provider(), base.apiKey(), base.baseUrl(), model, base.oauth());
+    }
+
+    /**
+     * The provider the auto-improve session-review engine uses (issue #150), mirroring the recall seam
+     * (#146): route the background review calls to a cheaper model via
+     * {@code agent-memory.auto-improve.review.auth}, defaulting to the primary chat provider — which is
+     * the {@link RateLimitTrackingLlmProvider}-decorated instance, so review outcomes feed the shared
+     * {@link LlmRateLimitGate} (#148). An independent review provider (own credential/quota) is
+     * deliberately NOT decorated: its 429s must not pause the primary's queues. Best-effort like recall:
+     * never probed at startup, and a misconfigured block falls back to the primary with a warning.
+     *
+     * <p>The {@code AutoImproveProperties} carrier is injected via {@link ObjectProvider} because it is
+     * registered by the (auto-configured) {@code AutoImproveConfiguration}, which need not be present
+     * when this module is loaded in isolation; when absent the review axis simply reuses the primary.
+     */
+    @Bean
+    public LlmProvider reviewLlmProvider(
+            ProviderFactory factory,
+            AgentMemoryConfig config,
+            @Qualifier("llmProvider") LlmProvider llmProvider,
+            ObjectProvider<com.agentmemory.autoimprove.AutoImproveProperties> reviewProps) {
+        com.agentmemory.autoimprove.AutoImproveProperties props = reviewProps.getIfAvailable();
+        ProviderAuth auth = props == null || props.review() == null ? null : props.review().auth();
+        return resolveSecondaryProvider(
+                factory, config, llmProvider, auth, "Review", "agent-memory.auto-improve.review.auth");
     }
 
     /**

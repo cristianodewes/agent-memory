@@ -11,9 +11,14 @@ import org.springframework.jdbc.core.RowMapper;
 
 /**
  * {@link JdbcTemplate}-backed scheduler state for the auto-improve loop (issue #30): the per-project
- * first-run watermark and per-session review claims (V14). These are what make the scheduler safe to run
- * repeatedly — it never retro-reviews history, never double-reviews a session, and gives up after a
- * bounded number of attempts.
+ * first-run watermark and per-session review claims (V14, per-source since V16/#150). These are what
+ * make the scheduler safe to run repeatedly — it never retro-reviews history, never double-reviews a
+ * session <em>for the same source</em>, and gives up after a bounded number of attempts.
+ *
+ * <p>Claims are namespaced by {@link ProposalSource#id() source} (#150): the rule-based curator's
+ * {@code done} must not hide a session from the LLM review engine, and vice versa. The watermark stays
+ * per-project (source-agnostic) — "what history is off-limits" is a property of the project, not of
+ * the engine reviewing it.
  */
 public class JdbcAutoImproveStateRepository {
 
@@ -55,29 +60,32 @@ public class JdbcAutoImproveStateRepository {
     }
 
     /**
-     * The finished sessions due for review across all projects: those finished strictly after their
-     * project's {@link #establishWatermarks() watermark} that are either not yet reviewed or are
-     * {@code failed} but still under the attempt cap (so a permanently-failing session stops being fed).
-     * Oldest-finished first, capped at {@code limit}. {@code claimed}/{@code done} sessions are excluded,
-     * so concurrent ticks don't double-feed and a completed review is never re-fed.
+     * The finished sessions due for review by {@code source} across all projects: those finished
+     * strictly after their project's {@link #establishWatermarks() watermark} that this source has
+     * either not yet reviewed or left {@code failed} while still under the attempt cap (so a
+     * permanently-failing session stops being fed). Oldest-finished first, capped at {@code limit}.
+     * Another source's claims are invisible here (#150): the curator finishing a session leaves it due
+     * for the review engine.
      *
+     * @param source      the claiming source's {@link ProposalSource#id()}.
      * @param maxAttempts the attempt cap that gates retry of {@code failed} sessions.
      * @param limit       the most sessions to return (a tick's bounded work).
      * @return due sessions, oldest finished first.
      */
-    public List<DueSession> dueSessions(int maxAttempts, int limit) {
+    public List<DueSession> dueSessions(String source, int maxAttempts, int limit) {
         return jdbc.query(
                 "SELECT s.id, s.workspace, s.project "
                         + "FROM sessions s "
                         + "JOIN auto_improve_watermark w "
                         + "  ON w.workspace = s.workspace AND w.project = s.project "
-                        + "LEFT JOIN auto_improve_session_review r ON r.session_id = s.id "
+                        + "LEFT JOIN auto_improve_session_review r "
+                        + "  ON r.session_id = s.id AND r.source = ? "
                         + "WHERE s.ended_at IS NOT NULL "
                         + "  AND s.ended_at > w.established_at "
                         + "  AND (r.session_id IS NULL OR (r.status = 'failed' AND r.attempts < ?)) "
                         + "ORDER BY s.ended_at ASC "
                         + "LIMIT ?",
-                DUE_MAPPER, maxAttempts, Math.max(1, limit));
+                DUE_MAPPER, source, maxAttempts, Math.max(1, limit));
     }
 
     private static final RowMapper<DueSession> DUE_MAPPER = (rs, n) -> new DueSession(
@@ -85,41 +93,42 @@ public class JdbcAutoImproveStateRepository {
             new SessionId(rs.getObject("id", UUID.class)));
 
     /**
-     * Atomically claim a session for review. A brand-new session is claimed; an already-{@code done}
-     * session is never re-claimed; a previously-{@code claimed}/{@code failed} session is re-claimed only
-     * while under the attempt cap (so a permanently-failing session stops retrying).
+     * Atomically claim a session for review by {@code source}. A brand-new (session, source) pair is
+     * claimed; an already-{@code done} one is never re-claimed; a previously-{@code claimed}/{@code
+     * failed} one is re-claimed only while under the attempt cap (so a permanently-failing session
+     * stops retrying). Claims of other sources are unaffected (#150).
      *
      * @return {@code true} if the caller acquired the claim and should review the session.
      */
-    public boolean claim(Scope scope, SessionId session, int maxAttempts) {
+    public boolean claim(Scope scope, SessionId session, int maxAttempts, String source) {
         List<Integer> attempts = jdbc.query(
                 "INSERT INTO auto_improve_session_review "
-                        + "(session_id, workspace, project, status, attempts) "
-                        + "VALUES (?, ?, ?, 'claimed', 1) "
-                        + "ON CONFLICT (session_id) DO UPDATE SET "
+                        + "(session_id, source, workspace, project, status, attempts) "
+                        + "VALUES (?, ?, ?, ?, 'claimed', 1) "
+                        + "ON CONFLICT (session_id, source) DO UPDATE SET "
                         + "attempts = auto_improve_session_review.attempts + 1, "
                         + "claimed_at = now(), status = 'claimed' "
                         + "WHERE auto_improve_session_review.status <> 'done' "
                         + "AND auto_improve_session_review.attempts < ? "
                         + "RETURNING attempts",
                 (rs, n) -> rs.getInt("attempts"),
-                session.value(), scope.workspaceSlug(), scope.projectSlug(), maxAttempts);
+                session.value(), source, scope.workspaceSlug(), scope.projectSlug(), maxAttempts);
         return !attempts.isEmpty();
     }
 
-    /** Mark a claimed session's review finished successfully (terminal — never re-reviewed). */
-    public void markDone(SessionId session) {
+    /** Mark a source's claimed review finished successfully (terminal — never re-reviewed by it). */
+    public void markDone(SessionId session, String source) {
         jdbc.update(
                 "UPDATE auto_improve_session_review SET status = 'done', finished_at = now(), "
-                        + "last_error = NULL WHERE session_id = ?",
-                session.value());
+                        + "last_error = NULL WHERE session_id = ? AND source = ?",
+                session.value(), source);
     }
 
-    /** Mark a claimed session's review failed (retryable while under the attempt cap), recording why. */
-    public void markFailed(SessionId session, String error) {
+    /** Mark a source's claimed review failed (retryable while under the attempt cap), recording why. */
+    public void markFailed(SessionId session, String source, String error) {
         jdbc.update(
                 "UPDATE auto_improve_session_review SET status = 'failed', finished_at = now(), "
-                        + "last_error = ? WHERE session_id = ?",
-                error, session.value());
+                        + "last_error = ? WHERE session_id = ? AND source = ?",
+                error, session.value(), source);
     }
 }

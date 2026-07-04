@@ -78,7 +78,7 @@ class AutoImproveGateIntegrationTest {
 
     private AutoImproveGate gate(boolean requireApproval) {
         AutoImproveProperties props = new AutoImproveProperties(
-                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null), null);
+                requireApproval, 3, 20, new AutoImproveProperties.Scheduler(false, null), null, null);
         return new AutoImproveGate(
                 pending, (scope, write) -> applied.add(write), props, disabledEvalGate());
     }
@@ -187,19 +187,19 @@ class AutoImproveGateIntegrationTest {
         SessionId session = SessionId.newId();
         int maxAttempts = 2;
 
-        assertThat(state.claim(scope, session, maxAttempts)).isTrue(); // attempt 1
-        state.markFailed(session, "boom");
-        assertThat(state.claim(scope, session, maxAttempts)).isTrue(); // attempt 2 (under cap)
-        state.markFailed(session, "boom again");
-        assertThat(state.claim(scope, session, maxAttempts)).isFalse(); // cap reached → no more retries
+        assertThat(state.claim(scope, session, maxAttempts, "curator")).isTrue(); // attempt 1
+        state.markFailed(session, "curator", "boom");
+        assertThat(state.claim(scope, session, maxAttempts, "curator")).isTrue(); // attempt 2 (under cap)
+        state.markFailed(session, "curator", "boom again");
+        assertThat(state.claim(scope, session, maxAttempts, "curator")).isFalse(); // cap reached → no more retries
     }
 
     @Test
     void aDoneSessionIsNeverReclaimed() {
         Scope scope = freshScope();
         SessionId session = SessionId.newId();
-        assertThat(state.claim(scope, session, 3)).isTrue();
-        state.markDone(session);
-        assertThat(state.claim(scope, session, 3)).isFalse(); // terminal
+        assertThat(state.claim(scope, session, 3, "curator")).isTrue();
+        state.markDone(session, "curator");
+        assertThat(state.claim(scope, session, 3, "curator")).isFalse(); // terminal
     }
 }
