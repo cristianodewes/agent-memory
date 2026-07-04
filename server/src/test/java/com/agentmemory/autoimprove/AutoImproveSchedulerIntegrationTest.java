@@ -2,8 +2,26 @@ package com.agentmemory.autoimprove;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.agentmemory.consolidate.SessionObservationReader;
+import com.agentmemory.core.Identity;
+import com.agentmemory.core.Observation;
+import com.agentmemory.core.ObservationId;
+import com.agentmemory.core.ObservationKind;
+import com.agentmemory.core.PageId;
+import com.agentmemory.core.ProjectId;
+import com.agentmemory.core.Session;
 import com.agentmemory.core.SessionId;
+import com.agentmemory.core.Uuid7;
+import com.agentmemory.core.WorkspaceId;
 import com.agentmemory.eval.EvalGate;
+import com.agentmemory.llm.ChatRequest;
+import com.agentmemory.llm.ChatResponse;
+import com.agentmemory.llm.LlmProvider;
+import com.agentmemory.llm.LlmRateLimitGate;
+import com.agentmemory.store.PageRecord;
+import com.agentmemory.store.PageRepository;
+import com.agentmemory.store.PageWriteCallback;
+import java.util.Optional;
 import com.agentmemory.eval.EvalGateProperties;
 import com.agentmemory.recall.Scope;
 import java.nio.file.Path;
@@ -124,7 +142,7 @@ class AutoImproveSchedulerIntegrationTest {
 
     private static AutoImproveProperties props(int maxAttempts, int maxPerTick) {
         return new AutoImproveProperties(
-                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null), null);
+                false, maxAttempts, maxPerTick, new AutoImproveProperties.Scheduler(false, null), null, null);
     }
 
     private static ProposedWrite ruleEdit() {
@@ -161,7 +179,7 @@ class AutoImproveSchedulerIntegrationTest {
         AutoImproveProperties props = props(3, 20);
 
         ProposalSource source = (scope, s) -> List.of(ruleEdit());
-        new AutoImproveScheduler(state, gate(props), () -> source, props).tick();
+        new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props).tick();
 
         assertThat(applied).hasSize(1);
         assertThat(reviewStatus(session)).isEqualTo("done");
@@ -197,7 +215,7 @@ class AutoImproveSchedulerIntegrationTest {
             holder[0].tick(); // re-enter: must be a no-op while the outer tick holds the guard
             return List.of(ruleEdit());
         };
-        holder[0] = new AutoImproveScheduler(state, gate(props), () -> source, props);
+        holder[0] = new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props);
         holder[0].tick();
 
         assertThat(sourceCalls.get()).isEqualTo(1); // the re-entrant tick did not process again
@@ -217,7 +235,7 @@ class AutoImproveSchedulerIntegrationTest {
             sourceCalls.incrementAndGet();
             return List.of(ruleEdit());
         };
-        new AutoImproveScheduler(state, gate(props), () -> source, props).tick();
+        new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(source), props).tick();
 
         assertThat(watermarkCount(seed)).isEqualTo(1); // watermark established
         assertThat(sourceCalls.get()).isZero(); // but nothing before it reviewed
@@ -236,7 +254,7 @@ class AutoImproveSchedulerIntegrationTest {
             sourceCalls.incrementAndGet();
             throw new RuntimeException("review blew up");
         };
-        AutoImproveScheduler scheduler = new AutoImproveScheduler(state, gate(props), () -> boom, props);
+        AutoImproveScheduler scheduler = new AutoImproveScheduler(state, gate(props), () -> java.util.List.of(boom), props);
 
         scheduler.tick();
         assertThat(reviewStatus(session)).isEqualTo("failed");
@@ -249,5 +267,196 @@ class AutoImproveSchedulerIntegrationTest {
         assertThat(sourceCalls.get()).isEqualTo(2);
         assertThat(reviewStatus(session)).isEqualTo("failed");
         assertThat(reviewAttempts(session)).isEqualTo(2);
+    }
+
+    @Test
+    void sourcesKeepIndependentClaims() {
+        Seed seed = freshScope();
+        SessionId session = seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // The rule-based curator (default source id) reviews the session and marks it done...
+        ProposalSource curator = (scope, s) -> List.of(ruleEdit());
+        new AutoImproveScheduler(state, gate(props), () -> List.of(curator), props).tick();
+        assertThat(applied).hasSize(1);
+
+        // ...which must NOT hide it from the LLM review engine (#150, V16): its own claim namespace
+        // still sees the session as due and reviews it independently.
+        List<SessionId> reviewed = new ArrayList<>();
+        ProposalSource review = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                reviewed.add(s);
+                return List.of();
+            }
+
+            @Override
+            public String id() {
+                return "review";
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(review), props).tick();
+        assertThat(reviewed).containsExactly(session);
+    }
+
+    @Test
+    void aNotReadySourceConsumesNoClaims() {
+        Seed seed = freshScope();
+        SessionId session = seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // ready()=false is deferral, not failure (#148/#150): nothing is claimed, no attempt is
+        // burned, and the session stays due for a later tick.
+        ProposalSource paused = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                throw new AssertionError("must not review while not ready");
+            }
+
+            @Override
+            public boolean ready(int backlog) {
+                return false;
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(paused), props).tick();
+        assertThat(reviewStatus(session)).isNull();
+
+        ProposalSource open = (scope, s) -> List.of(ruleEdit());
+        new AutoImproveScheduler(state, gate(props), () -> List.of(open), props).tick();
+        assertThat(reviewStatus(session)).isEqualTo("done");
+    }
+
+    @Test
+    void endTickAggregatesAreSubmittedThroughTheGate() {
+        Seed seed = freshScope();
+        seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = props(3, 20);
+
+        // The review engine's tick report flows through the same gate, with no owning session.
+        ProposalSource reporting = new ProposalSource() {
+            @Override
+            public List<ProposedWrite> proposalsFor(Scope scope, SessionId s) {
+                return List.of();
+            }
+
+            @Override
+            public List<ScopedWrite> endTick() {
+                return List.of(new ScopedWrite(seed.scope(), ruleEdit()));
+            }
+        };
+        new AutoImproveScheduler(state, gate(props), () -> List.of(reporting), props).tick();
+
+        assertThat(applied).hasSize(1);
+        List<PendingWriteRecord> report = pending.recent(seed.scope(), 10);
+        assertThat(report).hasSize(1);
+        assertThat(report.get(0).status()).isEqualTo(PendingWriteStatus.APPLIED);
+    }
+
+    @Test
+    void reviewEngineEndToEndStagesDurableKnowledgeFromARealSession() {
+        // AC1 of #150 over the real wiring: real scheduler + real state repo (V16) + real gate, with
+        // the REAL SessionReviewProposalSource — only the LLM, observations and pages are doubles.
+        Seed seed = freshScope();
+        SessionId session = seedFinishedSession(seed, Instant.now().plusSeconds(3600));
+        AutoImproveProperties props = new AutoImproveProperties(false, 3, 20,
+                new AutoImproveProperties.Scheduler(false, null), null,
+                new AutoImproveProperties.Review(true, 30, 5, 0.8, "", 50, null));
+
+        SessionObservationReader reader = new SessionObservationReader() {
+            @Override
+            public Optional<Session> findSession(SessionId sessionId) {
+                return Optional.empty();
+            }
+
+            @Override
+            public List<Observation> observationsFor(SessionId sessionId) {
+                List<Observation> out = new ArrayList<>();
+                for (int i = 0; i < 6; i++) {
+                    out.add(new Observation(
+                            new ObservationId(Uuid7.randomUuid()), sessionId,
+                            Identity.ofProject(WorkspaceId.of(seed.ws()), ProjectId.of(seed.proj())),
+                            ObservationKind.USER_PROMPT, ObservationKind.USER_PROMPT.wire(), null,
+                            "substantial work happened here", Instant.parse("2026-07-01T12:00:00Z")));
+                }
+                return out;
+            }
+
+            @Override
+            public int countFor(SessionId sessionId) {
+                return 6;
+            }
+        };
+        LlmProvider llm = new LlmProvider() {
+            @Override
+            public ChatResponse chat(ChatRequest request) {
+                return new ChatResponse(
+                        "{\"proposals\":[{\"kind\":\"decision\",\"title\":\"Ticks use fixed delay\","
+                                + "\"body\":\"Fixed delay so ticks never overlap.\",\"confidence\":0.95,"
+                                + "\"evidence\":\"stated in the session\"}]}",
+                        "stub", "stub-model", 0, 0);
+            }
+
+            @Override
+            public String id() {
+                return "stub";
+            }
+
+            @Override
+            public String model() {
+                return "stub-model";
+            }
+
+            @Override
+            public void probe() {}
+        };
+        PageRepository noPages = new PageRepository() {
+            @Override
+            public PageRecord create(Identity identity, String title, String body) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public PageRecord create(Identity identity, String title, String body, PageWriteCallback cb) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public Optional<PageRecord> readLatest(Identity identity) {
+                return Optional.empty();
+            }
+
+            @Override
+            public List<PageRecord> listLatest(WorkspaceId workspace, ProjectId project) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public Optional<PageRecord> findById(PageId id) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public Optional<PageRecord> reinforce(PageId id) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public int dropWorkingFromLatest(WorkspaceId workspace, ProjectId project) {
+                throw new UnsupportedOperationException();
+            }
+        };
+        SessionReviewProposalSource review = new SessionReviewProposalSource(
+                reader, noPages, llm, () -> null, new LlmRateLimitGate(), props);
+
+        new AutoImproveScheduler(state, gate(props), () -> List.of(review), props).tick();
+
+        // The durable page was auto-applied through the gate with the session link on the audit row.
+        assertThat(applied).hasSize(1);
+        assertThat(applied.get(0).path()).isEqualTo("decisions/ticks-use-fixed-delay.md");
+        assertThat(applied.get(0).body()).contains("Fixed delay").contains(session.value().toString());
+        assertThat(reviewStatus(session)).isEqualTo("done");
+        List<PendingWriteRecord> rows = pending.recent(seed.scope(), 10);
+        assertThat(rows).hasSize(1);
+        assertThat(rows.get(0).status()).isEqualTo(PendingWriteStatus.APPLIED);
     }
 }

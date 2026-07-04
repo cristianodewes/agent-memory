@@ -109,7 +109,7 @@ class CuratorActionLoopIntegrationTest {
         AutoImproveProperties props = new AutoImproveProperties(
                 requireApproval, 3, 20,
                 new AutoImproveProperties.Scheduler(false, null),
-                new AutoImproveProperties.CuratorActions(true, null, 50)); // curator-actions ON
+                new AutoImproveProperties.CuratorActions(true, null, 50), null); // curator-actions ON
         AutoImproveGate gate = new AutoImproveGate(pending, applier, props, eval);
         CuratorActionScheduler scheduler = new CuratorActionScheduler(scopeRepo, pending, gate, source, props);
         return new Loop(scheduler, gate, pending);
