@@ -92,10 +92,12 @@ public record AutoImproveProperties(
      * @param verifyThreshold      proposals with extraction confidence below this go through the phase-B
      *                             adversarial verification call; at/above it they skip straight to dedup;
      *                             default 0.8 (0..1).
-     * @param quietHours           optional preferred window as {@code "HH:mm-HH:mm"} (server clock, may
-     *                             wrap midnight); outside it the engine only runs when the backlog exceeds
-     *                             {@link #quietHoursBacklog}; blank (default) = always run.
-     * @param quietHoursBacklog    the backlog size that overrides {@link #quietHours}; default 50.
+     * @param quietHours           optional preferred window as {@code "HH:mm-HH:mm"} (<strong>UTC</strong>,
+     *                             the repo's clock convention; may wrap midnight; {@code start == end}
+     *                             means "always"); outside it the engine only runs when the backlog
+     *                             exceeds {@link #quietHoursBacklog}; blank (default) = always run.
+     * @param quietHoursBacklog    the total-due-session count (uncapped, not one tick's page) that
+     *                             overrides {@link #quietHours}; default 50.
      * @param auth                 optional dedicated provider for review calls (the shape of
      *                             {@code llm.auth}), mirroring the recall seam (#146); unset = the primary
      *                             chat provider.

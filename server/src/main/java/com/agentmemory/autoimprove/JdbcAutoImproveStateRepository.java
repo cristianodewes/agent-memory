@@ -72,6 +72,20 @@ public class JdbcAutoImproveStateRepository {
      * @param limit       the most sessions to return (a tick's bounded work).
      * @return due sessions, oldest finished first.
      */
+    /**
+     * The due predicate, shared by {@link #dueSessions} and {@link #countDue}: never reviewed by this
+     * source, or {@code failed} under the attempt cap, or — the crash-recovery clause — left
+     * {@code claimed} for over 30 minutes (a JVM killed between claim and outcome must not orphan the
+     * session forever; {@link #claim} already re-claims any non-{@code done} row under the cap).
+     */
+    private static final String DUE_WHERE =
+            "WHERE s.ended_at IS NOT NULL "
+                    + "  AND s.ended_at > w.established_at "
+                    + "  AND (r.session_id IS NULL "
+                    + "       OR (r.status = 'failed' AND r.attempts < ?) "
+                    + "       OR (r.status = 'claimed' AND r.claimed_at < now() - interval '30 minutes' "
+                    + "           AND r.attempts < ?)) ";
+
     public List<DueSession> dueSessions(String source, int maxAttempts, int limit) {
         return jdbc.query(
                 "SELECT s.id, s.workspace, s.project "
@@ -80,12 +94,28 @@ public class JdbcAutoImproveStateRepository {
                         + "  ON w.workspace = s.workspace AND w.project = s.project "
                         + "LEFT JOIN auto_improve_session_review r "
                         + "  ON r.session_id = s.id AND r.source = ? "
-                        + "WHERE s.ended_at IS NOT NULL "
-                        + "  AND s.ended_at > w.established_at "
-                        + "  AND (r.session_id IS NULL OR (r.status = 'failed' AND r.attempts < ?)) "
+                        + DUE_WHERE
                         + "ORDER BY s.ended_at ASC "
                         + "LIMIT ?",
-                DUE_MAPPER, source, maxAttempts, Math.max(1, limit));
+                DUE_MAPPER, source, maxAttempts, maxAttempts, Math.max(1, limit));
+    }
+
+    /**
+     * The total number of sessions currently due for {@code source} — the same predicate as
+     * {@link #dueSessions} but uncapped, so a source's backlog-sensitive policies (the review engine's
+     * quiet-hours override, #150) see the real backlog rather than one tick's LIMIT-ed page.
+     */
+    public int countDue(String source, int maxAttempts) {
+        Integer n = jdbc.queryForObject(
+                "SELECT count(*) "
+                        + "FROM sessions s "
+                        + "JOIN auto_improve_watermark w "
+                        + "  ON w.workspace = s.workspace AND w.project = s.project "
+                        + "LEFT JOIN auto_improve_session_review r "
+                        + "  ON r.session_id = s.id AND r.source = ? "
+                        + DUE_WHERE,
+                Integer.class, source, maxAttempts, maxAttempts);
+        return n == null ? 0 : n;
     }
 
     private static final RowMapper<DueSession> DUE_MAPPER = (rs, n) -> new DueSession(

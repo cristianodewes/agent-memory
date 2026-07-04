@@ -96,7 +96,7 @@ class SessionReviewProposalSourceTest {
     }
 
     /** Pages double: no synthesized session page by default, so material falls back to the transcript. */
-    private static final class NoPages implements PageRepository {
+    private static class NoPages implements PageRepository {
         @Override
         public PageRecord create(Identity identity, String title, String body) {
             throw new UnsupportedOperationException();
@@ -158,6 +158,17 @@ class SessionReviewProposalSourceTest {
                 {"proposals":[{"kind":"%s","title":"%s","body":"A durable fact worth keeping.",\
                 "confidence":%s,"evidence":"seen in the transcript"}]}"""
                 .formatted(kind, title, confidence);
+    }
+
+    /** A real (minimal) page record occupying a path, for the slug-collision scenario. */
+    private static PageRecord existingPage() {
+        com.agentmemory.core.Page page = new com.agentmemory.core.Page(
+                new com.agentmemory.core.PageId(Uuid7.randomUuid()),
+                Identity.ofPage(WorkspaceId.of("acme"), ProjectId.of("agent-memory"),
+                        com.agentmemory.core.PagePath.of("concepts/how-recall-fuses-arms.md")),
+                "Unrelated existing page", "unrelated content", true, null,
+                Instant.parse("2026-06-01T00:00:00Z"), Instant.parse("2026-06-01T00:00:00Z"));
+        return new PageRecord(page, com.agentmemory.core.MemoryLayer.EPISODIC, 0L, null);
     }
 
     private static RecallHit hit(String path, double score) {
@@ -244,8 +255,12 @@ class SessionReviewProposalSourceTest {
         SessionId session = SessionId.newId();
         ScriptedLlm llm = new ScriptedLlm();
         llm.replies.add(extraction("concept", "How recall fuses arms", 0.9));
+        // Realistic RRF-fused scores (k=60): rank-1 in two arms ≈ 2/61 ≈ 0.0328 (update strength);
+        // rank-1 in one arm ≈ 1/61 ≈ 0.0164 (related strength). The thresholds are derived from
+        // RrfFusion.DEFAULT_K, so these MUST be reachable — the review found the old absolute
+        // thresholds (0.45/0.30) were dead code for the wired hybrid service.
         RecallService recall = q -> new RecallResult(
-                List.of(hit("concepts/recall-fusion.md", 0.6), hit("decisions/some-choice.md", 0.35)),
+                List.of(hit("concepts/recall-fusion.md", 0.0328), hit("decisions/some-choice.md", 0.0164)),
                 false, false);
 
         SessionReviewProposalSource src =
@@ -287,22 +302,63 @@ class SessionReviewProposalSourceTest {
     }
 
     @Test
-    void readyIsFalseOnceThePerTickBudgetIsSpent() {
+    void readyIsFalseOnceThePerTickBudgetCannotCoverAWorstCaseSession() {
         SessionId session = SessionId.newId();
         ScriptedLlm llm = new ScriptedLlm();
+        // Worst-case session cost = 1 extraction + 3 verifications = 4 calls. A budget of 4 admits
+        // exactly one session; after it, ready() must defer (never start a session it cannot finish).
         AutoImproveProperties tightBudget = new AutoImproveProperties(false, 3, 20,
                 new AutoImproveProperties.Scheduler(false, null), null,
-                new AutoImproveProperties.Review(true, 1, 5, 0.8, "", 50, null));
+                new AutoImproveProperties.Review(true, 4, 5, 0.8, "", 50, null));
         llm.replies.add(extraction("rule", "Always run the suite", 0.9));
         SessionReviewProposalSource src = source(
                 llm, readerWith(6, session), null, new LlmRateLimitGate(), tightBudget, Clock.systemUTC());
 
         assertThat(src.ready(10)).isTrue();
-        src.proposalsFor(SCOPE, session); // consumes the single budgeted call
+        src.proposalsFor(SCOPE, session); // consumes 1 of 4; 3 left < worst-case 4
 
         assertThat(src.ready(10)).isFalse();
         src.beginTick(); // a new tick resets the budget
         assertThat(src.ready(10)).isTrue();
+    }
+
+    @Test
+    void aZeroLengthQuietWindowMeansAlwaysNotNever() {
+        Clock noon = Clock.fixed(Instant.parse("2026-07-01T12:00:00Z"), ZoneOffset.UTC);
+        SessionReviewProposalSource src = source(
+                new ScriptedLlm(), readerWith(6, SessionId.newId()), null, new LlmRateLimitGate(),
+                props("00:00-00:00"), noon);
+
+        assertThat(src.ready(1)).as("start == end is the 'all day' idiom, not an empty window").isTrue();
+    }
+
+    @Test
+    void slugCollisionWithAnUnrelatedPageIsDisambiguatedNotSuperseded() {
+        SessionId session = SessionId.newId();
+        ScriptedLlm llm = new ScriptedLlm();
+        llm.replies.add(extraction("concept", "How recall fuses arms", 0.9));
+        // A page already sits at the slugged path, and dedup did NOT select it (no recall wired):
+        // superseding it would silently replace unrelated content.
+        PageRepository occupied = new NoPages() {
+            @Override
+            public Optional<PageRecord> readLatest(Identity identity) {
+                return identity.page().value().equals("concepts/how-recall-fuses-arms.md")
+                        ? Optional.of(existingPage())
+                        : Optional.empty();
+            }
+        };
+        SessionReviewProposalSource src = new SessionReviewProposalSource(
+                readerWith(6, session), occupied, llm, () -> null, new LlmRateLimitGate(), props(""),
+                new ReviewPrompts(), Clock.systemUTC());
+        src.beginTick();
+
+        List<ProposedWrite> out = src.proposalsFor(SCOPE, session);
+
+        assertThat(out).hasSize(1);
+        assertThat(out.get(0).path())
+                .startsWith("concepts/how-recall-fuses-arms-")
+                .isNotEqualTo("concepts/how-recall-fuses-arms.md");
+        assertThat(src.endTick().get(0).write().body()).contains("DISAMBIGUATED");
     }
 
     @Test

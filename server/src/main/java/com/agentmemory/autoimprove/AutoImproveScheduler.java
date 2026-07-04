@@ -90,23 +90,37 @@ public class AutoImproveScheduler implements SmartLifecycle {
     private void runSourcePass(ProposalSource engine) {
         try {
             engine.beginTick();
+            // ready() gets the UNCAPPED backlog: a backlog-sensitive policy (the review engine's
+            // quiet-hours override, #150) must see the real queue depth, not one tick's LIMIT-ed page.
+            int backlog = state.countDue(engine.id(), props.maxAttempts());
             List<DueSession> due = state.dueSessions(
                     engine.id(), props.maxAttempts(), props.maxSessionsPerTick());
-            log.debug("auto-improve[{}]: {} session(s) due for review", engine.id(), due.size());
+            log.debug("auto-improve[{}]: {} session(s) due for review ({} this tick)",
+                    engine.id(), backlog, due.size());
             int reviewed = 0;
-            for (DueSession d : due) {
-                if (!engine.ready(due.size())) {
-                    // Deferral, not failure: the remaining sessions keep no claim and stay due, so a
-                    // paused rate-limit gate / spent budget / quiet hours cost nothing (#148/#150).
-                    log.debug("auto-improve[{}]: source not ready after {} review(s); deferring {} "
-                            + "session(s) to a later tick", engine.id(), reviewed, due.size() - reviewed);
-                    break;
+            try {
+                for (DueSession d : due) {
+                    if (!engine.ready(backlog)) {
+                        // Deferral, not failure: the remaining sessions keep no claim and stay due, so a
+                        // paused rate-limit gate / spent budget / quiet hours cost nothing (#148/#150).
+                        log.debug("auto-improve[{}]: source not ready after {} review(s); deferring {} "
+                                + "session(s) to a later tick", engine.id(), reviewed, due.size() - reviewed);
+                        break;
+                    }
+                    reviewOne(engine, d.scope(), d.session());
+                    reviewed++;
                 }
-                reviewOne(engine, d.scope(), d.session());
-                reviewed++;
-            }
-            for (ProposalSource.ScopedWrite report : engine.endTick()) {
-                gate.submit(report.scope(), null, report.write());
+            } finally {
+                // Flush the tick aggregates even when the pass aborts mid-way — the notes describe the
+                // reviews that DID happen, and losing them silently would hide rejections/conversions.
+                for (ProposalSource.ScopedWrite report : engine.endTick()) {
+                    try {
+                        gate.submit(report.scope(), null, report.write());
+                    } catch (RuntimeException e) {
+                        log.warn("auto-improve[{}]: tick report for {}/{} failed: {}", engine.id(),
+                                report.scope().workspaceSlug(), report.scope().projectSlug(), e.toString());
+                    }
+                }
             }
         } catch (RuntimeException e) {
             // One engine failing must not starve the others (e.g. the LLM review dying must not stop

@@ -87,11 +87,20 @@ public final class SessionReviewProposalSource implements ProposalSource {
     /** Max proposals accepted from one extraction call (the prompt also asks for at most 3). */
     private static final int MAX_PROPOSALS_PER_SESSION = 3;
 
-    /** A dedup hit at/above this fused score in the same folder converts the proposal to an update. */
-    static final double DEDUP_UPDATE_SCORE = 0.45;
+    /**
+     * Dedup thresholds, derived from the hybrid recall's RRF math so they can never drift into dead
+     * code: a fused score is the sum of {@code 1/(k+rank)} contributions per arm
+     * ({@link com.agentmemory.recall.RrfFusion}, k = {@value com.agentmemory.recall.RrfFusion#DEFAULT_K}),
+     * so a single-arm rank-1 hit scores {@code 1/(k+1)} and multi-arm agreement scores above it.
+     * UPDATE requires more than one arm's worth of top-rank evidence (~1.5x a single-arm rank-1);
+     * RELATED requires roughly a single-arm top-3 hit.
+     */
+    static final double DEDUP_UPDATE_SCORE =
+            1.5 / (com.agentmemory.recall.RrfFusion.DEFAULT_K + 1);
 
     /** Dedup hits at/above this score (below update strength) become related wikilinks. */
-    static final double DEDUP_RELATED_SCORE = 0.30;
+    static final double DEDUP_RELATED_SCORE =
+            0.9 / (com.agentmemory.recall.RrfFusion.DEFAULT_K + 1);
 
     static final String EXTRACTION_SCHEMA_NAME = "session_review_proposals";
     static final String EXTRACTION_SCHEMA_JSON = """
@@ -196,8 +205,11 @@ public final class SessionReviewProposalSource implements ProposalSource {
             log.debug("session review: rate-limit gate paused; deferring the rest of this tick");
             return false;
         }
-        if (remainingLlmCalls.get() <= 0) {
-            log.debug("session review: per-tick LLM budget spent; deferring the rest of this tick");
+        if (remainingLlmCalls.get() < 1 + MAX_PROPOSALS_PER_SESSION) {
+            // A session costs up to 1 extraction + MAX_PROPOSALS verification calls; starting one
+            // without the worst-case budget would force dropping unverified proposals mid-session.
+            // Deferring the whole session keeps "estourou, o resto fica para o próximo tick" true.
+            log.debug("session review: per-tick LLM budget (nearly) spent; deferring the rest of this tick");
             return false;
         }
         return withinQuietHours(backlog);
@@ -318,6 +330,14 @@ public final class SessionReviewProposalSource implements ProposalSource {
         if (update != null) {
             path = update.path();
             note(scope, "CONVERTED to update — \"" + c.title() + "\" supersedes [[" + update.path() + "]]");
+        } else if (pages.readLatest(Identity.ofPage(
+                scope.workspace(), scope.project(), com.agentmemory.core.PagePath.of(path))).isPresent()) {
+            // Slug collision with a page dedup did NOT select: superseding it would silently replace
+            // unrelated content. Disambiguate with a stable per-session suffix instead.
+            String suffix = session.value().toString().substring(0, 8);
+            path = folder + slug(c.title()) + "-" + suffix + ".md";
+            note(scope, "DISAMBIGUATED — \"" + c.title() + "\" collided with an existing page; staged as "
+                    + path);
         }
 
         StringBuilder body = new StringBuilder(c.body());
@@ -376,9 +396,13 @@ public final class SessionReviewProposalSource implements ProposalSource {
             return page.get().page().body();
         }
         String transcript = ObservationTranscript.renderAll(observations);
-        return transcript.length() <= MATERIAL_CHAR_BUDGET
-                ? transcript
-                : transcript.substring(0, MATERIAL_CHAR_BUDGET);
+        if (transcript.length() <= MATERIAL_CHAR_BUDGET) {
+            return transcript;
+        }
+        // Block-boundary truncation with an explicit marker, so the model neither sees a dangling
+        // half-observation nor mistakes the cut for the end of the session.
+        String head = ObservationTranscript.chunkText(transcript, MATERIAL_CHAR_BUDGET).get(0);
+        return head + "\n\n[... transcript truncated: session continues beyond the review budget ...]";
     }
 
     // --- helpers -------------------------------------------------------------------------------------
@@ -413,8 +437,11 @@ public final class SessionReviewProposalSource implements ProposalSource {
             log.warn("session review: malformed quiet-hours '{}' (expected HH:mm-HH:mm); ignoring", window);
             return true;
         }
+        if (start.equals(end)) {
+            return true; // "00:00-00:00" and friends: a zero-length window means "always" not "never"
+        }
         LocalTime now = LocalTime.now(clock);
-        boolean inside = start.isBefore(end) || start.equals(end)
+        boolean inside = start.isBefore(end)
                 ? !now.isBefore(start) && now.isBefore(end)
                 : !now.isBefore(start) || now.isBefore(end); // window wraps midnight
         if (inside) {

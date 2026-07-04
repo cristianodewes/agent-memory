@@ -122,10 +122,13 @@ public class AutoImproveConfiguration {
             PageRepository pages,
             @Qualifier("reviewLlmProvider") LlmProvider reviewLlm,
             @Qualifier("recallService") ObjectProvider<RecallService> recall,
-            LlmRateLimitGate rateLimitGate,
+            @Qualifier("reviewLlmRateLimitGate") LlmRateLimitGate reviewRateLimitGate,
             AutoImproveProperties props) {
+        // The gate MUST be the one the review provider feeds (#148/#150): the shared primary gate when
+        // review reuses the chat credential, the per-axis gate when review.auth is independent —
+        // otherwise review 429s would never pause the loop and would burn claim attempts instead.
         return new SessionReviewProposalSource(
-                reader, pages, reviewLlm, recall::getIfAvailable, rateLimitGate, props);
+                reader, pages, reviewLlm, recall::getIfAvailable, reviewRateLimitGate, props);
     }
 
     /**

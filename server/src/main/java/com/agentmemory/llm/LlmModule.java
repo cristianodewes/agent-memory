@@ -39,11 +39,31 @@ public class LlmModule {
      * Shared runtime rate-limit state for the required chat provider (issue #148). The primary
      * provider records every call outcome here (via {@link RateLimitTrackingLlmProvider}); the
      * background dispatchers (consolidation, handoff) consult it before firing so an exhausted quota
-     * pauses the queues instead of burning one doomed LLM call per queued task.
+     * pauses the queues instead of burning one doomed LLM call per queued task. {@link Primary} since
+     * #150 added the per-axis {@link #reviewLlmRateLimitGate}: a bare by-type injection (consolidation,
+     * handoff) must keep resolving to the chat provider's gate.
      */
     @Bean
+    @Primary
     public LlmRateLimitGate llmRateLimitGate() {
         return new LlmRateLimitGate();
+    }
+
+    /**
+     * The rate-limit gate the auto-improve review engine consults (issue #150). When review reuses the
+     * primary credential (the default, or a model-only override) this IS the shared {@link
+     * #llmRateLimitGate} — one quota, one gate. When {@code review.auth} configures an independent
+     * provider (own credential, own quota) the review axis gets its <em>own</em> gate, so review 429s
+     * pause the review loop without pausing the primary's queues, and vice versa.
+     */
+    @Bean
+    public LlmRateLimitGate reviewLlmRateLimitGate(
+            LlmRateLimitGate llmRateLimitGate,
+            ObjectProvider<com.agentmemory.autoimprove.AutoImproveProperties> reviewProps) {
+        com.agentmemory.autoimprove.AutoImproveProperties props = reviewProps.getIfAvailable();
+        ProviderAuth auth = props == null || props.review() == null ? null : props.review().auth();
+        boolean independent = auth != null && auth.isConfigured();
+        return independent ? new LlmRateLimitGate() : llmRateLimitGate;
     }
 
     /**
@@ -191,11 +211,13 @@ public class LlmModule {
     /**
      * The provider the auto-improve session-review engine uses (issue #150), mirroring the recall seam
      * (#146): route the background review calls to a cheaper model via
-     * {@code agent-memory.auto-improve.review.auth}, defaulting to the primary chat provider — which is
-     * the {@link RateLimitTrackingLlmProvider}-decorated instance, so review outcomes feed the shared
-     * {@link LlmRateLimitGate} (#148). An independent review provider (own credential/quota) is
-     * deliberately NOT decorated: its 429s must not pause the primary's queues. Best-effort like recall:
-     * never probed at startup, and a misconfigured block falls back to the primary with a warning.
+     * {@code agent-memory.auto-improve.review.auth}, defaulting to the primary chat provider. Whatever
+     * the resolution, the returned provider always feeds a {@link LlmRateLimitGate} (#148): the default
+     * reuse IS the decorated primary; a model-only or independent resolution is wrapped here with the
+     * {@link #reviewLlmRateLimitGate} — the shared gate for a shared credential (model-only), a
+     * per-axis gate for an independent one, so review 429s always pause the review loop instead of
+     * burning claim attempts. Best-effort like recall: never probed at startup, and a misconfigured
+     * block falls back to the primary with a warning.
      *
      * <p>The {@code AutoImproveProperties} carrier is injected via {@link ObjectProvider} because it is
      * registered by the (auto-configured) {@code AutoImproveConfiguration}, which need not be present
@@ -206,11 +228,16 @@ public class LlmModule {
             ProviderFactory factory,
             AgentMemoryConfig config,
             @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("reviewLlmRateLimitGate") LlmRateLimitGate reviewGate,
             ObjectProvider<com.agentmemory.autoimprove.AutoImproveProperties> reviewProps) {
         com.agentmemory.autoimprove.AutoImproveProperties props = reviewProps.getIfAvailable();
         ProviderAuth auth = props == null || props.review() == null ? null : props.review().auth();
-        return resolveSecondaryProvider(
+        LlmProvider resolved = resolveSecondaryProvider(
                 factory, config, llmProvider, auth, "Review", "agent-memory.auto-improve.review.auth");
+        if (resolved == llmProvider) {
+            return resolved; // the primary is already gate-decorated; wrapping again would double-count
+        }
+        return new RateLimitTrackingLlmProvider(resolved, reviewGate);
     }
 
     /**
