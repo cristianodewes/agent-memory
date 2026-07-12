@@ -52,10 +52,31 @@ class GeminiLlmProviderTest {
             assertThat(body).contains("\"responseSchema\"");
             assertThat(body).contains("\"responseMimeType\":\"application/json\"");
             assertThat(body).contains("\"maxOutputTokens\"");
-            // The path carries the model + the generateContent method.
-            assertThat(stub.lastRequestPath()).isEqualTo("/v1beta/models/gemini-2.5-flash:generateContent");
+            // Thinking is disabled so fast flash models do not burn the output budget on hidden reasoning.
+            assertThat(body).contains("\"thinkingConfig\"").contains("\"thinkingBudget\":0");
+            // The path carries the model + the generateContent method (default = the fast flash alias).
+            assertThat(stub.lastRequestPath()).isEqualTo("/v1beta/models/gemini-flash-latest:generateContent");
             // The API key rides in the x-goog-api-key header.
             assertThat(stub.lastRequestHeader("x-goog-api-key")).isEqualTo("k-test");
+        }
+    }
+
+    @Test
+    void stripsUnsupportedAdditionalPropertiesFromResponseSchema() throws Exception {
+        try (StubHttpServer stub = StubHttpServer.start(200, OK_RESPONSE)) {
+            GeminiLlmProvider provider = new GeminiLlmProvider(auth(stub.baseUrl()));
+            // Every knowledge-shaping schema in this server sets additionalProperties:false — a keyword
+            // Gemini's responseSchema rejects with a 400. The provider must strip it so the schema is
+            // enforced server-side rather than dropping to the weaker JSON-only fallback.
+            JsonSchema withAdditional = new JsonSchema("t",
+                    "{\"type\":\"object\",\"additionalProperties\":false,"
+                            + "\"properties\":{\"ok\":{\"type\":\"boolean\"}},\"required\":[\"ok\"]}");
+
+            provider.chat(ChatRequest.structured(List.of(ChatMessage.user("ping")), withAdditional));
+
+            String body = stub.lastRequestBody();
+            assertThat(body).contains("\"responseSchema\"");
+            assertThat(body).doesNotContain("additionalProperties");
         }
     }
 
