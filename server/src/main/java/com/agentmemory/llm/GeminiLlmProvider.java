@@ -44,8 +44,13 @@ public final class GeminiLlmProvider implements LlmProvider {
     /** Canonical provider key selecting this implementation in {@link ProviderFactory}. */
     public static final String PROVIDER_KEY = "gemini";
 
-    /** Default chat model when config does not pin one. */
-    public static final String DEFAULT_MODEL = "gemini-2.5-flash";
+    /**
+     * Default chat model when config does not pin one. The current fast-tier alias, which always
+     * resolves to the latest GA Gemini Flash. A pinned generation (e.g. {@code gemini-2.5-flash}) is
+     * a trap here: Google retires older pins "for new users", so a fresh API key gets a 404 —
+     * {@code gemini-flash-latest} avoids that and keeps the provider working out of the box.
+     */
+    public static final String DEFAULT_MODEL = "gemini-flash-latest";
 
     /** Default Generative Language API base (includes the host, not the version). */
     public static final String DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com";
@@ -94,7 +99,7 @@ public final class GeminiLlmProvider implements LlmProvider {
                 List.of(ChatMessage.user("ping")),
                 new JsonSchema("probe", "{\"type\":\"object\",\"properties\":{\"ok\":{\"type\":\"boolean\"}},"
                         + "\"required\":[\"ok\"]}"),
-                16);
+                256);
         chat(ping);
     }
 
@@ -203,6 +208,17 @@ public final class GeminiLlmProvider implements LlmProvider {
 
         ObjectNode genConfig = body.putObject("generationConfig");
         genConfig.put("maxOutputTokens", request.maxOutputTokens());
+        // Current Gemini flash models "think" by default, spending 100s of output tokens on hidden
+        // reasoning before the visible answer. For this server (fast, structured memory extraction)
+        // that is pure latency + cost, and it starves small output budgets — most acutely the boot
+        // probe(), which would otherwise burn its whole budget on thinking and return empty/invalid
+        // JSON, tripping the fail-fast startup check (invariant #13). So disable thinking on the
+        // schema-enforced and free-form paths. The one exception is the JSON_ONLY fallback below: it has
+        // NO server-side schema enforcement, and there a thinking pass measurably improves how often the
+        // reply is well-formed JSON — so leave thinking on for that rare path only.
+        if (mode != StructuredMode.JSON_ONLY) {
+            genConfig.putObject("thinkingConfig").put("thinkingBudget", 0);
+        }
         if (request.wantsStructuredOutput()) {
             genConfig.put("responseMimeType", "application/json");
             if (mode == StructuredMode.SCHEMA) {
@@ -213,11 +229,34 @@ public final class GeminiLlmProvider implements LlmProvider {
     }
 
     private JsonNode parseSchema(ObjectMapper m, JsonSchema schema) {
+        JsonNode root;
         try {
-            return m.readTree(schema.schemaJson());
+            root = m.readTree(schema.schemaJson());
         } catch (JacksonException e) {
             throw LlmException.permanent(
                     "JsonSchema '" + schema.name() + "' is not valid JSON: " + e.getMessage(), e);
+        }
+        stripUnsupportedKeywords(root);
+        return root;
+    }
+
+    /**
+     * Remove JSON-Schema keywords that Gemini's {@code responseSchema} (an OpenAPI 3.0 subset) rejects.
+     * The only offender used by this server's schemas is {@code additionalProperties} (a draft-2020
+     * keyword every knowledge-shaping schema sets to {@code false}). Left in, Gemini 400s the whole
+     * request and the provider drops to the weaker JSON-only fallback, where a fast (thinking-off) flash
+     * model sometimes emits malformed JSON. Stripping it lets Gemini enforce the schema server-side —
+     * the reliable path — and is semantically harmless here, since Gemini only ever emits the declared
+     * properties anyway.
+     */
+    private static void stripUnsupportedKeywords(JsonNode node) {
+        if (node instanceof ObjectNode obj) {
+            obj.remove("additionalProperties");
+        }
+        // JsonNode iterates its child values (object property values / array elements); scalars yield
+        // nothing. additionalProperties is already removed above, so it is not revisited here.
+        for (JsonNode child : node) {
+            stripUnsupportedKeywords(child);
         }
     }
 
