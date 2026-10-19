@@ -248,6 +248,67 @@ class OpenAiOAuthLlmProviderTest {
     }
 
     @Test
+    void sseUsageLimitSurfacesAs429WithResetHint(@TempDir Path tmp) throws Exception {
+        // A Codex usage-limit delivered INSIDE the 200-OK stream (response.failed + nested error) — the
+        // production shape. It must become a retryable HTTP 429 carrying resets_in_seconds so the shared
+        // rate-limit gate pauses instead of the background loops hammering the exhausted quota (#148/#150).
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, null);
+        String sse = "event: response.failed\n"
+                + "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\","
+                + "\"error\":{\"type\":\"usage_limit_reached\",\"message\":\"The usage limit has been "
+                + "reached\",\"plan_type\":\"plus\",\"resets_in_seconds\":16487}}}\n\n";
+        try (StubHttpServer codex = StubHttpServer.start(200, sse)) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(codex.baseUrl()), 1_000L);
+
+            assertThatThrownBy(() -> provider.chat(ChatRequest.text(ChatMessage.ofUser("x"))))
+                    .isInstanceOfSatisfying(LlmException.class, ex -> {
+                        assertThat(ex.httpStatus()).isEqualTo(429);
+                        assertThat(ex.retryAfterMillis()).isEqualTo(16_487_000L);
+                        assertThat(ex.isRetryable()).isTrue();
+                    });
+        }
+    }
+
+    @Test
+    void sseTopLevelUsageLimitErrorSurfacesAs429(@TempDir Path tmp) throws Exception {
+        // The other shape: a top-level {"error":{...}} payload carrying the usage-limit + reset hint.
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, null);
+        String sse = "event: error\n"
+                + "data: {\"type\":\"error\",\"error\":{\"type\":\"usage_limit_reached\","
+                + "\"resets_in_seconds\":16339}}\n\n";
+        try (StubHttpServer codex = StubHttpServer.start(200, sse)) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(codex.baseUrl()), 1_000L);
+
+            assertThatThrownBy(() -> provider.chat(ChatRequest.text(ChatMessage.ofUser("x"))))
+                    .isInstanceOfSatisfying(LlmException.class, ex -> {
+                        assertThat(ex.httpStatus()).isEqualTo(429);
+                        assertThat(ex.retryAfterMillis()).isEqualTo(16_339_000L);
+                        assertThat(ex.isRetryable()).isTrue();
+                    });
+        }
+    }
+
+    @Test
+    void sseNonRateLimitFailureStaysTerminal(@TempDir Path tmp) throws Exception {
+        // A non-quota stream failure must keep its terminal (non-429) mapping — the fix must not
+        // reclassify ordinary failures as rate-limits (which would wrongly pause background work).
+        Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, null);
+        String sse = "event: response.failed\n"
+                + "data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\","
+                + "\"error\":{\"type\":\"server_error\",\"message\":\"boom\"}}}\n\n";
+        try (StubHttpServer codex = StubHttpServer.start(200, sse)) {
+            OpenAiOAuthLlmProvider provider =
+                    provider(token, URI.create("http://unused.invalid/token"), URI.create(codex.baseUrl()), 1_000L);
+
+            assertThatThrownBy(() -> provider.chat(ChatRequest.text(ChatMessage.ofUser("x"))))
+                    .isInstanceOfSatisfying(LlmException.class,
+                            ex -> assertThat(ex.httpStatus()).isNotEqualTo(429));
+        }
+    }
+
+    @Test
     void parsesCrlfTerminatedStream(@TempDir Path tmp) throws Exception {
         // Real SSE often uses CRLF line endings; the parser must still find event boundaries + payloads.
         Path token = tokenFile(tmp, "tokA", "rt", 9_999_999_999_999L, null);
