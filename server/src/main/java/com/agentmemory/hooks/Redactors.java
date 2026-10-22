@@ -30,9 +30,17 @@ final class Redactors {
     /**
      * RFC-pragmatic email shape (local part, {@code @}, dotted domain). Not the full RFC 5322 grammar
      * — deliberately simple and greedy enough to catch real addresses in captured prose/logs.
+     *
+     * <p>Linear on long unbroken runs (a minified bundle, an encoded blob in a tool output). The plain
+     * {@code [local]+@…} form retried the run from every start position, quadratic in its length: a
+     * few 250 KB payloads held a {@code /hook/batch} past the client's drain timeout, and the spool
+     * stalled behind that batch. A match may only start where the leftmost one could — at the start of
+     * a run, or ({@code \G}) right where the previous match ended, as in {@code a@b.com.x@c.com} — and
+     * the possessive {@code ++} does not backtrack into the run (a shorter local part would end on a
+     * run character, never on the {@code @}). The masked spans are exactly those of the plain form.
      */
     private static final Pattern EMAIL = Pattern.compile(
-            "[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}");
+            "(?:\\G|(?<![A-Za-z0-9._%+\\-]))[A-Za-z0-9._%+\\-]++@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}");
 
     /** Redacts email addresses → {@code [REDACTED:email]}. */
     static final Redactor EMAIL_REDACTOR = labeled("email",
