@@ -7,6 +7,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
@@ -25,6 +26,7 @@ import org.springframework.context.annotation.Primary;
  * as a bad data dir does in {@code ConfigModule}. The embeddings probe is non-fatal.
  */
 @Configuration(proxyBeanMethods = false)
+@EnableConfigurationProperties(SynthesisLlmProperties.class)
 public class LlmModule {
 
     private static final Logger log = LoggerFactory.getLogger(LlmModule.class);
@@ -159,7 +161,8 @@ public class LlmModule {
     }
 
     /**
-     * Resolve an optional secondary-axis provider (recall #146, auto-improve review #150) from its own
+     * Resolve an optional secondary-axis provider (recall #146, auto-improve review #150, synthesis
+     * #156) from its own
      * auth block, defaulting to the primary chat provider. Never throws — a malformed secondary auth
      * degrades to {@code primary} with a warning, because every secondary axis is best-effort.
      *
@@ -238,6 +241,36 @@ public class LlmModule {
             return resolved; // the primary is already gate-decorated; wrapping again would double-count
         }
         return new RateLimitTrackingLlmProvider(resolved, reviewGate);
+    }
+
+    /**
+     * The provider for the durable text written from the sessions (issue #156): the session page's
+     * final synthesis, the thematic pages and the handoff, configured under
+     * {@code agent-memory.synthesis.llm.auth} so a stronger model can write what the user reads while
+     * the primary keeps the bulk work (the per-chunk summaries, recall, lint, chat).
+     * <strong>Default = the primary chat provider.</strong> Best-effort like the recall and review
+     * axes: never probed at startup, a misconfigured block falls back to the primary with a warning, and
+     * a configured model that fails a call repeats it on the primary ({@link FallbackLlmProvider}).
+     */
+    @Bean
+    public LlmProvider synthesisLlmProvider(
+            ProviderFactory factory,
+            AgentMemoryConfig config,
+            @Qualifier("llmProvider") LlmProvider llmProvider,
+            SynthesisLlmProperties synthesisProps) {
+        return resolveSynthesisProvider(factory, config, llmProvider, synthesisProps.auth());
+    }
+
+    /**
+     * Resolve the synthesis-axis provider (issue #156) with the same three branches as the recall axis
+     * ({@link #resolveSecondaryProvider}). When a separate model is resolved it is wrapped so any failure
+     * repeats the call on {@code primary}; the unset default returns {@code primary} itself.
+     */
+    static LlmProvider resolveSynthesisProvider(ProviderFactory factory, AgentMemoryConfig config,
+            LlmProvider primary, ProviderAuth synthesisAuth) {
+        LlmProvider resolved = resolveSecondaryProvider(
+                factory, config, primary, synthesisAuth, "Synthesis", "agent-memory.synthesis.llm.auth");
+        return resolved == primary ? primary : new FallbackLlmProvider(resolved, primary, "Synthesis");
     }
 
     /**

@@ -33,7 +33,8 @@ import org.slf4j.LoggerFactory;
  *       the concatenated chunk summaries (reduce) so a long session still fits the model context.</li>
  *   <li><strong>Synthesize</strong>: one structured-JSON LLM call constrained to
  *       {@link SynthesizedSession#SCHEMA_JSON} (invariant #7), parsed + validated
- *       ({@link SessionSynthesisParser}).</li>
+ *       ({@link SessionSynthesisParser}). This call can go to a separate synthesis model (issue #156)
+ *       while the chunk summaries stay on the primary.</li>
  *   <li><strong>Render + write</strong>: render to markdown ({@link SessionMarkdownRenderer}) and
  *       write {@code sessions/<id>.md} through {@link PageRepository#create} with the
  *       {@link WikiWriter} callback, so the DB row and the markdown file + git commit land in one
@@ -70,7 +71,13 @@ public class SessionSynthesizer {
     static final int MAX_REDUCE_ROUNDS = 4;
 
     private final SessionObservationReader reader;
+    /** The map step: the per-chunk summaries of a long session (the bulk of the tokens). */
     private final LlmProvider llm;
+    /**
+     * The final structured synthesis — the page itself, over a bounded input (issue #156, the
+     * synthesis route). The same provider as {@link #llm} unless a synthesis model is configured.
+     */
+    private final LlmProvider synthesisLlm;
     private final PageRepository pages;
     private final WikiWriter wikiWriter;
     private final WikiLinkService links;
@@ -85,7 +92,17 @@ public class SessionSynthesizer {
             PageRepository pages,
             WikiWriter wikiWriter,
             WikiLinkService links) {
-        this(reader, llm, pages, wikiWriter, links, new SynthesisPrompts(),
+        this(reader, llm, llm, pages, wikiWriter, links);
+    }
+
+    public SessionSynthesizer(
+            SessionObservationReader reader,
+            LlmProvider llm,
+            LlmProvider synthesisLlm,
+            PageRepository pages,
+            WikiWriter wikiWriter,
+            WikiLinkService links) {
+        this(reader, llm, synthesisLlm, pages, wikiWriter, links, new SynthesisPrompts(),
                 new SessionSynthesisParser(), new SessionMarkdownRenderer(), DEFAULT_CHAR_BUDGET);
     }
 
@@ -99,11 +116,26 @@ public class SessionSynthesizer {
             SessionSynthesisParser parser,
             SessionMarkdownRenderer renderer,
             int charBudget) {
+        this(reader, llm, llm, pages, wikiWriter, links, prompts, parser, renderer, charBudget);
+    }
+
+    SessionSynthesizer(
+            SessionObservationReader reader,
+            LlmProvider llm,
+            LlmProvider synthesisLlm,
+            PageRepository pages,
+            WikiWriter wikiWriter,
+            WikiLinkService links,
+            SynthesisPrompts prompts,
+            SessionSynthesisParser parser,
+            SessionMarkdownRenderer renderer,
+            int charBudget) {
         if (charBudget <= 0) {
             throw new IllegalArgumentException("charBudget must be > 0, was " + charBudget);
         }
         this.reader = reader;
         this.llm = llm;
+        this.synthesisLlm = synthesisLlm;
         this.pages = pages;
         this.wikiWriter = wikiWriter;
         this.links = links;
@@ -182,7 +214,8 @@ public class SessionSynthesizer {
                 ChatMessage.user("Session observations (chronological):\n\n" + transcript));
         ChatRequest request = ChatRequest.structured(
                 messages, new JsonSchema(SynthesizedSession.SCHEMA_NAME, SynthesizedSession.SCHEMA_JSON));
-        ChatResponse response = llm.chat(request); // LlmException propagates (no rule-based fallback)
+        // LlmException propagates (no rule-based fallback)
+        ChatResponse response = synthesisLlm.chat(request);
         return parser.parse(response.text());
     }
 

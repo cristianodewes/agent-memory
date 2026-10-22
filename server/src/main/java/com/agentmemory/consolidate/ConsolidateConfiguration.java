@@ -30,7 +30,9 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * (a second {@link LlmProvider} bean carrying the cheap recall steps), a bare by-type injection has two
  * candidates; consolidation is heavyweight work that wants the primary chat/consolidation provider, so
  * each site qualifies explicitly (the primary is also {@code @Primary}, so this is belt-and-suspenders
- * — and it mirrors {@code LlmModule}'s own consumers).
+ * — and it mirrors {@code LlmModule}'s own consumers). The exceptions are the durable text written from
+ * the session — the session page's final synthesis and the thematic pages — which bind the
+ * {@code synthesisLlmProvider} (issue #156): the primary itself unless a synthesis model is configured.
  */
 @AutoConfiguration(afterName = {
     "com.agentmemory.store.StoreConfiguration",
@@ -53,11 +55,12 @@ public class ConsolidateConfiguration {
     public SessionSynthesizer sessionSynthesizer(
             SessionObservationReader reader,
             @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("synthesisLlmProvider") LlmProvider synthesisLlmProvider,
             PageRepository pageRepository,
             WikiWriter wikiWriter,
             WikiLinkService wikiLinkService) {
-        return new SessionSynthesizer(
-                reader, llmProvider, pageRepository, wikiWriter, wikiLinkService);
+        return new SessionSynthesizer(reader, llmProvider, synthesisLlmProvider,
+                pageRepository, wikiWriter, wikiLinkService);
     }
 
     @Bean
@@ -76,10 +79,10 @@ public class ConsolidateConfiguration {
     @ConditionalOnBean({SessionObservationReader.class, MemoryWriteService.class, McpReadRepository.class})
     public Consolidator consolidator(
             SessionObservationReader reader,
-            @Qualifier("llmProvider") LlmProvider llmProvider,
+            @Qualifier("synthesisLlmProvider") LlmProvider synthesisLlmProvider,
             MemoryWriteService memoryWriteService,
             McpReadRepository mcpReadRepository) {
-        return new Consolidator(reader, llmProvider, memoryWriteService, mcpReadRepository);
+        return new Consolidator(reader, synthesisLlmProvider, memoryWriteService, mcpReadRepository);
     }
 
     /**

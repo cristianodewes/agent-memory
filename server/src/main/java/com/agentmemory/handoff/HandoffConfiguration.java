@@ -16,10 +16,10 @@ import org.springframework.context.annotation.Bean;
  * Wires the LLM-generated handoff feature (issue #22): the {@link HandoffService}, and the
  * {@code session-end → open handoff} trigger.
  *
- * <p>The service needs the {@link HandoffRepository} (a {@code DataSource}-gated store bean) and the
- * required {@link LlmProvider}, bound by name ({@code @Qualifier("llmProvider")}): since issue #146
- * added the optional {@code recallLlmProvider}, a bare by-type {@link LlmProvider} injection has two
- * candidates and handoff generation wants the primary chat provider, not the cheap recall one. Like
+ * <p>The service needs the {@link HandoffRepository} (a {@code DataSource}-gated store bean) and an
+ * {@link LlmProvider} bound by name: the {@code synthesisLlmProvider} (issue #156), which is the primary
+ * chat provider unless a synthesis model is configured — the handoff is durable text the user reads at
+ * the next session start, so it rides the same route as the session pages, never the cheap recall one. Like
  * the other store-coupled modules it is gated on a {@code DataSource}
  * ({@link ConditionalOnSingleCandidate}) so the DB-less smoke context still loads, and ordered after
  * {@link StoreConfiguration} (declared in {@code META-INF/spring/.../AutoConfiguration.imports}) so the
@@ -38,8 +38,9 @@ public class HandoffConfiguration {
     @Bean
     @ConditionalOnSingleCandidate(DataSource.class)
     public HandoffService handoffService(
-            @Qualifier("llmProvider") LlmProvider llmProvider, HandoffRepository handoffRepository) {
-        return new HandoffService(llmProvider, handoffRepository);
+            @Qualifier("synthesisLlmProvider") LlmProvider synthesisLlmProvider,
+            HandoffRepository handoffRepository) {
+        return new HandoffService(synthesisLlmProvider, handoffRepository);
     }
 
     /**
