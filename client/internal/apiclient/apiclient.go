@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -66,6 +67,10 @@ const (
 	// sent will never be accepted as-is; the caller decides how to handle it (the drain treats a
 	// per-item-invalid response as still-acked, since the items were processed — see #8 semantics).
 	BatchRejected
+	// BatchPartial: the server answered 2xx but its per-item report marks some items "throttled"
+	// (its ingest queue filled mid-batch, #158). Only the other items are done; the drain must keep
+	// the indexes in BatchResult.Throttled spooled and retry them.
+	BatchPartial
 )
 
 // BatchResult is the parsed outcome of a /hook/batch POST.
@@ -73,6 +78,17 @@ type BatchResult struct {
 	Outcome BatchOutcome
 	// Status is the raw HTTP status code, for logging.
 	Status int
+	// Throttled lists the indexes (into the posted batch) the server did not take because it was
+	// saturated. Set only for BatchPartial.
+	Throttled []int
+}
+
+// batchReport is the per-item part of the server's /hook/batch response body (#8).
+type batchReport struct {
+	Results []struct {
+		Index  int    `json:"index"`
+		Status string `json:"status"`
+	} `json:"results"`
 }
 
 // PostHookBatch ships a batch of captured events to POST /hook/batch and reports the server's
@@ -103,7 +119,32 @@ func (c *Client) PostHookBatch(ctx context.Context, events []hook.Payload) (Batc
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	return BatchResult{Outcome: outcomeFor(resp.StatusCode), Status: resp.StatusCode}, nil
+	result := BatchResult{Outcome: outcomeFor(resp.StatusCode), Status: resp.StatusCode}
+	if result.Outcome == BatchAccepted {
+		result.Throttled = throttledIndexes(resp.Body, len(events))
+		if len(result.Throttled) > 0 {
+			result.Outcome = BatchPartial
+		}
+	}
+	return result, nil
+}
+
+// throttledIndexes reads the per-item report of a 2xx /hook/batch response and returns the indexes
+// marked "throttled" (#158): the server answers 202 as soon as one item was accepted, so this report
+// is the only signal that the rest of the batch was turned away. A missing or unreadable report keeps
+// the pre-#158 meaning of a 2xx — the whole batch acknowledged — and so does an out-of-range index.
+func throttledIndexes(body io.Reader, n int) []int {
+	var report batchReport
+	if err := json.NewDecoder(io.LimitReader(body, 1<<20)).Decode(&report); err != nil {
+		return nil
+	}
+	var throttled []int
+	for _, r := range report.Results {
+		if r.Status == "throttled" && r.Index >= 0 && r.Index < n {
+			throttled = append(throttled, r.Index)
+		}
+	}
+	return throttled
 }
 
 // outcomeFor maps an HTTP status to a BatchOutcome. 2xx ⇒ accepted (the batch was processed; #8

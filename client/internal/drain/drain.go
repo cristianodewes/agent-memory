@@ -9,7 +9,8 @@
 //   - A single corrupt spool entry is quarantined (moved aside), never blocking or failing the rest
 //     of the drain — this designs out the documented prior-art "batch-drain stalls on one bad event"
 //     bug.
-//   - The server's 202/429 is honored: 202 clears the shipped entries; 429 triggers a bounded
+//   - The server's 202/429 is honored: 202 clears the shipped entries — except those its per-item
+//     report marks throttled (#158), which stay spooled and are retried; 429 triggers a bounded
 //     backoff-and-retry, after which the drain stops and LEAVES the spool intact (nothing dropped).
 //   - A transport failure (server down) likewise leaves the spool intact for the next boundary.
 //
@@ -53,6 +54,9 @@ type Options struct {
 	// Logger records per-batch ship outcomes and quarantine events at debug (#117). It is advisory —
 	// nil falls back to a discard logger, so the drain behaves identically with or without it.
 	Logger *slog.Logger
+	// Progress, when set, is called after every acknowledged batch with the running total of events
+	// the server has taken this pass (#158: the manual `drain` command shows it). Optional.
+	Progress func(sent int)
 }
 
 func (o Options) withDefaults() Options {
@@ -176,7 +180,9 @@ func (d *Drainer) Drain(ctx context.Context) (Result, error) {
 
 // shipBatch POSTs one batch, applying 429 backoff. Returns ok=false (with a possibly-nil error) when
 // the drain should stop early but leave the spool intact (throttled or rejected); returns a non-nil
-// error for a transport failure. On acceptance it removes the shipped spool files and bumps res.Sent.
+// error for a transport failure. Only events the server took are removed from the spool (and counted
+// in res.Sent): all of them on acceptance, all but the throttled ones on a partial batch (#158),
+// whose throttled rest is retried on its own with the same backoff as a 429.
 func (d *Drainer) shipBatch(
 	ctx context.Context, batch []hook.Payload, names []string, res *Result) (bool, error) {
 	backoff := d.opts.BaseBackoff
@@ -188,28 +194,22 @@ func (d *Drainer) shipBatch(
 		}
 		switch result.Outcome {
 		case apiclient.BatchAccepted:
-			for _, n := range names {
-				if rmErr := d.spool.Remove(n); rmErr != nil {
-					return false, fmt.Errorf("drain: clear acked entry %q: %w", n, rmErr)
-				}
-			}
-			res.Sent += len(batch)
-			d.opts.Logger.Debug("batch shipped", "count", len(batch), "status", result.Status)
-			return true, nil
-		case apiclient.BatchThrottled:
-			if attempt >= d.opts.MaxRetries {
-				// Out of budget: stop, leave the spool intact (nothing dropped).
-				res.Throttled = true
-				d.opts.Logger.Warn("drain throttled after retries; spool left intact",
-					"count", len(batch), "attempts", attempt+1)
-				return false, ErrThrottled
-			}
-			d.opts.Logger.Debug("batch throttled; backing off",
-				"count", len(batch), "attempt", attempt+1, "backoffMs", backoff.Milliseconds())
-			if err := d.opts.Sleep(ctx, backoff); err != nil {
+			if err := d.clearAcked(names, res); err != nil {
 				return false, err
 			}
-			backoff = nextBackoff(backoff, d.opts.MaxBackoff)
+			d.opts.Logger.Debug("batch shipped", "count", len(batch), "status", result.Status)
+			return true, nil
+		case apiclient.BatchPartial:
+			// The server's ingest queue filled mid-batch: it answered 202 but took only part of it.
+			// Clear what it took and keep retrying just the throttled events — deleting the whole
+			// batch here would silently lose them.
+			var acked []string
+			batch, names, acked = splitThrottled(batch, names, result.Throttled)
+			if err := d.clearAcked(acked, res); err != nil {
+				return false, err
+			}
+			d.opts.Logger.Debug("batch partially shipped",
+				"count", len(acked), "throttled", len(batch), "status", result.Status)
 		case apiclient.BatchRejected:
 			// A hard rejection of the whole request (not per-item — #8 returns 202 for per-item
 			// invalid). Leave the spool intact rather than silently drop a batch of real events; a
@@ -217,7 +217,55 @@ func (d *Drainer) shipBatch(
 			return false, fmt.Errorf("drain: server rejected batch (HTTP %d); spool left intact",
 				result.Status)
 		}
+		// Throttled — the whole batch (429) or the rest of a partial one: back off and retry.
+		if attempt >= d.opts.MaxRetries {
+			// Out of budget: stop, leave the spool intact (nothing dropped).
+			res.Throttled = true
+			d.opts.Logger.Warn("drain throttled after retries; spool left intact",
+				"count", len(batch), "attempts", attempt+1)
+			return false, ErrThrottled
+		}
+		d.opts.Logger.Debug("batch throttled; backing off",
+			"count", len(batch), "attempt", attempt+1, "backoffMs", backoff.Milliseconds())
+		if err := d.opts.Sleep(ctx, backoff); err != nil {
+			return false, err
+		}
+		backoff = nextBackoff(backoff, d.opts.MaxBackoff)
 	}
+}
+
+// clearAcked removes the spool files of events the server took, counts them in res.Sent and reports
+// the running total to Options.Progress.
+func (d *Drainer) clearAcked(names []string, res *Result) error {
+	for _, n := range names {
+		if err := d.spool.Remove(n); err != nil {
+			return fmt.Errorf("drain: clear acked entry %q: %w", n, err)
+		}
+	}
+	res.Sent += len(names)
+	if d.opts.Progress != nil && len(names) > 0 {
+		d.opts.Progress(res.Sent)
+	}
+	return nil
+}
+
+// splitThrottled separates a partial batch into the throttled events (still to send, with their
+// spool names) and the spool names of the events the server took.
+func splitThrottled(batch []hook.Payload, names []string, throttled []int) (
+	restBatch []hook.Payload, restNames, acked []string) {
+	isThrottled := make(map[int]bool, len(throttled))
+	for _, i := range throttled {
+		isThrottled[i] = true
+	}
+	for i := range batch {
+		if isThrottled[i] {
+			restBatch = append(restBatch, batch[i])
+			restNames = append(restNames, names[i])
+		} else {
+			acked = append(acked, names[i])
+		}
+	}
+	return restBatch, restNames, acked
 }
 
 // countRemaining counts the valid events still spooled (excludes quarantine). Best-effort: a list

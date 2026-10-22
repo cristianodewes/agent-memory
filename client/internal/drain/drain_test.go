@@ -21,14 +21,27 @@ type fakePoster struct {
 	calls    int
 	totalIn  int
 	outcomes []apiclient.BatchOutcome
-	err      error
+	// results, when set, scripts full BatchResults (e.g. a partial with throttled indexes) and takes
+	// precedence over outcomes; the last one repeats once exhausted.
+	results []apiclient.BatchResult
+	// posted records the events of every call, in order.
+	posted [][]hook.Payload
+	err    error
 }
 
 func (f *fakePoster) PostHookBatch(_ context.Context, events []hook.Payload) (apiclient.BatchResult, error) {
 	f.calls++
 	f.totalIn += len(events)
+	f.posted = append(f.posted, append([]hook.Payload(nil), events...))
 	if f.err != nil {
 		return apiclient.BatchResult{}, f.err
+	}
+	if len(f.results) > 0 {
+		idx := f.calls - 1
+		if idx >= len(f.results) {
+			idx = len(f.results) - 1
+		}
+		return f.results[idx], nil
 	}
 	out := apiclient.BatchAccepted
 	if len(f.outcomes) > 0 {
@@ -197,6 +210,100 @@ func TestDrainStaysThrottledLeavesSpoolIntact(t *testing.T) {
 	// initial attempt + 2 retries = 3 calls.
 	if poster.calls != 3 {
 		t.Fatalf("expected 3 attempts (1 + MaxRetries 2), got %d", poster.calls)
+	}
+}
+
+func partial(throttled ...int) apiclient.BatchResult {
+	return apiclient.BatchResult{Outcome: apiclient.BatchPartial, Status: 202, Throttled: throttled}
+}
+
+func accepted() apiclient.BatchResult {
+	return apiclient.BatchResult{Outcome: apiclient.BatchAccepted, Status: 202}
+}
+
+func throttledAll() apiclient.BatchResult {
+	return apiclient.BatchResult{Outcome: apiclient.BatchThrottled, Status: 429}
+}
+
+func clientIDs(events []hook.Payload) []string {
+	ids := make([]string, 0, len(events))
+	for _, e := range events {
+		ids = append(ids, *e.ClientEventID)
+	}
+	return ids
+}
+
+// TestDrainRetriesOnlyTheThrottledItemsOfAPartialBatch (#158): a 202 whose report throttles some
+// items clears only the others, then re-posts just the throttled events until they are taken.
+func TestDrainRetriesOnlyTheThrottledItemsOfAPartialBatch(t *testing.T) {
+	s := newSpool(t)
+	appendN(t, s, 5)
+	poster := &fakePoster{results: []apiclient.BatchResult{partial(1, 3), accepted()}}
+	d := New(s, poster, Options{Sleep: noSleep})
+
+	res, err := d.Drain(context.Background())
+	if err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if res.Sent != 5 || res.Remaining != 0 {
+		t.Fatalf("all 5 must end up acknowledged, got %+v", res)
+	}
+	if poster.calls != 2 {
+		t.Fatalf("expected the batch plus one retry, got %d calls", poster.calls)
+	}
+	if got := clientIDs(poster.posted[1]); len(got) != 2 || got[0] != "evt-b" || got[1] != "evt-d" {
+		t.Fatalf("the retry must carry only the throttled events, got %v", got)
+	}
+}
+
+// TestDrainKeepsThrottledItemsSpooledWhenTheServerStaysSaturated: the accepted items of a partial
+// batch are cleared, the throttled ones survive in the spool when every retry is throttled — none of
+// them is deleted without the server having taken it.
+func TestDrainKeepsThrottledItemsSpooledWhenTheServerStaysSaturated(t *testing.T) {
+	s := newSpool(t)
+	appendN(t, s, 5)
+	poster := &fakePoster{results: []apiclient.BatchResult{partial(1, 3), throttledAll()}}
+	d := New(s, poster, Options{MaxRetries: 2, Sleep: noSleep})
+
+	res, err := d.Drain(context.Background())
+	if !errors.Is(err, ErrThrottled) {
+		t.Fatalf("expected ErrThrottled, got %v", err)
+	}
+	if res.Sent != 3 || res.Remaining != 2 || !res.Throttled {
+		t.Fatalf("3 acknowledged and 2 left spooled expected, got %+v", res)
+	}
+	entries, _ := s.List()
+	if len(entries) != 2 {
+		t.Fatalf("the 2 throttled events must stay spooled, %d remain", len(entries))
+	}
+	var left []hook.Payload
+	for _, e := range entries {
+		p, err := s.Read(e.Name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		left = append(left, p)
+	}
+	if got := clientIDs(left); got[0] != "evt-b" || got[1] != "evt-d" {
+		t.Fatalf("the spooled survivors must be the throttled events, got %v", got)
+	}
+}
+
+// TestDrainReportsProgressAfterEachAcknowledgedBatch: the Progress hook receives the running total
+// of acknowledged events, so a long manual drain can show where it is.
+func TestDrainReportsProgressAfterEachAcknowledgedBatch(t *testing.T) {
+	s := newSpool(t)
+	appendN(t, s, 5)
+	var seen []int
+	d := New(s, &fakePoster{}, Options{BatchSize: 2, Sleep: noSleep, Progress: func(sent int) {
+		seen = append(seen, sent)
+	}})
+
+	if _, err := d.Drain(context.Background()); err != nil {
+		t.Fatalf("drain: %v", err)
+	}
+	if len(seen) != 3 || seen[0] != 2 || seen[1] != 4 || seen[2] != 5 {
+		t.Fatalf("progress = %v, want [2 4 5]", seen)
 	}
 }
 

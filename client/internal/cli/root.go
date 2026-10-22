@@ -36,6 +36,7 @@ func newRootCmd() *cobra.Command {
 	root.AddCommand(newHookCmd())
 	root.AddCommand(newLogsCmd())
 	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newDrainCmd())
 	root.AddCommand(newMcpSessionHeaderCmd())
 	root.AddCommand(newReindexCmd())
 	root.AddCommand(newRenameProjectCmd())
