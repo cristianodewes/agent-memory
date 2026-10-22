@@ -122,6 +122,15 @@ class SessionSynthesisTest {
                 new SessionMarkdownRenderer(), charBudget);
     }
 
+    /** A synthesizer whose chunk summaries go to {@code primary} and final synthesis to {@code synthesis}. */
+    private SessionSynthesizer synthesizerWith(
+            TestDoubleProvider primary, TestDoubleProvider synthesis, int charBudget) {
+        return new SessionSynthesizer(
+                new JdbcSessionObservationReader(jdbc()), primary, synthesis, pages, wikiWriter, links,
+                new SynthesisPrompts(), new SessionSynthesisParser(),
+                new SessionMarkdownRenderer(), charBudget);
+    }
+
     // --- seeding -----------------------------------------------------------------------------------
 
     private record Scope(String ws, String proj, UUID wsId, UUID projId) {}
@@ -280,6 +289,45 @@ class SessionSynthesisTest {
         // map (>=2 chunk summaries) + reduce (1 synthesis) ⇒ strictly more than the single-call path.
         assertThat(calls.get()).isGreaterThan(1);
         assertThat(pages.readLatest(sessionPage(s, sid))).isPresent();
+    }
+
+    @Test
+    void longSessionSummarizesChunksOnThePrimaryAndSynthesizesOnTheSynthesisModel() {
+        // The synthesis route (issue #156): the bulk chunk summaries stay on the primary model, only the
+        // bounded final synthesis — the page the user reads — goes to the synthesis model.
+        Scope s = freshScope();
+        SessionId sid = seedSession(s);
+        for (int i = 0; i < 12; i++) {
+            seedObservation(s, sid, "post-tool-use", "step " + i + " " + "detail ".repeat(40));
+        }
+        seedObservation(s, sid, "session-end", "done");
+
+        AtomicInteger primaryCalls = new AtomicInteger();
+        AtomicInteger synthesisCalls = new AtomicInteger();
+        TestDoubleProvider primary = goldenLlm(primaryCalls);
+        TestDoubleProvider synthesis = goldenLlm(synthesisCalls);
+        SynthesisOutcome outcome = synthesizerWith(primary, synthesis, 400).synthesize(sid);
+
+        assertThat(outcome.status()).isEqualTo(SynthesisOutcome.Status.WRITTEN);
+        assertThat(primary.chatCalls()).hasSizeGreaterThan(1)
+                .noneMatch(ChatRequest::wantsStructuredOutput);
+        assertThat(synthesis.chatCalls()).hasSize(1).allMatch(ChatRequest::wantsStructuredOutput);
+    }
+
+    @Test
+    void shortSessionSynthesizesDirectlyOnTheSynthesisModel() {
+        Scope s = freshScope();
+        SessionId sid = seedSession(s);
+        seedObservation(s, sid, "user-prompt", "implement the vector recall arm");
+        seedObservation(s, sid, "session-end", "done");
+
+        TestDoubleProvider primary = goldenLlm(new AtomicInteger());
+        TestDoubleProvider synthesis = goldenLlm(new AtomicInteger());
+        SynthesisOutcome outcome = synthesizerWith(primary, synthesis, 48_000).synthesize(sid);
+
+        assertThat(outcome.status()).isEqualTo(SynthesisOutcome.Status.WRITTEN);
+        assertThat(primary.chatCalls()).isEmpty();
+        assertThat(synthesis.chatCalls()).hasSize(1);
     }
 
     // --- no observations ---------------------------------------------------------------------------

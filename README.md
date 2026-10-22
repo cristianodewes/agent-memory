@@ -427,6 +427,26 @@ Mistral, o endpoint OpenAI-compatível do Gemini e engines locais (Ollama, vLLM,
 llama.cpp). Engines locais sem chave não enviam header `Authorization`. O server faz *probe*
 no provedor no startup e **aborta** se ele estiver inacessível.
 
+#### Modelo de síntese (opcional)
+
+A página final de cada sessão, as páginas temáticas (`memory_consolidate`) e o handoff podem usar um
+modelo próprio, separado do principal, que continua com o trabalho de volume: o resumo de cada bloco
+de uma sessão longa, a busca, o lint e o chat. Essas três chamadas recebem uma entrada limitada (~12
+mil tokens), então um modelo melhor ali custa pouco perto do resumo de blocos.
+
+```yaml
+agent-memory:
+  synthesis:
+    llm:
+      auth:
+        model: claude-sonnet-5-5   # só o modelo: mesmo provedor e chave do llm.auth
+```
+
+Sem configuração, vale o modelo principal. Só com `model`, a rota usa a credencial do `llm.auth` com o
+modelo trocado (env `AGENT_MEMORY_SYNTHESIS_LLM_AUTH_MODEL`); com `provider`, um provedor independente,
+com chave própria. A rota não é testada no startup: uma configuração inválida cai para o principal com
+um aviso, e uma chamada que falha no modelo de síntese é repetida no principal.
+
 ##### OpenAI via OAuth (`openai-oauth`) — assinatura ChatGPT em vez de API key
 
 Quem tem assinatura ChatGPT (Plus/Pro/Team) pode autenticar com a credencial de **login** (OAuth

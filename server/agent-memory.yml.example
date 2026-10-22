@@ -72,6 +72,21 @@ agent-memory:
     # DeepSeek, Mistral, Gemini's OpenAI-compatible endpoint) works the same way: set
     # provider=openai-compat, point base-url at the engine, set model, add api-key only if required.
 
+  # Synthesis route (issue #156): an OPTIONAL model for the durable text written from the sessions —
+  # the session page's final synthesis, the thematic pages (memory_consolidate) and the handoff. The
+  # per-chunk summaries of a long session (the bulk of the tokens), recall, lint and chat keep the
+  # primary llm.auth above. Same shape as llm.auth. EMPTY (the default) => the primary is used — zero
+  # change. Best-effort: NOT probed at boot, a bad block falls back to the primary with a warning, and
+  # a call that fails on the synthesis model is repeated on the primary.
+  synthesis:
+    llm:
+      auth:
+        provider: ""   # provider set => an INDEPENDENT provider on its own key; ONLY model set =>
+                       #   the primary's provider/key/oauth with just the model swapped; both empty => primary
+        api-key: ""
+        base-url: ""
+        model: ""      # e.g. claude-sonnet-5-5 for the pages, on an anthropic primary running claude-haiku-5-5
+
   # LLM-assisted recall (issues #21/#130). Drives BOTH the /recall/inject hook (fires on every prompt,
   # bounded by the client's 10s deadline) AND MCP memory_query. Values shown are the built-in defaults;
   # delete keys you don't need.
