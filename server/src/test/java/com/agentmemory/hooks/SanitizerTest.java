@@ -2,6 +2,7 @@ package com.agentmemory.hooks;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertTimeoutPreemptively;
 
 import com.agentmemory.config.AgentMemoryProperties.Sanitization;
 import com.agentmemory.config.AgentMemoryProperties.Sanitization.CustomPattern;
@@ -10,8 +11,11 @@ import com.agentmemory.core.ObservationKind;
 import com.agentmemory.core.ProjectId;
 import com.agentmemory.core.SessionId;
 import com.agentmemory.core.WorkspaceId;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Random;
+import java.util.regex.Pattern;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
@@ -24,6 +28,10 @@ import org.junit.jupiter.params.provider.ValueSource;
  * {@link SanitizedBoundaryTest} and {@link SanitizationArchitectureTest}.
  */
 class SanitizerTest {
+
+    /** The email pattern before it was made linear: the reference for which spans must be masked. */
+    private static final Pattern ORIGINAL_EMAIL =
+            Pattern.compile("[A-Za-z0-9._%+\\-]+@[A-Za-z0-9.\\-]+\\.[A-Za-z]{2,}");
 
     /** Default-config sanitizer (64 KiB cap, no custom patterns). */
     private final Sanitizer sanitizer = new Sanitizer(new Sanitization(65536, List.of()));
@@ -57,6 +65,63 @@ class SanitizerTest {
     void redactsMultipleEmails() {
         assertThat(clean("a@b.io and c.d+tag@sub.example.org"))
                 .isEqualTo("[REDACTED:email] and [REDACTED:email]");
+    }
+
+    @Test
+    void redactsEmailGluedToTheEndOfThePreviousOne() {
+        // The first domain backs off to "b.com", so the second match starts mid-run, at ".x@c.com".
+        assertThat(clean("a@b.com.x@c.com")).isEqualTo("[REDACTED:email][REDACTED:email]");
+    }
+
+    @Test
+    void emailRedactionStaysLinearOnLongUnbrokenRuns() {
+        // A captured tool output can carry tens of KB with no space or '@' (a minified bundle, an
+        // encoded blob). Redaction runs over the whole payload, before the size cap, on the request
+        // thread of /hook/batch: a pattern that rescans the run from every start position is quadratic,
+        // holds the batch past the client's drain timeout, and the spool stalls behind that one batch.
+        String run = "Ab0._%+-".repeat(25_000); // 200k email-local characters, no '@'
+        String text = run + " then ping joao@example.com";
+        String out = assertTimeoutPreemptively(Duration.ofSeconds(2), () -> sanitizer.redactText(text));
+        assertThat(out).isEqualTo(run + " then ping [REDACTED:email]");
+    }
+
+    @Test
+    void emailRedactionMasksExactlyWhatTheOriginalPatternMasked() {
+        // Speed must not cost privacy: on random text glued from local-part runs, separators and
+        // email-like fragments (some without a local part, a domain or a 2-letter TLD), the redacted
+        // spans are the same — including an email that starts right where the previous one ended.
+        Random random = new Random(42);
+        int withEmail = 0;
+        for (int i = 0; i < 20_000; i++) {
+            StringBuilder sb = new StringBuilder();
+            int segments = random.nextInt(7);
+            for (int s = 0; s < segments; s++) {
+                switch (random.nextInt(3)) {
+                    case 0 -> sb.append(randomRun(random, "ab1._%+-", 0, 6));
+                    case 1 -> sb.append(" ,;/@".charAt(random.nextInt(5)));
+                    default -> sb.append(randomRun(random, "ab1._%+-", 0, 4)).append('@')
+                            .append(randomRun(random, "ab1.-", 0, 4)).append('.')
+                            .append(randomRun(random, "abcom", 0, 3));
+                }
+            }
+            String text = sb.toString();
+            String expected = ORIGINAL_EMAIL.matcher(text).replaceAll("[REDACTED:email]");
+            assertThat(Redactors.EMAIL_REDACTOR.redact(text)).as("text: %s", text).isEqualTo(expected);
+            if (expected.contains("[REDACTED:email]")) {
+                withEmail++;
+            }
+        }
+        // the sample really exercises matches, not just runs that never reach a valid domain
+        assertThat(withEmail).isGreaterThan(1_000);
+    }
+
+    private static String randomRun(Random random, String chars, int min, int max) {
+        int len = min + random.nextInt(max - min + 1);
+        StringBuilder sb = new StringBuilder(len);
+        for (int i = 0; i < len; i++) {
+            sb.append(chars.charAt(random.nextInt(chars.length())));
+        }
+        return sb.toString();
     }
 
     // --- secrets / keys / tokens -------------------------------------------------------------------
