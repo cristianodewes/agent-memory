@@ -81,6 +81,53 @@ func TestPostHookBatchSendsJSONArrayAndToken(t *testing.T) {
 	}
 }
 
+// batchServer answers /hook/batch with the given status and body (the server's per-item report).
+func batchServer(t *testing.T, status int, body string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = io.WriteString(w, body)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestPostHookBatchReportsPartiallyThrottledItems (#158): the server answers 202 as soon as one item
+// was accepted, so the per-item report is the only place a saturated queue shows up. The throttled
+// indexes must be surfaced so the drain keeps those events instead of deleting the whole batch.
+func TestPostHookBatchReportsPartiallyThrottledItems(t *testing.T) {
+	srv := batchServer(t, http.StatusAccepted, `{"total":4,"accepted":2,"throttled":2,"invalid":0,
+		"results":[{"index":0,"status":"accepted"},{"index":1,"status":"throttled"},
+		{"index":2,"status":"accepted"},{"index":3,"status":"throttled"}]}`)
+
+	res, err := New(srv.URL).PostHookBatch(context.Background(), sampleEvents(t, 4))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if res.Outcome != BatchPartial {
+		t.Fatalf("outcome = %v, want BatchPartial", res.Outcome)
+	}
+	if len(res.Throttled) != 2 || res.Throttled[0] != 1 || res.Throttled[1] != 3 {
+		t.Fatalf("throttled indexes = %v, want [1 3]", res.Throttled)
+	}
+}
+
+// TestPostHookBatchAcceptedReportWithoutThrottlingIsAccepted: accepted and invalid items are both
+// done (an invalid item will never be accepted as sent), so the whole batch is acknowledged.
+func TestPostHookBatchAcceptedReportWithoutThrottlingIsAccepted(t *testing.T) {
+	srv := batchServer(t, http.StatusAccepted, `{"total":2,"accepted":1,"throttled":0,"invalid":1,
+		"results":[{"index":0,"status":"accepted"},{"index":1,"status":"invalid"}]}`)
+
+	res, err := New(srv.URL).PostHookBatch(context.Background(), sampleEvents(t, 2))
+	if err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if res.Outcome != BatchAccepted || len(res.Throttled) != 0 {
+		t.Fatalf("got %+v, want BatchAccepted with no throttled indexes", res)
+	}
+}
+
 func TestPostHookBatchEmptyIsNoop(t *testing.T) {
 	// No server needed: an empty batch returns accepted without making a request.
 	client := New("http://127.0.0.1:1")

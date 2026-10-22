@@ -636,6 +636,7 @@ Todos aceitam `--agent <id>` / `--client <id>` (default `claude-code`) — ver
 |---|---|
 | `hook --event <kind> [--payload -]` | Captura um evento de ciclo de vida no *spool* local (*fire-and-forget*). |
 | `mcp-session-header` | Emite o header `X-Agent-Memory-Session` (para `auto_scope=session_aware`). |
+| `drain` | Envia o *spool* inteiro ao server agora, sem o limite de tempo dos hooks (15 s no início de sessão), até esvaziar; com o server saturado, espera e continua. Para uma fila acumulada (veja `spool pending` no `doctor`). Evite abrir ou fechar sessões do agente enquanto roda: o envio dos hooks delas mandaria os mesmos eventos em paralelo. |
 
 **Observabilidade**
 
