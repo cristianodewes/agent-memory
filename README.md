@@ -553,7 +553,10 @@ cada usuário recebe o seu próprio token.
 
 O client resolve identidade e endpoint nesta ordem: arquivo *marker* `.agent-memory.toml` (no
 ancestral mais próximo) → raiz do repositório git → diretório atual. O *marker* aceita
-`workspace`, `project`, `server_url` e `token`.
+`workspace`, `project`, `server_url` e `token`. Pela raiz do repositório git, o projeto é o nome
+da pasta do repositório e o workspace é o nome da pasta acima dela; num repositório direto na raiz
+de um drive (ex.: `C:\meu-repo`), que não tem pasta acima com nome, o workspace é o próprio nome do
+projeto.
 
 | Variável de ambiente | Usada por | Default |
 |---|---|---|
