@@ -186,3 +186,33 @@ func TestResolve(t *testing.T) {
 		}
 	})
 }
+
+// TestDeriveAtFilesystemRoot covers paths whose parent (or the path itself) is a filesystem root —
+// C:\ on Windows, / elsewhere. A root has no directory name: filepath.Base returns the separator,
+// which is not a valid slug, so the hook rejected every event of a repo such as C:\aero-sim-teste.
+// derive is tested directly because a test cannot create a git repo at a real filesystem root.
+func TestDeriveAtFilesystemRoot(t *testing.T) {
+	// "C:\" on Windows, "/" elsewhere.
+	fsRoot := filepath.VolumeName(t.TempDir()) + string(filepath.Separator)
+
+	t.Run("repo directly under the root: workspace falls back to the project name", func(t *testing.T) {
+		repo := filepath.Join(fsRoot, "aero-sim-teste")
+
+		got := deriveFromGit(repo, repo)
+
+		if got.Workspace != "aero-sim-teste" || got.Project != "aero-sim-teste" {
+			t.Fatalf("identity = (%q,%q), want (aero-sim-teste,aero-sim-teste)", got.Workspace, got.Project)
+		}
+		if got.Source != SourceGitRoot {
+			t.Fatalf("source = %q, want git-root", got.Source)
+		}
+	})
+
+	t.Run("cwd is the root itself, no git: resolves to unknown", func(t *testing.T) {
+		got := deriveFromGit(fsRoot, "")
+
+		if got.Workspace != "unknown" || got.Project != "unknown" {
+			t.Fatalf("identity = (%q,%q), want (unknown,unknown)", got.Workspace, got.Project)
+		}
+	})
+}

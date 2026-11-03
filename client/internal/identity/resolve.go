@@ -10,9 +10,12 @@
 //     lets consultancies, work/personal splits and monorepos pin identity. Nearest ancestor wins.
 //  2. Otherwise, the main git repository: project = basename(repoRoot), workspace =
 //     basename(parent(repoRoot)). A git worktree resolves to its MAIN repo's identity, so a feature
-//     worktree shares the parent repo's memory rather than spawning a new project.
+//     worktree shares the parent repo's memory rather than spawning a new project. A repo directly
+//     under a filesystem root (C:\aero-sim-teste, /srv-repo) has a parent with no name, so its
+//     workspace falls back to the project name, as in rule 3: unrelated repos at the root do not
+//     end up sharing one workspace.
 //  3. Otherwise (no marker, no git), fall back to basename(cwd) for both so capture still works
-//     outside a repo.
+//     outside a repo; a cwd that is a filesystem root itself resolves to "unknown".
 package identity
 
 import (
@@ -88,18 +91,42 @@ func Resolve(cwd string) Resolved {
 }
 
 // deriveFromGit fills Resolved from the main repo root (project = basename(root), workspace =
-// basename(parent(root))), or from basename(cwd) when there is no git root.
+// basename(parent(root)), or the project name when that parent is a filesystem root), or from
+// basename(cwd) when there is no git root.
 func deriveFromGit(cwd, repoRoot string) Resolved {
 	if repoRoot != "" {
+		project := orUnknown(dirName(repoRoot))
+		workspace := dirName(filepath.Dir(repoRoot))
+		if workspace == "" {
+			workspace = project
+		}
 		return Resolved{
-			Workspace: filepath.Base(filepath.Dir(repoRoot)),
-			Project:   filepath.Base(repoRoot),
+			Workspace: workspace,
+			Project:   project,
 			Source:    SourceGitRoot,
 			RepoRoot:  repoRoot,
 		}
 	}
-	base := filepath.Base(cwd)
+	base := orUnknown(dirName(cwd))
 	return Resolved{Workspace: base, Project: base, Source: SourceCwd}
+}
+
+// dirName returns the last element of path, or "" when path is a filesystem root (C:\, \\host\share\,
+// /): a root has no directory name, and filepath.Base would return the separator itself, which is not
+// a valid workspace/project slug.
+func dirName(path string) string {
+	if filepath.Dir(path) == path {
+		return ""
+	}
+	return filepath.Base(path)
+}
+
+// orUnknown returns name, or "unknown" when there was no directory name to derive one from.
+func orUnknown(name string) string {
+	if name == "" {
+		return "unknown"
+	}
+	return name
 }
 
 // applyMarker overlays a marker's explicit fields onto res. Workspace/project from the marker (when
