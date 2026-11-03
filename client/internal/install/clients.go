@@ -107,6 +107,9 @@ const (
 type hookEvent struct {
 	clientName string // key in the client's hooks file (e.g. "BeforeTool", "preToolUse", "SessionStart")
 	eventArg   string // canonical value passed as `hook --event <eventArg>`
+	// async renders `"async": true` on the hook entry (Claude Code only, nested shape): the client runs
+	// it in the background instead of waiting for it. See claudeCodeHookEvents.
+	async bool
 }
 
 // HookProfile describes a client's hook surface: where the file lives, its shape, and the event map.
@@ -174,10 +177,18 @@ const DefaultClientID = "claude-code"
 
 // claudeCodeHookEvents are the seven Claude Code events (CLAUDE_CODE_EVENTS; client name == canonical
 // --event value).
+//
+// SessionEnd is async. Claude Code gives SessionEnd hooks a budget of 1.5 s on exit, /clear and /resume
+// and then cancels them (code.claude.com/docs/en/hooks.md, SessionEnd), which cut the session-end drain
+// short even with a healthy server. An async hook runs in the background without that budget ("Run hooks
+// in the background"), so the drain gets its own 15 s bound; in a test on Windows (Claude Code 2.1.317)
+// an async SessionEnd hook outlived the exit. If a future version kills it at exit, the events stay in
+// the spool and the next session start ships them: nothing is lost. The other events stay synchronous:
+// SessionStart and UserPromptSubmit inject context through their stdout, which an async hook loses.
 var claudeCodeHookEvents = func() []hookEvent {
 	evs := make([]hookEvent, len(ManagedHookEvents))
 	for i, e := range ManagedHookEvents {
-		evs[i] = hookEvent{clientName: e, eventArg: e}
+		evs[i] = hookEvent{clientName: e, eventArg: e, async: e == "SessionEnd"}
 	}
 	return evs
 }()
@@ -185,36 +196,36 @@ var claudeCodeHookEvents = func() []hookEvent {
 // codexHookEvents mirror ai-memory's CODEX_EVENTS: the six common events with NO SessionEnd (Codex uses
 // Stop for both turn-end and session-end). Codex keys are the Claude Code PascalCase names.
 var codexHookEvents = []hookEvent{
-	{"SessionStart", "SessionStart"},
-	{"UserPromptSubmit", "UserPromptSubmit"},
-	{"PreToolUse", "PreToolUse"},
-	{"PostToolUse", "PostToolUse"},
-	{"PreCompact", "PreCompact"},
-	{"Stop", "Stop"},
+	{clientName: "SessionStart", eventArg: "SessionStart"},
+	{clientName: "UserPromptSubmit", eventArg: "UserPromptSubmit"},
+	{clientName: "PreToolUse", eventArg: "PreToolUse"},
+	{clientName: "PostToolUse", eventArg: "PostToolUse"},
+	{clientName: "PreCompact", eventArg: "PreCompact"},
+	{clientName: "Stop", eventArg: "Stop"},
 }
 
 // cursorHookEvents mirror ai-memory's CURSOR_EVENTS: camelCase names, a FLAT shape, and two extras over
 // the common set — beforeSubmitPrompt is Cursor's user-prompt concept (no userPromptSubmit event), and
 // postToolUseFailure is a second post-tool signal. Both map to the canonical kind their script implies.
 var cursorHookEvents = []hookEvent{
-	{"sessionStart", "SessionStart"},
-	{"sessionEnd", "SessionEnd"},
-	{"beforeSubmitPrompt", "UserPromptSubmit"},
-	{"preToolUse", "PreToolUse"},
-	{"postToolUse", "PostToolUse"},
-	{"postToolUseFailure", "PostToolUse"},
-	{"preCompact", "PreCompact"},
-	{"stop", "Stop"},
+	{clientName: "sessionStart", eventArg: "SessionStart"},
+	{clientName: "sessionEnd", eventArg: "SessionEnd"},
+	{clientName: "beforeSubmitPrompt", eventArg: "UserPromptSubmit"},
+	{clientName: "preToolUse", eventArg: "PreToolUse"},
+	{clientName: "postToolUse", eventArg: "PostToolUse"},
+	{clientName: "postToolUseFailure", eventArg: "PostToolUse"},
+	{clientName: "preCompact", eventArg: "PreCompact"},
+	{clientName: "stop", eventArg: "Stop"},
 }
 
 // geminiHookEvents mirror ai-memory's GEMINI_EVENTS: SessionStart/SessionEnd plus BeforeTool/AfterTool/
 // PreCompress (Gemini's names for pre-/post-tool and compaction). No UserPromptSubmit or Stop equivalent.
 var geminiHookEvents = []hookEvent{
-	{"SessionStart", "SessionStart"},
-	{"SessionEnd", "SessionEnd"},
-	{"BeforeTool", "PreToolUse"},
-	{"AfterTool", "PostToolUse"},
-	{"PreCompress", "PreCompact"},
+	{clientName: "SessionStart", eventArg: "SessionStart"},
+	{clientName: "SessionEnd", eventArg: "SessionEnd"},
+	{clientName: "BeforeTool", eventArg: "PreToolUse"},
+	{clientName: "AfterTool", eventArg: "PostToolUse"},
+	{clientName: "PreCompress", eventArg: "PreCompact"},
 }
 
 // clients is the registry of supported install profiles. Order is the listing order in --help.

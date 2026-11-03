@@ -259,14 +259,16 @@ func addManagedHooks(root map[string]any, h *HookProfile, binPath string) {
 				"matcher": "",
 			}
 		default: // HookShapeNested
+			inner := map[string]any{
+				"type":    "command",
+				"command": cmd,
+			}
+			if ev.async {
+				inner["async"] = true
+			}
 			entry = map[string]any{
 				"matcher": "",
-				"hooks": []any{
-					map[string]any{
-						"type":    "command",
-						"command": cmd,
-					},
-				},
+				"hooks":   []any{inner},
 			}
 		}
 		existing, _ := hooks[ev.clientName].([]any)
