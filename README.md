@@ -373,12 +373,20 @@ agent-memory install-hooks --agent gemini-cli
 
 | Cliente (`--agent`) | Hooks | MCP | Instruções |
 |---|---|---|---|
-| `claude-code` (padrão) | `<repo>/.claude/settings.json` — nested, 7 eventos (`SessionStart`…`PreCompact`…`SessionEnd`) | `<repo>/.mcp.json` — `mcpServers`, `type:http` + `headersHelper` (#87) | `CLAUDE.md` |
+| `claude-code` (padrão) | `<repo>/.claude/settings.json` — nested, 7 eventos (`SessionStart`…`PreCompact`…`SessionEnd`); o `SessionEnd` com `"async": true` (ver abaixo) | `<repo>/.mcp.json` — `mcpServers`, `type:http` + `headersHelper` (#87) | `CLAUDE.md` |
 | `codex` | `~/.codex/hooks.json` — nested, 6 eventos (sem `SessionEnd`) | `~/.codex/config.toml` — `[mcp_servers.*]` (TOML, `http_headers` + `default_tools_approval_mode`) | `AGENTS.md` |
 | `cursor` | `~/.cursor/hooks.json` — flat camelCase (`beforeSubmitPrompt`/`postToolUseFailure`/…) + `version:1` | `~/.cursor/mcp.json` — `mcpServers`, `url` | `AGENTS.md` |
 | `gemini-cli` | `~/.gemini/settings.json` — nested (`SessionStart`/`SessionEnd`/`BeforeTool`/`AfterTool`/`PreCompress`) | `~/.gemini/settings.json` — `mcpServers`, `httpUrl` + `timeout` | `AGENTS.md` |
 | `vscode-copilot` | — | `<repo>/.vscode/mcp.json` — `servers`, `type:http` | — |
 | `claude-desktop` | — | config global do app — `mcpServers` via `mcp-remote` (stdio, header por env) | — |
+
+No Claude Code, o hook do `SessionEnd` é instalado com `"async": true`: o Claude Code só espera 1,5 s
+pelos hooks desse evento ao sair (e no `/clear` e no `/resume`) e depois os cancela, o que cortava o
+envio da fila no fim da sessão. Assíncrono, o envio roda em segundo plano com o limite de 15 s do
+próprio client e não segura o fechamento. Os outros eventos continuam síncronos: o `SessionStart` e o
+`UserPromptSubmit` injetam contexto pela saída, que um hook assíncrono perde. Para levar a opção a
+uma instalação antiga, rode `agent-memory install-hooks` de novo (com `--global` na instalação de
+usuário).
 
 `setup-agent --agent X` faz hooks + MCP + instruções para `X` numa tacada; uma *surface* que o
 cliente não suporta (ex.: hooks no VS Code/Claude Desktop) é reportada como *unsupported* e

@@ -121,6 +121,79 @@ func TestInstallHooksUpgradeUpdatesBinaryPathNoDuplicate(t *testing.T) {
 	}
 }
 
+// innerHook returns the first inner hook object of the first group registered under event (nested
+// shape), failing the test when the structure is not there.
+func innerHook(t *testing.T, path, event string) map[string]any {
+	t.Helper()
+	groups, ok := readJSON(t, path)["hooks"].(map[string]any)[event].([]any)
+	if !ok || len(groups) == 0 {
+		t.Fatalf("no %s hook group in %s", event, path)
+	}
+	inner, ok := groups[0].(map[string]any)["hooks"].([]any)
+	if !ok || len(inner) == 0 {
+		t.Fatalf("no inner hook under %s", event)
+	}
+	return inner[0].(map[string]any)
+}
+
+func TestInstallHooksClaudeSessionEndIsAsync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	if _, err := Hooks(path, "/bin/agent-memory"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := innerHook(t, path, "SessionEnd")["async"]; got != true {
+		t.Errorf("SessionEnd async = %v, want true", got)
+	}
+	// SessionStart and UserPromptSubmit inject context through their stdout, which an async hook loses;
+	// every other event stays synchronous too.
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "Stop"} {
+		if got, ok := innerHook(t, path, ev)["async"]; ok {
+			t.Errorf("%s async = %v, want the key absent", ev, got)
+		}
+	}
+}
+
+func TestInstallHooksUpgradeAddsAsyncToExistingSessionEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A settings file written by an installer from before the async SessionEnd: all seven events, none
+	// with "async". Without the async SessionEnd, re-installing over it would be Unchanged.
+	var groups []string
+	for _, ev := range []string{"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse",
+		"PreCompact", "Stop", "SessionEnd"} {
+		groups = append(groups, `"`+ev+`": [{"matcher": "", "hooks": [`+
+			`{"type": "command", "command": "\"/bin/agent-memory\" hook --event `+ev+`"}]}]`)
+	}
+	old := `{"hooks": {` + strings.Join(groups, ", ") + `}}`
+	if err := os.WriteFile(path, []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, err := Hooks(path, "/bin/agent-memory")
+	if err != nil || ch != Updated {
+		t.Fatalf("upgrade: change=%v err=%v, want updated", ch, err)
+	}
+	if got := innerHook(t, path, "SessionEnd")["async"]; got != true {
+		t.Errorf("SessionEnd async after upgrade = %v, want true", got)
+	}
+}
+
+func TestInstallHooksGeminiSessionEndStaysSync(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".gemini", "settings.json")
+	profile := &HookProfile{Shape: HookShapeNested, Events: geminiHookEvents}
+	if _, err := HooksProfile(path, profile, "/bin/agent-memory"); err != nil {
+		t.Fatal(err)
+	}
+
+	// "async" is a Claude Code hook option; Gemini CLI's hook schema does not define it.
+	if got, ok := innerHook(t, path, "SessionEnd")["async"]; ok {
+		t.Errorf("Gemini SessionEnd async = %v, want the key absent", got)
+	}
+}
+
 func TestUninstallHooksAbsentWhenNothingOurs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".claude", "settings.json")
 	if ch, _ := UninstallHooks(path); ch != Absent {
