@@ -71,7 +71,7 @@ func TestRenameProjectPostsExpectedBody(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := postLifecycle(&out, srv.URL, "/projects/rename",
+	err := postLifecycle(&out, adminTarget{baseURL: srv.URL}, "/projects/rename",
 		map[string]any{"workspace": "w", "project": "old", "newProject": "new"})
 	if err != nil {
 		t.Fatalf("postLifecycle errored: %v", err)
@@ -95,18 +95,11 @@ func TestPostLifecycleSurfacesConflictRefusal(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := postLifecycle(&out, srv.URL, "/reset", map[string]any{"force": false})
+	err := postLifecycle(&out, adminTarget{baseURL: srv.URL}, "/reset", map[string]any{"force": false})
 	if err == nil {
 		t.Fatal("expected an error for a 409 refusal")
 	}
 	if !strings.Contains(err.Error(), "live agent-memory process") {
 		t.Fatalf("error should surface the refusal reason, got: %v", err)
-	}
-}
-
-func TestResolveServerURLForLifecycleHonorsFlag(t *testing.T) {
-	t.Setenv("AGENT_MEMORY_SERVER", "")
-	if got := resolveServerURL("http://host:9/"); got != "http://host:9" {
-		t.Fatalf("expected trimmed flag URL, got %q", got)
 	}
 }

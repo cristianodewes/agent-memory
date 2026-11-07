@@ -20,25 +20,6 @@ func TestRootHasReindexCommand(t *testing.T) {
 	t.Fatal("expected a 'reindex' subcommand on the root command")
 }
 
-func TestResolveServerURLPrecedence(t *testing.T) {
-	// Explicit flag wins over the env, and a trailing slash is trimmed.
-	t.Setenv("AGENT_MEMORY_SERVER", "http://from-env:9000")
-	if got := resolveServerURL("http://flag:1234/"); got != "http://flag:1234" {
-		t.Fatalf("flag should win and trim slash, got %q", got)
-	}
-	// Env is used when no flag is given.
-	if got := resolveServerURL(""); got != "http://from-env:9000" {
-		t.Fatalf("env should be used, got %q", got)
-	}
-}
-
-func TestResolveServerURLDefault(t *testing.T) {
-	t.Setenv("AGENT_MEMORY_SERVER", "")
-	if got := resolveServerURL(""); got != defaultServerURL {
-		t.Fatalf("expected default %q, got %q", defaultServerURL, got)
-	}
-}
-
 func TestReindexFullAndIncrementalAreMutuallyExclusive(t *testing.T) {
 	cmd := newReindexCmd()
 	cmd.SetArgs([]string{"--full", "--incremental"})
@@ -75,7 +56,7 @@ func TestRunReindexPostsRequestAndRendersReport(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := runReindex(&out, srv.URL, reindexRequest{Mode: "incremental", Since: "HEAD~2", Reembed: true})
+	err := runReindex(&out, adminTarget{baseURL: srv.URL}, reindexRequest{Mode: "incremental", Since: "HEAD~2", Reembed: true})
 	if err != nil {
 		t.Fatalf("runReindex returned error: %v", err)
 	}
@@ -100,7 +81,7 @@ func TestRunReindexReportsServerError(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := runReindex(&out, srv.URL, reindexRequest{Mode: "full"})
+	err := runReindex(&out, adminTarget{baseURL: srv.URL}, reindexRequest{Mode: "full"})
 	if err == nil {
 		t.Fatal("expected an error for a non-200 response")
 	}

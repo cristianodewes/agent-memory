@@ -568,17 +568,20 @@ projeto.
 
 | Variável de ambiente | Usada por | Default |
 |---|---|---|
-| `AGENT_MEMORY_SERVER_URL` | captura/drain e instaladores (`setup-agent`, `install-*`, flag `--server-url`) | `http://127.0.0.1:8080` |
-| `AGENT_MEMORY_SERVER` | comandos administrativos/ops (`reindex`, `checkpoints`, `backup`, `user`, lifecycle; flag `--server`) | `http://127.0.0.1:8080` |
-| `AGENT_MEMORY_TOKEN` | *bearer token* (captura, MCP e ops admin via `--token`) | — |
+| `AGENT_MEMORY_SERVER_URL` | captura/drain, instaladores (`setup-agent`, `install-*`, flag `--server-url`) e comandos administrativos (`reindex`, `checkpoints`, `backup`, `restore`, `restore-page`, `bootstrap`, `user`, lifecycle; flag `--server`) | `http://127.0.0.1:8080` |
+| `AGENT_MEMORY_SERVER` | nome antigo, só dos comandos administrativos; vale apenas quando `AGENT_MEMORY_SERVER_URL` não está definida | — |
+| `AGENT_MEMORY_TOKEN` | *bearer token* (captura, MCP e comandos administrativos; nestes, a flag `--token` tem prioridade) | — |
 | `AGENT_MEMORY_DATA_DIR` | raiz do *data dir* local (spool, credencial OIDC, **logs**) | `~/.agent-memory` |
 | `AGENT_MEMORY_LOG_LEVEL` | nível do log do client (`debug`\|`info`\|`warn`\|`error`) | `info` |
 | `AGENT_MEMORY_DEBUG` | atalho que força nível `debug` quando *truthy* (`1`/`true`/`yes`/`on`) | — |
 | `AGENT_MEMORY_RECALL_TIMEOUT` | *deadline* do recall inject proativo no `UserPromptSubmit` (#84); duração Go (`12s`, `1500ms`) ou inteiro em segundos (`12`). Vazio/inválido cai no default | `15s` |
 | `AGENT_MEMORY_LOG_RESPONSE_BODIES` | ⚠️ **opt-in de depuração** que grava o **corpo completo de cada resposta do server** no `client.log` (`debug`) quando *truthy* — **vaza conteúdo de memória**; ver aviso abaixo | — (off) |
 
-> Atenção ao par de nomes: o caminho de captura/instaladores lê `AGENT_MEMORY_SERVER_URL`,
-> enquanto os comandos administrativos leem `AGENT_MEMORY_SERVER` (sem o sufixo `_URL`).
+> Os comandos administrativos resolvem o servidor e o token como os hooks e o `drain`, com as
+> flags na frente. Servidor: `--server` → `server_url` do *marker* → `AGENT_MEMORY_SERVER_URL` →
+> `AGENT_MEMORY_SERVER` → `http://127.0.0.1:8080`. Token: `--token` → `token` do *marker* →
+> `AGENT_MEMORY_TOKEN` → o login OIDC (`auth login oidc-device`). As rotas administrativas exigem o
+> token **root** do servidor.
 
 #### Logs e modo *debug* do client
 

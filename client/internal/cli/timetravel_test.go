@@ -72,7 +72,7 @@ func TestRestorePagePostsExpectedBody(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := postLifecycle(&out, srv.URL, "/restore-page", map[string]any{
+	err := postLifecycle(&out, adminTarget{baseURL: srv.URL}, "/restore-page", map[string]any{
 		"workspace": "w", "project": "p", "path": "concepts/recall.md", "from": "HEAD~1"})
 	if err != nil {
 		t.Fatalf("postLifecycle errored: %v", err)
@@ -96,7 +96,7 @@ func TestCheckpointsGetsLimitQuery(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	if err := getJSON(&out, srv.URL+"/checkpoints?limit=5"); err != nil {
+	if err := getJSON(&out, adminTarget{baseURL: srv.URL}, "/checkpoints?limit=5"); err != nil {
 		t.Fatalf("getJSON errored: %v", err)
 	}
 	if gotPath != "/checkpoints" {
@@ -118,7 +118,7 @@ func TestGetJSONSurfacesServerError(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := getJSON(&out, srv.URL+"/checkpoints?limit=20")
+	err := getJSON(&out, adminTarget{baseURL: srv.URL}, "/checkpoints?limit=20")
 	if err == nil || !strings.Contains(err.Error(), "unavailable") {
 		t.Fatalf("expected a surfaced 503 error, got %v", err)
 	}

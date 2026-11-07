@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
@@ -16,8 +15,8 @@ import (
 // User-management subcommands (issue #39): a thin HTTP front-end over the server's
 // /users/* admin endpoints for a shared/multi-user server. Each user gets its own
 // bearer token resolving to an identity recorded in the audit log. These are ADMIN
-// operations, so they send the ROOT token (--token or $AGENT_MEMORY_TOKEN); the
-// server rejects a per-user token here.
+// operations, so they send the ROOT token (--token, or the same token the hooks use — see
+// resolveAdminTarget); the server rejects a per-user token here.
 //
 // A freshly issued token is printed once by `add` and `rotate-token` and never again
 // (the server stores only its hash).
@@ -55,11 +54,10 @@ func newUserAddCmd() *cobra.Command {
 			}
 			body := map[string]any{"username": username}
 			return postUser(cmd.OutOrStdout(), http.MethodPost,
-				resolveServerURL(serverURL), "/users/add", resolveToken(token), body)
+				resolveAdminTarget(serverURL, token), "/users/add", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
-	addTokenFlag(cmd, &token)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&username, "username", "", "the new user's name (the audit-log actor)")
 	return cmd
 }
@@ -75,11 +73,10 @@ func newUserListCmd() *cobra.Command {
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return postUser(cmd.OutOrStdout(), http.MethodGet,
-				resolveServerURL(serverURL), "/users/list", resolveToken(token), nil)
+				resolveAdminTarget(serverURL, token), "/users/list", nil)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
-	addTokenFlag(cmd, &token)
+	addAdminFlags(cmd, &serverURL, &token)
 	return cmd
 }
 
@@ -108,11 +105,10 @@ func newUserStatusCmd(use, short, path string) *cobra.Command {
 			}
 			body := map[string]any{"username": username}
 			return postUser(cmd.OutOrStdout(), http.MethodPost,
-				resolveServerURL(serverURL), path, resolveToken(token), body)
+				resolveAdminTarget(serverURL, token), path, body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
-	addTokenFlag(cmd, &token)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&username, "username", "", "the user to "+use)
 	return cmd
 }
@@ -132,59 +128,36 @@ func newUserRotateTokenCmd() *cobra.Command {
 			}
 			body := map[string]any{"username": username}
 			return postUser(cmd.OutOrStdout(), http.MethodPost,
-				resolveServerURL(serverURL), "/users/rotate-token", resolveToken(token), body)
+				resolveAdminTarget(serverURL, token), "/users/rotate-token", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
-	addTokenFlag(cmd, &token)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&username, "username", "", "the user whose token to rotate")
 	return cmd
 }
 
 // --- shared helpers -------------------------------------------------------------------------------
 
-// addTokenFlag adds the --token flag used to authenticate admin requests as root.
-func addTokenFlag(cmd *cobra.Command, target *string) {
-	cmd.Flags().StringVar(target, "token", "",
-		"root bearer token for admin auth (default $"+"AGENT_MEMORY_TOKEN)")
-}
-
-// resolveToken applies the precedence: explicit flag, then $AGENT_MEMORY_TOKEN.
-func resolveToken(flagValue string) string {
-	if strings.TrimSpace(flagValue) != "" {
-		return strings.TrimSpace(flagValue)
-	}
-	return strings.TrimSpace(os.Getenv("AGENT_MEMORY_TOKEN"))
-}
-
-// postUser sends a user-management request to <base><path> with the bearer token and prints the
-// server's JSON response. A nil body sends no payload (GET). A non-2xx status surfaces the server's
+// postUser sends a user-management request to the target's <path> with its bearer token and prints
+// the server's JSON response. A nil body sends no payload (GET). A non-2xx status surfaces the server's
 // reason (e.g. a 403 when not using the root token, or a 409 on a duplicate user).
-func postUser(out io.Writer, method, base, path, token string, body map[string]any) error {
-	var reader io.Reader
+func postUser(out io.Writer, method string, target adminTarget, path string, body map[string]any) error {
+	var payload []byte
 	if body != nil {
-		payload, err := json.Marshal(body)
-		if err != nil {
+		var err error
+		if payload, err = json.Marshal(body); err != nil {
 			return fmt.Errorf("encoding request: %w", err)
 		}
-		reader = bytes.NewReader(payload)
 	}
-	url := base + path
-	req, err := http.NewRequest(method, url, reader)
+	req, err := target.newRequest(method, path, payload)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+		return err
 	}
 
 	client := &http.Client{Timeout: 1 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("calling %s: %w", url, err)
+		return fmt.Errorf("calling %s: %w", req.URL, err)
 	}
 	defer resp.Body.Close()
 
