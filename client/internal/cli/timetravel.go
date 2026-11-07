@@ -20,7 +20,7 @@ import (
 
 // newCheckpointsCmd: agent-memory checkpoints [--limit N]
 func newCheckpointsCmd() *cobra.Command {
-	var serverURL string
+	var serverURL, token string
 	var limit int
 	cmd := &cobra.Command{
 		Use:           "checkpoints",
@@ -34,18 +34,17 @@ func newCheckpointsCmd() *cobra.Command {
 			}
 			q := url.Values{}
 			q.Set("limit", strconv.Itoa(limit))
-			target := resolveServerURL(serverURL) + "/checkpoints?" + q.Encode()
-			return getJSON(cmd.OutOrStdout(), target)
+			return getJSON(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/checkpoints?"+q.Encode())
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of checkpoints to list")
 	return cmd
 }
 
 // newRestorePageCmd: agent-memory restore-page --workspace W --project P --path PATH --from REV
 func newRestorePageCmd() *cobra.Command {
-	var serverURL, workspace, project, path, from string
+	var serverURL, token, workspace, project, path, from string
 	cmd := &cobra.Command{
 		Use:           "restore-page",
 		Short:         "Restore a single page's markdown from a git revision and reindex it",
@@ -60,10 +59,10 @@ func newRestorePageCmd() *cobra.Command {
 			}
 			body := map[string]any{
 				"workspace": workspace, "project": project, "path": path, "from": from}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/restore-page", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/restore-page", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the page's workspace slug")
 	cmd.Flags().StringVar(&project, "project", "", "the page's project slug")
 	cmd.Flags().StringVar(&path, "path", "", "the page path (e.g. concepts/recall.md)")
@@ -73,7 +72,7 @@ func newRestorePageCmd() *cobra.Command {
 
 // newBackupCmd: agent-memory backup --out PATH
 func newBackupCmd() *cobra.Command {
-	var serverURL, out string
+	var serverURL, token, out string
 	cmd := &cobra.Command{
 		Use:           "backup",
 		Short:         "Write an online DB-only backup tarball (the source stays writable)",
@@ -85,10 +84,10 @@ func newBackupCmd() *cobra.Command {
 				return err
 			}
 			body := map[string]any{"target": out}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/backup", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/backup", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&out, "out", "",
 		"path of the .tar.gz archive to write (server-side path)")
 	return cmd
@@ -96,7 +95,7 @@ func newBackupCmd() *cobra.Command {
 
 // newRestoreCmd: agent-memory restore --in PATH [--force] [--yes]
 func newRestoreCmd() *cobra.Command {
-	var serverURL, in string
+	var serverURL, token, in string
 	var force, yes bool
 	cmd := &cobra.Command{
 		Use:   "restore",
@@ -117,10 +116,10 @@ func newRestoreCmd() *cobra.Command {
 				return fmt.Errorf("restore overwrites DB state; pass --yes to confirm")
 			}
 			body := map[string]any{"source": in, "force": force}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/restore", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/restore", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&in, "in", "", "path of the .tar.gz archive to restore (server-side path)")
 	cmd.Flags().BoolVar(&force, "force", false, "override the live-process guard and restore anyway")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the destructive reload")
@@ -129,7 +128,7 @@ func newRestoreCmd() *cobra.Command {
 
 // newBootstrapCmd: agent-memory bootstrap --workspace W --project P --repo PATH
 func newBootstrapCmd() *cobra.Command {
-	var serverURL, workspace, project, repo string
+	var serverURL, token, workspace, project, repo string
 	cmd := &cobra.Command{
 		Use:           "bootstrap",
 		Short:         "Seed a project's memory from its existing repo history via one LLM pass",
@@ -142,10 +141,10 @@ func newBootstrapCmd() *cobra.Command {
 				return err
 			}
 			body := map[string]any{"workspace": workspace, "project": project, "repo": repo}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/bootstrap", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/bootstrap", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the target workspace slug")
 	cmd.Flags().StringVar(&project, "project", "", "the target project slug")
 	cmd.Flags().StringVar(&repo, "repo", "",
@@ -153,17 +152,17 @@ func newBootstrapCmd() *cobra.Command {
 	return cmd
 }
 
-// getJSON GETs a URL and pretty-prints the JSON response; a non-2xx status is an error
-// carrying the server's body (mirrors postLifecycle so the two read consistently).
-func getJSON(out io.Writer, target string) error {
-	req, err := http.NewRequest(http.MethodGet, target, nil)
+// getJSON GETs the target's <path> (query included) and pretty-prints the JSON response; a non-2xx
+// status is an error carrying the server's body (mirrors postLifecycle so the two read consistently).
+func getJSON(out io.Writer, target adminTarget, path string) error {
+	req, err := target.newRequest(http.MethodGet, path, nil)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return err
 	}
 	client := &http.Client{Timeout: 1 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("calling %s: %w", target, err)
+		return fmt.Errorf("calling %s: %w", req.URL, err)
 	}
 	defer resp.Body.Close()
 

@@ -40,7 +40,10 @@ const (
 	// only for deliberate debugging, never as a default.
 	EnvLogResponseBodies = "AGENT_MEMORY_LOG_RESPONSE_BODIES"
 
-	defaultServerURL   = "http://127.0.0.1:8080"
+	// DefaultServerURL is the server base URL when neither a flag, a marker nor the environment names
+	// one: a server on its default loopback bind.
+	DefaultServerURL = "http://127.0.0.1:8080"
+
 	defaultDataDirName = ".agent-memory"
 	// spoolSubdir is the spool's location under the data dir (ARCHITECTURE §4.1 keeps client spool
 	// state under the data root).
@@ -75,7 +78,7 @@ type Config struct {
 func Load() Config {
 	server := strings.TrimSpace(os.Getenv(EnvServerURL))
 	if server == "" {
-		server = defaultServerURL
+		server = DefaultServerURL
 	}
 	return Config{
 		ServerURL:         server,

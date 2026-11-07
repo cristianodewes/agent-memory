@@ -58,7 +58,7 @@ func TestPostUserAttachesBearerTokenAndBody(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := postUser(&out, http.MethodPost, srv.URL, "/users/add", "root-token",
+	err := postUser(&out, http.MethodPost, adminTarget{baseURL: srv.URL, token: "root-token"}, "/users/add",
 		map[string]any{"username": "alice"})
 	if err != nil {
 		t.Fatalf("postUser errored: %v", err)
@@ -88,7 +88,7 @@ func TestPostUserListSendsNoBodyButAuth(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	if err := postUser(&out, http.MethodGet, srv.URL, "/users/list", "root-token", nil); err != nil {
+	if err := postUser(&out, http.MethodGet, adminTarget{baseURL: srv.URL, token: "root-token"}, "/users/list", nil); err != nil {
 		t.Fatalf("postUser(list) errored: %v", err)
 	}
 	if gotMethod != http.MethodGet {
@@ -111,19 +111,9 @@ func TestPostUserSurfacesForbidden(t *testing.T) {
 	defer srv.Close()
 
 	var out bytes.Buffer
-	err := postUser(&out, http.MethodPost, srv.URL, "/users/add", "a-user-token",
+	err := postUser(&out, http.MethodPost, adminTarget{baseURL: srv.URL, token: "a-user-token"}, "/users/add",
 		map[string]any{"username": "x"})
 	if err == nil || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("expected a 403 error to surface, got %v", err)
-	}
-}
-
-func TestResolveTokenPrefersFlagOverEnv(t *testing.T) {
-	t.Setenv("AGENT_MEMORY_TOKEN", "env-token")
-	if got := resolveToken("flag-token"); got != "flag-token" {
-		t.Fatalf("expected the flag token to win, got %q", got)
-	}
-	if got := resolveToken(""); got != "env-token" {
-		t.Fatalf("expected the env token as fallback, got %q", got)
 	}
 }

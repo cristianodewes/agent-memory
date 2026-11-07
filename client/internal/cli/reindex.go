@@ -1,23 +1,15 @@
 package cli
 
 import (
-	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 )
-
-// defaultServerURL is the server base URL used when neither --server nor the
-// AGENT_MEMORY_SERVER environment variable is set. The client is a thin HTTP
-// client of the server (ARCHITECTURE §2.1); reindex is a server operation
-// (issue #14) the client only triggers.
-const defaultServerURL = "http://127.0.0.1:8080"
 
 // reindexRequest is the POST /reindex body. Fields mirror the server's
 // ReindexController.Request (mode/since/reembed); omitempty keeps an
@@ -35,6 +27,7 @@ type reindexRequest struct {
 func newReindexCmd() *cobra.Command {
 	var (
 		serverURL   string
+		token       string
 		incremental bool
 		full        bool
 		since       string
@@ -65,14 +58,12 @@ func newReindexCmd() *cobra.Command {
 				return fmt.Errorf("--since is only valid with --incremental")
 			}
 
-			base := resolveServerURL(serverURL)
 			req := reindexRequest{Mode: mode, Since: since, Reembed: reembed}
-			return runReindex(cmd.OutOrStdout(), base, req)
+			return runReindex(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), req)
 		},
 	}
 
-	cmd.Flags().StringVar(&serverURL, "server", "",
-		"server base URL (default $AGENT_MEMORY_SERVER or "+defaultServerURL+")")
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().BoolVar(&full, "full", false, "full rebuild of the whole index (default)")
 	cmd.Flags().BoolVar(&incremental, "incremental", false,
 		"rebuild only files changed since a git ref")
@@ -83,35 +74,22 @@ func newReindexCmd() *cobra.Command {
 	return cmd
 }
 
-// resolveServerURL applies the precedence: explicit flag, then env, then default.
-func resolveServerURL(flagValue string) string {
-	if flagValue != "" {
-		return strings.TrimRight(flagValue, "/")
-	}
-	if env := os.Getenv("AGENT_MEMORY_SERVER"); env != "" {
-		return strings.TrimRight(env, "/")
-	}
-	return defaultServerURL
-}
-
-// runReindex POSTs the request to <base>/reindex and renders the JSON report.
-func runReindex(out io.Writer, base string, req reindexRequest) error {
+// runReindex POSTs the request to the target's /reindex and renders the JSON report.
+func runReindex(out io.Writer, target adminTarget, req reindexRequest) error {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return fmt.Errorf("encoding request: %w", err)
 	}
 
-	url := base + "/reindex"
-	httpReq, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	httpReq, err := target.newRequest(http.MethodPost, "/reindex", body)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return err
 	}
-	httpReq.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 10 * time.Minute}
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return fmt.Errorf("calling %s: %w", url, err)
+		return fmt.Errorf("calling %s: %w", httpReq.URL, err)
 	}
 	defer resp.Body.Close()
 

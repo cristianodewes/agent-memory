@@ -18,7 +18,7 @@ import (
 
 // newRenameProjectCmd: agent-memory rename-project --workspace W --project P --to NEW
 func newRenameProjectCmd() *cobra.Command {
-	var serverURL, workspace, project, to string
+	var serverURL, token, workspace, project, to string
 	cmd := &cobra.Command{
 		Use:           "rename-project",
 		Short:         "Rename a project within its workspace",
@@ -31,10 +31,10 @@ func newRenameProjectCmd() *cobra.Command {
 				return err
 			}
 			body := map[string]any{"workspace": workspace, "project": project, "newProject": to}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/projects/rename", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/projects/rename", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the project's workspace slug")
 	cmd.Flags().StringVar(&project, "project", "", "the project's current slug")
 	cmd.Flags().StringVar(&to, "to", "", "the new project slug")
@@ -43,7 +43,7 @@ func newRenameProjectCmd() *cobra.Command {
 
 // newMoveProjectCmd: agent-memory move-project --workspace W --project P --to-workspace W2 [--to NEW]
 func newMoveProjectCmd() *cobra.Command {
-	var serverURL, workspace, project, toWorkspace, to string
+	var serverURL, token, workspace, project, toWorkspace, to string
 	cmd := &cobra.Command{
 		Use:           "move-project",
 		Short:         "Move a project to another workspace (optionally renaming it)",
@@ -59,10 +59,10 @@ func newMoveProjectCmd() *cobra.Command {
 				"workspace": workspace, "project": project,
 				"newWorkspace": toWorkspace, "newProject": to,
 			}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/projects/move", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/projects/move", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the project's current workspace slug")
 	cmd.Flags().StringVar(&project, "project", "", "the project's slug")
 	cmd.Flags().StringVar(&toWorkspace, "to-workspace", "", "the destination workspace slug")
@@ -72,7 +72,7 @@ func newMoveProjectCmd() *cobra.Command {
 
 // newPurgeProjectCmd: agent-memory purge-project --workspace W --project P [--yes]
 func newPurgeProjectCmd() *cobra.Command {
-	var serverURL, workspace, project string
+	var serverURL, token, workspace, project string
 	var yes bool
 	cmd := &cobra.Command{
 		Use:           "purge-project",
@@ -91,10 +91,10 @@ func newPurgeProjectCmd() *cobra.Command {
 					workspace, project)
 			}
 			body := map[string]any{"workspace": workspace, "project": project}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/projects/purge", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/projects/purge", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().StringVar(&workspace, "workspace", "", "the project's workspace slug")
 	cmd.Flags().StringVar(&project, "project", "", "the project's slug")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the irreversible purge")
@@ -103,7 +103,7 @@ func newPurgeProjectCmd() *cobra.Command {
 
 // newResetCmd: agent-memory reset [--force] [--yes]
 func newResetCmd() *cobra.Command {
-	var serverURL string
+	var serverURL, token string
 	var force, yes bool
 	cmd := &cobra.Command{
 		Use:   "reset",
@@ -120,10 +120,10 @@ func newResetCmd() *cobra.Command {
 				return fmt.Errorf("reset is irreversible and wipes ALL memory; pass --yes to confirm")
 			}
 			body := map[string]any{"force": force}
-			return postLifecycle(cmd.OutOrStdout(), resolveServerURL(serverURL), "/reset", body)
+			return postLifecycle(cmd.OutOrStdout(), resolveAdminTarget(serverURL, token), "/reset", body)
 		},
 	}
-	addServerFlag(cmd, &serverURL)
+	addAdminFlags(cmd, &serverURL, &token)
 	cmd.Flags().BoolVar(&force, "force", false,
 		"override the live-process guard and reset anyway")
 	cmd.Flags().BoolVar(&yes, "yes", false, "confirm the irreversible wipe")
@@ -131,11 +131,6 @@ func newResetCmd() *cobra.Command {
 }
 
 // --- shared helpers -------------------------------------------------------------------------------
-
-func addServerFlag(cmd *cobra.Command, target *string) {
-	cmd.Flags().StringVar(target, "server", "",
-		"server base URL (default $AGENT_MEMORY_SERVER or "+defaultServerURL+")")
-}
 
 // requireAll returns an error naming the first missing (empty) required flag.
 func requireAll(flags map[string]string) error {
@@ -147,25 +142,23 @@ func requireAll(flags map[string]string) error {
 	return nil
 }
 
-// postLifecycle POSTs the JSON body to <base><path> and prints the server's JSON
+// postLifecycle POSTs the JSON body to the target's <path> and prints the server's JSON
 // response. A non-2xx status is surfaced as an error carrying the server's reason
 // (so a 409 refusal — e.g. a live-process reset block — is visible to the user).
-func postLifecycle(out io.Writer, base, path string, body map[string]any) error {
+func postLifecycle(out io.Writer, target adminTarget, path string, body map[string]any) error {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("encoding request: %w", err)
 	}
-	url := base + path
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(payload))
+	req, err := target.newRequest(http.MethodPost, path, payload)
 	if err != nil {
-		return fmt.Errorf("building request: %w", err)
+		return err
 	}
-	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{Timeout: 2 * time.Minute}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("calling %s: %w", url, err)
+		return fmt.Errorf("calling %s: %w", req.URL, err)
 	}
 	defer resp.Body.Close()
 
