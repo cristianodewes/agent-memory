@@ -7,6 +7,7 @@ import java.time.Duration;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -313,7 +314,10 @@ public final class OpenAiOAuthLlmProvider implements LlmProvider {
      * Reconstruct the completion from the Codex SSE stream: accumulate {@code response.output_text.delta}
      * events and finalize on {@code response.completed}. A terminal failure event ({@code response.failed
      * / incomplete / cancelled / error}) or a top-level {@code error} payload becomes a permanent
-     * {@link LlmException}; a stream that ends before {@code response.completed} is surfaced explicitly.
+     * {@link LlmException} — except a {@code usage_limit_reached}/rate-limit error, which is surfaced as a
+     * retryable HTTP 429 carrying the {@code resets_in_seconds} hint so the shared {@link LlmRateLimitGate}
+     * pauses background work instead of hammering an exhausted quota (issue #148/#150). A stream that ends
+     * before {@code response.completed} is surfaced explicitly.
      */
     private Completed parseSse(String body) {
         StringBuilder outputText = new StringBuilder();
@@ -376,8 +380,10 @@ public final class OpenAiOAuthLlmProvider implements LlmProvider {
         }
 
         if (value.get("error") != null) {
-            throw new LlmException("openai-oauth upstream error: " + truncate(payload),
-                    null, false, SSE_TERMINAL_ERROR_STATUS);
+            LlmException rateLimit = rateLimitFromSse(value, payload);
+            throw rateLimit != null ? rateLimit
+                    : new LlmException("openai-oauth upstream error: " + truncate(payload),
+                            null, false, SSE_TERMINAL_ERROR_STATUS);
         }
         String kind = textOr(value, "type", event == null ? "" : event);
         switch (kind) {
@@ -391,10 +397,72 @@ public final class OpenAiOAuthLlmProvider implements LlmProvider {
                 JsonNode response = value.get("response");
                 return response != null ? response : value;
             }
-            case "response.failed", "response.incomplete", "response.cancelled", "error" ->
-                throw new LlmException("openai-oauth upstream " + kind + ": " + truncate(payload),
-                        null, false, SSE_TERMINAL_ERROR_STATUS);
+            case "response.failed", "response.incomplete", "response.cancelled", "error" -> {
+                LlmException rateLimit = rateLimitFromSse(value, payload);
+                throw rateLimit != null ? rateLimit
+                        : new LlmException("openai-oauth upstream " + kind + ": " + truncate(payload),
+                                null, false, SSE_TERMINAL_ERROR_STATUS);
+            }
             default -> { /* ignore other lifecycle events (created, in_progress, …) */ }
+        }
+        return null;
+    }
+
+    /**
+     * A Codex usage-limit can arrive <em>inside</em> the 200-OK SSE stream (a {@code response.failed} /
+     * {@code error} event carrying {@code usage_limit_reached} + {@code resets_in_seconds}) instead of as
+     * an HTTP 429. Surface such a payload as a retryable HTTP 429 with the reset hint — mirroring the
+     * HTTP-layer mapping in {@link HttpJsonClient#rateLimitResetMillis} — so the shared
+     * {@link LlmRateLimitGate} (which keys on HTTP 429) pauses background work instead of firing doomed
+     * calls into an exhausted quota (issue #148/#150). Returns the 429 {@link LlmException} for a
+     * rate-limit payload, else {@code null} so the caller keeps its terminal-502 mapping for ordinary
+     * stream failures.
+     */
+    private static LlmException rateLimitFromSse(JsonNode value, String payload) {
+        JsonNode error = errorNode(value);
+        if (error == null) {
+            return null;
+        }
+        long resetSeconds = error.path("resets_in_seconds").asLong(0);
+        String signal = ((textOr(error, "type", "")) + " " + textOr(error, "code", ""))
+                .toLowerCase(Locale.ROOT);
+        boolean rateLimited =
+                resetSeconds > 0 || signal.contains("usage_limit") || signal.contains("rate_limit");
+        if (!rateLimited) {
+            return null;
+        }
+        long retryAfterMillis = 0L;
+        if (resetSeconds > 0) {
+            try {
+                retryAfterMillis = Math.multiplyExact(resetSeconds, 1000L);
+            } catch (ArithmeticException overflow) {
+                retryAfterMillis = 0L; // absurd hint: still a 429, just without a usable pause length
+            }
+        }
+        return new LlmException("openai-oauth upstream usage limit reached (SSE): " + truncate(payload),
+                null, true, 429, retryAfterMillis);
+    }
+
+    /**
+     * The error object a Codex event may carry, checked in the shapes the backend uses: a top-level
+     * {@code error} object ({@code {"error":{...}}}), the {@code response.error} of a
+     * {@code response.failed} event, or the event itself when it is a bare {@code error} event with its
+     * fields hoisted to the top level. {@code null} when the event carries no error object.
+     */
+    private static JsonNode errorNode(JsonNode value) {
+        JsonNode topLevel = value.get("error");
+        if (topLevel != null && topLevel.isObject()) {
+            return topLevel;
+        }
+        JsonNode response = value.get("response");
+        if (response != null) {
+            JsonNode nested = response.get("error");
+            if (nested != null && nested.isObject()) {
+                return nested;
+            }
+        }
+        if ("error".equals(text(value, "type")) || value.get("resets_in_seconds") != null) {
+            return value;
         }
         return null;
     }
