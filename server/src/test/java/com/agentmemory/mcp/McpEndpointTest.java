@@ -176,14 +176,12 @@ class McpEndpointTest {
         assertThat(r.path("endMarker").stringValue()).isEqualTo(end);
         assertThat(r.path("target").stringValue()).contains("CLAUDE.md").contains("AGENTS.md");
         String snippet = r.path("snippet").stringValue();
-        // The block is fenced by the stable markers (so an installer can replace it in place) and the
-        // body routes the agent to the core recall/handoff/write tools.
+        // The tool hands out the canonical block verbatim (pinned to the shared contract by
+        // SelfRoutingSnippetTest), fenced by the stable markers so an installer can replace it in place,
+        // and the body routes the agent to recall.
+        assertThat(snippet).isEqualTo(SelfRoutingSnippet.markdown());
         assertThat(snippet).startsWith(begin).endsWith(end + "\n");
-        assertThat(snippet)
-                .contains("memory_query")
-                .contains("memory_briefing")
-                .contains("memory_handoff_accept")
-                .contains("memory_write_page");
+        assertThat(snippet).contains("memory_query");
     }
 
     // --- handoff tools (issue #22) -----------------------------------------------------------------

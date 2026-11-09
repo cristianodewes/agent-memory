@@ -207,3 +207,8 @@ error and is rejected, not silently coerced.
 [`fixtures/`](fixtures/) holds one golden file per shape (plus minimal/edge variants that exercise
 null-omission and empty lists). Each is deserialized → re-serialized → compared semantically to the
 original, in both languages. They are the executable form of this document.
+
+One file there is not a domain shape: `self_routing_snippet.md` is the exact self-routing block,
+markers included, that the Go installer and the `memory_install_self_routing` MCP tool must both
+produce byte for byte (`snippet_test.go` in `client/internal/install`, `SelfRoutingSnippetTest` on
+the JVM). Change it together with both copies of the block.

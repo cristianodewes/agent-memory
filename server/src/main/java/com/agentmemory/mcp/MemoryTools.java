@@ -352,13 +352,13 @@ public final class MemoryTools {
                 "memory_install_self_routing",
                 "Return the canonical self-routing snippet to paste into the agent's project "
                         + "instructions (CLAUDE.md / AGENTS.md) so the agent knows when to recall from "
-                        + "and write to this project's memory. Idempotent: the block is fenced by stable "
-                        + "markers so an installer can replace it in place. Takes no arguments.",
+                        + "this project's memory. Idempotent: the block is fenced by stable markers so an "
+                        + "installer can replace it in place. Takes no arguments.",
                 Map.of(),
                 List.of());
         // No scope resolution: self-routing install must work on a brand-new project where nothing is
-        // active yet. The snippet is project-agnostic (scope defaults to the current project at call
-        // time), so there is nothing to resolve here.
+        // active yet. The snippet is project-agnostic (each later tool call resolves its own scope, by
+        // default the most recently active project), so there is nothing to resolve here.
         return spec(tool, request -> json.ok(new McpDtos.SelfRoutingResult(
                 SelfRoutingSnippet.markdown(),
                 SelfRoutingSnippet.BEGIN_MARKER,
